@@ -220,8 +220,8 @@ struct FileRegistry {
     /// registry takes them. A source that declares no named type adds no scope, and its types
     /// wait for its registry when its derived recipes are known.
     seed: RefCell<Option<(super::SourceRecipes, Option<super::NativeTypes>)>>,
-    /// Whether its members may extend another source's types (documentation members, applied
-    /// owners, stores on a global class), which a project reads of every source whenever a type's
+    /// Whether its members may extend another source's types (applied owners, stores on a
+    /// global class), which a project reads of every source whenever a type's
     /// members are asked for: its registry is built with the project's.
     applies_members: bool,
     /// Whether the project's merged scopes reach its function or signature scopes, which another
@@ -269,14 +269,13 @@ impl FileRegistry {
         source.set_no_unsafe_any(project.no_unsafe_any);
         source.set_cancellation(&project.cancellation);
         source.set_project_names(Rc::clone(&project.names));
-        source.attach_documentation_signature_owners();
-        source.rebuild_documentation_members();
+        source.register_runtime_table_keys();
         // Library-global augmentation candidates are available only once every original
         // declaration has joined the selected namespace.
         source.project_globals = Some(Rc::clone(&project.globals));
         source.rebuild_original_members();
         debug_assert!(
-            self.applies_members || source.doc_members.keys().next().is_none() && source.members.applied_members().next().is_none(),
+            self.applies_members || source.members.applied_members().next().is_none(),
             "a source whose members extend other sources' types is built with the project",
         );
         source
@@ -346,7 +345,6 @@ pub(crate) struct ProjectRegistry {
     modules: Rc<ProjectModuleIndex>,
     /// Every source's named types' scopes, which each source's types see.
     scopes: Rc<crate::native_types::OriginalTypeScopes>,
-    header_metadata: RefCell<super::named_provider::SourceHeaderMetadata>,
     /// Whether reports describe binding and expression types. Diagnostics never
     /// depend on it; only callers that print or query types need them.
     describe_types: bool,
@@ -528,8 +526,7 @@ impl ProjectRegistry {
         }
         for file in &mut files {
             let implementation = file.role == SourceRole::Implementation;
-            file.applies_members = file.syntax.function_declarations.iter().any(|declaration| !declaration.invalid_owner && declaration.owner.is_some())
-                || file.derived().methods.may_apply_members(implementation, &file.bound, |name, member| {
+            file.applies_members = file.derived().methods.may_apply_members(implementation, &file.bound, |name, member| {
                     globals.binding(name).is_some_and(|binding| !globals.declares_member(binding, member) && !globals.named_owners(binding).is_empty())
                 });
         }
@@ -599,7 +596,6 @@ impl ProjectRegistry {
             standard_environment: super::standard::ProjectStandardEnvironment::new(environment_profile, std::iter::empty()),
             modules,
             scopes: shared,
-            header_metadata: RefCell::new(super::named_provider::SourceHeaderMetadata::default()),
             describe_types: true,
             global_names: original_names,
             cancellation: crate::project_check::Cancellation::default(),
@@ -656,43 +652,6 @@ impl ProjectRegistry {
         registry
     }
 
-    fn header_metadata_revisions(&self) -> [u64; 1] {
-        // Every imported original scope belongs to one of the fixed source
-        // owners. Their shared scope epochs and local documentation preparation
-        // generations all advance the thread's metadata clock, which therefore
-        // covers the complete merged metadata view.
-        [crate::native_types::metadata_clock()]
-    }
-
-    fn declaration_header_metadata(&self, key: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
-        let owner = self.owner(key.snapshot);
-        let named = crate::native_named::NativeNamedKey { snapshot: key.snapshot, index: key.index };
-        if owner.named_metadata().declaration(named).is_none() { return owner.type_declaration_header(key); }
-        let revisions = self.header_metadata_revisions();
-        if let Some(header) = self.header_metadata.borrow_mut().get(&revisions, key) { return header; }
-        let header = self.declaration_header_metadata_uncached(key);
-        assert_eq!(self.header_metadata_revisions(), revisions,
-            "merged header discovery only reads original project metadata");
-        self.header_metadata.borrow_mut().insert(key, header.clone());
-        header
-    }
-
-    fn declaration_header_metadata_uncached(&self, key: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
-        let owner=self.owner(key.snapshot);
-        let mut header=owner.type_declaration_header(key);
-        let named=crate::native_named::NativeNamedKey {snapshot:key.snapshot,index:key.index};
-        if owner.named_metadata().declaration(named).is_none() {return header;}
-        let mut used=crate::collections::HashSet::default();
-        // Only a source built with the project has documentation members (`applies_members`).
-        for source in self.built_sources() {
-            source.doc_members.dependencies(named,&mut used,|id|source.doc_signature_key(id),|signature|source.signature_outer_keys(signature));
-        }
-        header.outer_parameters.extend(owner.types.outer_parameters_in_context(crate::native_named::NativeTypeContext::NamedType(named),&used));
-        header.outer_parameters.sort_by_key(|key|(key.snapshot,key.index));
-        header.outer_parameters.dedup();
-        header
-    }
-
     /// A declaration file's function definitions of one global, in any of the project's
     /// declaration files, or of one namespace member, in its file, when there are several: its
     /// overloads, as TypeScript merges a global's or a namespace's function declarations and as
@@ -724,21 +683,11 @@ impl ProjectRegistry {
             .map(|&index| self.files[index].source(self))
     }
 
-    /// The registries built so far: only they hold what a check has read or found.
-    fn built_sources(&self) -> impl Iterator<Item = &NativeRegistry> {
-        self.files.iter().filter_map(FileRegistry::built)
-    }
-
     fn owner(&self, snapshot: u64) -> &NativeRegistry {
         self.owner_if(snapshot)
             .expect("native source key belongs to this immutable project provider")
     }
 
-    /// Ready documentation members (`---@function Owner.member`) for queries made outside a check,
-    /// as a language service's are: checking a file's declarations prepares its own.
-    pub(crate) fn prepare_documentation_members(&self, queries: &mut dyn TypeQueries) {
-        for source in self.built_sources() { source.prepare_documentation_scopes(queries); }
-    }
     /// Where a native function's syntax is, whose documentation describes it.
     pub(crate) fn function_site(&self, key: luanalysis_engine::NativeFunctionKey) -> Option<(FileId, luanalysis_syntax::Span)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
@@ -766,21 +715,16 @@ impl ProjectRegistry {
         self.files.iter()
             .filter(|file| file.role == SourceRole::Declaration)
             .flat_map(|file| file.globals().declarations.iter()
-                .filter(|source| source.annotation.is_some() && source.function.is_none() && source.documentation_function.is_none() && source.namespace.is_none())
+                .filter(|source| source.annotation.is_some() && source.function.is_none() && source.namespace.is_none())
                 .map(|source| (file.id, source.name.text.clone(), source.key, source.statement)))
             .collect()
     }
-    /// Where the global `name` is declared: each declaration's file, its statement or its
-    /// `---@function` tag, and whether that is a tag.
+    /// Where the global `name` is declared: each declaration's file and statement, and whether
+    /// that is a documentation tag (never, as globals are declared by statements).
     pub(crate) fn global_sites(&self, name: &str) -> Vec<(FileId, luanalysis_syntax::Span, bool)> {
         self.files.iter().flat_map(|file| file.globals().declarations.iter()
             .filter(|source| source.namespace.is_none() && source.name.text == name)
-            .map(|source| match source.documentation_function
-                .and_then(|id| file.syntax.function_declarations.iter().find(|declaration| declaration.id == id))
-            {
-                Some(declaration) => (file.id, declaration.span, true),
-                None => (file.id, source.statement, false),
-            }))
+            .map(|source| (file.id, source.statement, false)))
             .collect()
     }
     /// Where the constructor of runtime table `key` declares its field `name`.
@@ -861,7 +805,7 @@ impl ProjectRegistry {
             if let Ok(ty) = queries.value_declaration_type(declaration.key) { described(&ty, queries, &mut text); }
         }
         for key in source.named_declaration_keys() {
-            let header = self.declaration_header_metadata(key);
+            let header = self.owner(key.snapshot).type_declaration_header(key);
             text.push_str(&header.name);
             text.push_str(" : ");
             let arguments: Vec<_> = header.parameters.iter().map(|&parameter| Type::NativeTypeParameter(parameter)).collect();
@@ -895,13 +839,6 @@ impl ProjectRegistry {
     }
 
     fn check_roots_mode(&self, queries: &mut dyn TypeQueries, roots: &[FileId], owned_only: bool, scheduled: Option<&HashSet<FileId>>) -> Vec<FileCheckReport> {
-        // Canonical scope identities must exist for every sibling extension
-        // before any alias head can publish a class's captured outer mapper.
-        let setup = std::env::var_os("LUANALYSIS_PROFILE").is_some().then(std::time::Instant::now);
-        // Only a source built with the project has documentation members (`applies_members`).
-        for source in self.built_sources() { source.prepare_documentation_scope_keys(queries); }
-        for source in self.built_sources() { source.validate_documentation_scope_owners(queries); }
-        if let Some(setup) = setup { eprintln!("luanalysis profile: documentation scopes for {} files={:.3}s", self.built_sources().count(), setup.elapsed().as_secs_f64()); }
         // A check's roots are built before any is checked, as every registry once was: one
         // built while another is checked attaches its scopes, and the headers cached before are
         // computed again.
@@ -1173,7 +1110,8 @@ impl NativeTypeProvider for ProjectRegistry {
     fn contains_value_declaration(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> bool {
         self.owner_if(key.snapshot).is_some_and(|owner| owner.contains_global_declaration(key))
     }
-    fn value_declaration_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> { self.owner(key.snapshot).value_declaration_signatures(key) }
+    /// No source declares bodyless callable heads.
+    fn value_declaration_signatures(&self, _: luanalysis_engine::NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> { None }
     fn value_declaration_function_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> { self.owner(key.snapshot).value_declaration_function_signatures(key) }
     fn value_declaration_header(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> luanalysis_engine::ValueDeclarationHeader {
         self.owner(key.snapshot).global_header(key)
@@ -1312,7 +1250,7 @@ impl NativeTypeProvider for ProjectRegistry {
         self.owner(key.snapshot).type_member_is_function_type(key)
     }
     fn type_declaration_header(&self,key:NativeTypeDeclarationKey)->TypeDeclarationHeader {
-        self.declaration_header_metadata(key)
+        self.owner(key.snapshot).type_declaration_header(key)
     }
     fn header_revision(&self) -> Option<u64> {
         // Headers derive only from original metadata, and every change to it
@@ -1389,10 +1327,8 @@ impl NativeTypeProvider for ProjectRegistry {
                             })
                     }),
             );
-            // Only a source built with the project documents or applies members
-            // (`applies_members`).
+            // Only a source built with the project applies members (`applies_members`).
             if let Some(source) = file.built() {
-                members.extend(source.doc_members.keys());
                 members.extend(source.members.applied_members());
             }
         }
@@ -1579,48 +1515,6 @@ mod tests {
         );
         assert!(provider.runtime_type_declaration(NativeOpaqueRuntimeKind::Userdata).is_some());
         assert_eq!(provider.runtime_type_declaration(NativeOpaqueRuntimeKind::Thread), None);
-    }
-
-    #[test]
-    fn merged_header_metadata_tracks_documentation_preparation_and_recovery() {
-        use crate::native_doc_members::DocOwnerScope;
-        use crate::native_named::{NativeNamedKey, NativeTypeContext};
-        use crate::native_types::TypeNameResolution;
-        let provider = ProjectRegistry::new(vec![
-            input(0, "---@generic T\nlocal function outer()\n---@class Owner\nend\n"),
-            input(1, "---@function Owner.read():T\n"),
-        ]);
-        let owner = provider.names.candidates("Owner")[0];
-        let named = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
-        let source = provider.files[1].source(&provider);
-        let signature = source.doc_signature_key(source.file.function_declarations[0].id).unwrap();
-        let context = Some(NativeTypeContext::Signature(signature));
-        let TypeNameResolution::Parameter(parameter) = source.types.resolve_name_in_context(context, "T") else {
-            panic!("the imported original owner supplies its outer T");
-        };
-        assert!(provider.owner(owner.snapshot).type_declaration_header(owner).outer_parameters.is_empty(),
-            "only the other file's original documentation head introduces this dependency");
-        let header = provider.type_declaration_header(owner);
-        assert_eq!(header.outer_parameters, vec![parameter]);
-        assert_eq!(provider.type_declaration_header(owner), header);
-        assert_eq!(provider.declaration_header_metadata_uncached(owner), header);
-        let before = source.header_metadata_revision();
-        let doc = &source.doc_members.sources()[0];
-        doc.scope.set(DocOwnerScope::Failed);
-        source.invalidate_header_metadata();
-        let after = source.header_metadata_revision();
-        assert_eq!(after.0, before.0, "the original scope itself has not changed");
-        assert_ne!(after.1, before.1, "documentation applicability is independent metadata");
-        assert_eq!(source.types.resolve_name_in_context(context, "T"), TypeNameResolution::Parameter(parameter));
-        let absent = provider.type_declaration_header(owner);
-        assert!(absent.outer_parameters.is_empty());
-        assert_eq!(absent, provider.declaration_header_metadata_uncached(owner));
-        for state in [DocOwnerScope::Scoped(named), DocOwnerScope::Ready(named)] {
-            doc.scope.set(state);
-            source.invalidate_header_metadata();
-            assert_eq!(provider.type_declaration_header(owner), header);
-            assert_eq!(provider.declaration_header_metadata_uncached(owner), header);
-        }
     }
 
     fn input(index: u32, source: &str) -> RegistryInput {

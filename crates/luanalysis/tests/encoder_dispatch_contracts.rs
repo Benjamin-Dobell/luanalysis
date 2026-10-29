@@ -9,9 +9,12 @@ const SOURCE: &str = r#"---@shape PublicDispatcher
 ---@shape ImplementationDispatcher : PublicDispatcher
 ---@field __index fun(owner:table,key:string):never
 
----@function expectTable(value:table):void
----@function expectString(value:string):void
----@function expectNumber(value:number):void
+---@param value table
+local function expectTable(value) end
+---@param value string
+local function expectString(value) end
+---@param value number
+local function expectNumber(value) end
 
 ---@param value unknown
 local function booleanHandler(value) end

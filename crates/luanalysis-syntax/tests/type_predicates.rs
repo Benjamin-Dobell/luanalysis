@@ -1,4 +1,4 @@
-use luanalysis_syntax::{StmtKind, TypeExpr, TypeExprKind, parse, type_names};
+use luanalysis_syntax::{NamedTypeDeclarationKind, StmtKind, TypeExpr, TypeExprKind, parse, type_names};
 
 fn predicate(ty: &TypeExpr) -> (&luanalysis_syntax::Name, &TypeExpr) {
     let TypeExprKind::TypePredicate { parameter, ty: Some(ty), asserts: None } = &ty.kind else {
@@ -57,8 +57,8 @@ fn return_predicate_preserves_parameter_target_and_original_spans() {
 }
 
 #[test]
-fn function_types_overloads_and_declarations_use_the_same_predicate_node() {
-    let source = "---@type fun<T>(value:T|string): value is T\nlocal guard\n---@overload fun(value:any): value is string\nlocal function valid(value) end\n---@function isNumber(value:any): value is number\n";
+fn function_types_overloads_and_fields_use_the_same_predicate_node() {
+    let source = "---@type fun<T>(value:T|string): value is T\nlocal guard\n---@overload fun(value:any): value is string\nlocal function valid(value) end\n---@class Checks\n---@field isNumber fun(value:any): value is number\n";
     let file = parse(source);
     assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
     let StmtKind::Local { annotation: Some(annotation), .. } = &file.statements[0].kind else {
@@ -71,7 +71,9 @@ fn function_types_overloads_and_declarations_use_the_same_predicate_node() {
     assert!(matches!(&predicate(&signature.returns[0]).1.kind, TypeExprKind::Named(name) if name == "T"));
     assert!(signature.packs.is_none());
     assert_eq!(predicate(&file.overload_annotations[0].signature.returns[0]).0.text, "value");
-    assert_eq!(predicate(&file.function_declarations[0].signature.returns[0]).0.text, "value");
+    let NamedTypeDeclarationKind::Record { fields, .. } = &file.type_declarations[0].kind else { panic!("a class") };
+    let TypeExprKind::Function(field) = &fields[0].ty.kind else { panic!("a function field") };
+    assert_eq!(predicate(&field.returns[0]).0.text, "value");
 }
 
 #[test]

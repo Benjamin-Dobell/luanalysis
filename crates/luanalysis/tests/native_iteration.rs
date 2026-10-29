@@ -5,9 +5,9 @@ use luanalysis::{CheckReport, check};
 
 #[test]
 fn generic_for_accepts_ignored_hidden_arguments_and_keeps_declared_argument_checks() {
-    let source = r#"---@function zero():nil|string
----@function one(state:{value:string}):nil|string
----@function two(state:string,control:nil|string):nil|string
+    let source = r#"local zero = --[[---@type fun():nil|string]] (nil)
+local one = --[[---@type fun(state:{value:string}):nil|string]] (nil)
+local two = --[[---@type fun(state:string,control:nil|string):nil|string]] (nil)
 for value in zero do
     ---@type string
     local zeroValue=value
@@ -45,12 +45,12 @@ end
 
 #[test]
 fn hidden_iterator_invocation_keeps_typed_rest_and_required_third_parameters() {
-    let rest = "---@function nextValue(state:string,...:number):nil|number\nfor value in nextValue,'state',0 do\n---@type number\nlocal checked=value\nend\n";
+    let rest = "local nextValue = --[[---@type fun(state:string,...:number):nil|number]] (nil)\nfor value in nextValue,'state',0 do\n---@type number\nlocal checked=value\nend\n";
     accepted(rest);
     let report = check(&rest.replace("nextValue,'state',0", "nextValue,'state','wrong'"));
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS2345");
-    let third = "---@function nextValue(state:string,control:nil|string,extra:number):nil|string\nfor value in nextValue,'state',nil do end\n";
+    let third = "local nextValue = --[[---@type fun(state:string,control:nil|string,extra:number):nil|string]] (nil)\nfor value in nextValue,'state',nil do end\n";
     let report = check(third);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS2554");
@@ -59,7 +59,7 @@ fn hidden_iterator_invocation_keeps_typed_rest_and_required_third_parameters() {
 
 #[test]
 fn invariant_iterator_state_errors_keep_the_header_origin_while_feedback_uses_the_callee() {
-    let source = "---@function step(state:string,control:nil|string):nil|string\n\n---@type number\nlocal state=42\nfor value in step,state,nil do end\n";
+    let source = "local step = --[[---@type fun(state:string,control:nil|string):nil|string]] (nil)\n\n---@type number\nlocal state=42\nfor value in step,state,nil do end\n";
     let report = check(source);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     let error = &report.diagnostics[0];
@@ -67,7 +67,7 @@ fn invariant_iterator_state_errors_keep_the_header_origin_while_feedback_uses_th
     assert_eq!(&source[error.span.start..error.span.end], "state");
     accepted(&source.replace("---@type number\nlocal state=42", "---@type string\nlocal state='correct'"));
 
-    let feedback = "---@function step(state:string,control:number):nil|string\nfor value in step,'state',0 do end\n";
+    let feedback = "local step = --[[---@type fun(state:string,control:number):nil|string]] (nil)\nfor value in step,'state',0 do end\n";
     let report = check(feedback);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     let error = &report.diagnostics[0];
@@ -81,8 +81,8 @@ const LOCAL_ROW_HEADER: &str = r#"---@shape Packed<T>
 ---@field [number] T
 ---@field n number
 
----@function packedOnly(state:Packed<string>,control:number):nil|(number,string|nil)
----@function choose(): ((fun(state:Packed<string>,control:number):nil|(number,string|nil)),Packed<string>,0)|((fun(state:string[],control:number):nil|(number,string)),string[],0)
+local packedOnly = --[[---@type fun(state:Packed<string>,control:number):nil|(number,string|nil)]] (nil)
+local choose = --[[---@type fun(): ((fun(state:Packed<string>,control:number):nil|(number,string|nil)),Packed<string>,0)|((fun(state:string[],control:number):nil|(number,string)),string[],0)]] (nil)
 "#;
 
 const LOCAL_ROW_LOOP: &str = r#"for key,value in step,state,control do
@@ -138,7 +138,7 @@ fn independent_original_iterator_groups_do_not_share_rows() {
 
 #[test]
 fn iterator_reconstruction_preserves_written_and_asserted_state_views() {
-    let header = r#"---@function hidden(): (fun(state:{payload:string,hidden:number},control:number):nil|(number,string)),{payload:string,hidden:number},0
+    let header = r#"local hidden = --[[---@type fun(): (fun(state:{payload:string,hidden:number},control:number):nil|(number,string)),{payload:string,hidden:number},0]] (nil)
 
 "#;
     for binding in [

@@ -214,11 +214,6 @@ fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str,
                 if let Some(owner) = &field.explicit_owner { visit(&owner.text, owner.span, Visited::Type(TypeNameKind::Reference)); }
                 visit_field(&field.key, &field.ty, visit);
             }
-            DeclarationItem::Function { explicit_owner, signature, annotations, .. } => {
-                if let Some(owner) = explicit_owner { visit(&owner.text, owner.span, Visited::Type(TypeNameKind::Reference)); }
-                visit_function(signature, visit);
-                visit_annotations(annotations, visit);
-            }
             DeclarationItem::Overload { signature, .. } | DeclarationItem::Operator { signature, .. } => visit_function(signature, visit),
         }
     }

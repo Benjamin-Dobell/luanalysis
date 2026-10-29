@@ -488,7 +488,7 @@ fn overload_implementation_contracts_stay_private_and_are_still_checked() {
 #[test]
 fn methods_keep_receiver_mappers_and_unrelated_classes_keep_nominal_origins() {
     let fixture = Fixture::new();
-    fixture.file("base.def.lua", "---@class Base<T>\n---@field value T\n---@function :get():T\n---@function :identity():self\n");
+    fixture.file("base.def.lua", "---@class Base<T>\n---@field value T\nlocal Base = {}\n---@return T\nfunction Base:get() end\n---@return self\nfunction Base:identity() end\n");
     fixture.file("derived.def.lua", "---@class Derived:Base<number>\n---@field name string\n\n---@class Other\n---@field value number\n");
     let main = "---@param item Derived\n---@return Base<number>\nlocal function read(item)\nlocal numeric=item:get()\nlocal label=item:identity().name\n---@type number\nlocal checked=numeric\n---@type string\nlocal checked_label=label\nreturn item\nend\n";
     fixture.file("main.lua", main);

@@ -255,15 +255,6 @@ impl NativeTypes {
         self.imported = Some(imported);
         if changed { Self::advance_metadata(&self.metadata_epochs[0]); }
     }
-    pub(super) fn attach_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey,owner:NativeNamedKey) {
-        let scope = self.scope(&NativeTypeContext::Signature(signature)).expect("original signature scope");
-        let owner = Some(NativeTypeContext::NamedType(owner));
-        if scope.method_owner.replace(owner) != owner { Self::advance_metadata(&scope.metadata_epoch); }
-    }
-    pub(super) fn clear_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey) {
-        let scope = self.scope(&NativeTypeContext::Signature(signature)).expect("original signature scope");
-        if scope.method_owner.replace(None).is_some() { Self::advance_metadata(&scope.metadata_epoch); }
-    }
     fn advance_metadata(epoch: &Cell<u64>) {
         epoch.set(epoch.get().checked_add(1).expect("original scope metadata epoch fits u64"));
         advance_metadata_clock();
@@ -273,8 +264,6 @@ impl NativeTypes {
     pub(super) fn metadata_revisions(&self) -> Vec<u64> {
         self.all_epochs().iter().map(|epoch| epoch.get()).collect()
     }
-    #[cfg(test)]
-    pub(super) fn own_metadata_revision(&self) -> u64 { self.metadata_epochs[0].get() }
     /// One allocator owns every function and named parameter identity. Keeping
     /// function recipes first preserves their existing source parameter indices.
     pub(super) fn new_with_named(

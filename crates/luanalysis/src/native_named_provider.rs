@@ -30,17 +30,12 @@ impl SourceHeaderMetadata {
         self.generation = self.generation.checked_add(1).expect("original header metadata generation fits u64");
         crate::native_types::advance_metadata_clock();
     }
-    #[cfg(test)]
-    pub(super) fn generation(&self) -> u64 { self.generation }
     pub(super) fn get(&mut self, revisions: &[u64], key: NativeTypeDeclarationKey) -> Option<TypeDeclarationHeader> {
         if self.scope_revisions != revisions {
             self.headers.clear();
             self.scope_revisions = revisions.to_vec();
         }
         self.headers.get(&key).cloned()
-    }
-    pub(super) fn insert(&mut self, key: NativeTypeDeclarationKey, header: TypeDeclarationHeader) {
-        self.headers.insert(key, header);
     }
 }
 
@@ -344,7 +339,7 @@ impl NativeRegistry {
             || self.named.anonymous_head(anonymous_key(key)).is_some()
     }
     pub(super) fn named_contains_member(&self, key: NativeTypeMemberKey) -> bool {
-        self.runtime_tables.member(key).is_some() || self.doc_members.get(key).is_some() || self.members.get(key).is_some() || self.namespace_contains_member(key)
+        self.runtime_tables.member(key).is_some() || self.members.get(key).is_some() || self.namespace_contains_member(key)
             || self.named.member(member_key(key)).is_some()
             || self
                 .named
@@ -451,7 +446,6 @@ impl NativeRegistry {
                 used.extend(self.signature_outer_keys(signature));
             }
             self.original_member_dependencies(source.key, &mut used);
-            self.doc_members.dependencies(source.key,&mut used,|id|self.doc_signature_key(id),|key|self.signature_outer_keys(key));
             return TypeDeclarationHeader {
                 kind,
                 name: source.syntax.name.text.clone(),
@@ -504,7 +498,7 @@ impl NativeRegistry {
         }
     }
     /// Where a member is declared, for the language service: its span, and whether that is a
-    /// documentation tag (`---@field`, `---@function`) rather than a statement.
+    /// documentation tag (`---@field`) rather than a statement.
     /// Where the constructor of runtime table `key` declares its field `name`: the key of
     /// `name = value` or `["name"] = value`.
     pub(crate) fn runtime_table_field_site(&self, key: NativeTypeDeclarationKey, name: &str) -> Option<Span> {
@@ -518,7 +512,6 @@ impl NativeRegistry {
     }
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(Span, bool)> {
         if let Some(store) = self.runtime_tables.member(key) { return Some((store.span, false)); }
-        if let Some(source) = self.doc_members.get(key) { return Some((source.signature_span, true)); }
         if let Some(source) = self.members.get(key) { return Some((source.candidates.first()?.span, false)); }
         if key.snapshot != self.snapshot { return None; }
         self.named.member(member_key(key)).map(|source| (source.field.span, true))
@@ -538,7 +531,6 @@ impl NativeRegistry {
     }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
         if let Some(header)=self.runtime_member_header(key) {return header;}
-        if let Some(header)=self.doc_members.header(key) {return header;}
         if let Some(header) = self.original_member_header(key) { return header; }
         if let Some(header) = self.namespace_member_header(key) { return header; }
         if let Some(source) = self.named.member(member_key(key)) {
@@ -610,7 +602,6 @@ impl NativeRegistry {
         };
         // Canonical alias ownership and applicability belong to the core.
         result.extend(self.members.member_candidates(named_key(key)));
-        result.extend(self.doc_members.keys());
         result.extend(
             self.named
                 .augmentations()
@@ -664,7 +655,6 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> Type {
         if let Some(ty)=self.runtime_member_type(key,queries) {return ty;}
-        if let Some(ty)=self.doc_members.ty(key,queries,|id|self.doc_signature_key(id)) {return ty;}
         if let Some(ty) = self.original_member_type(key, queries) { return ty; }
         if let Some(ty) = self.namespace_member_type(key, queries) { return ty; }
         if let Some(source) = self.named.member(member_key(key)) {
@@ -811,7 +801,6 @@ impl NativeRegistry {
     }
     fn named_member_origin(&self, key: NativeTypeMemberKey) -> Span {
         if let Some(span)=self.runtime_member_origin(key) {return span;}
-        if let Some(source)=self.doc_members.get(key) {return source.owner_span;}
         if let Some(span) = self.namespace_member_origin(key) { return span; }
         self.named
             .member(member_key(key))
@@ -840,7 +829,6 @@ impl NativeRegistry {
             .unwrap_or_else(|| self.named_origin(key))
     }
     fn named_member_type_origin(&self, key: NativeTypeMemberKey) -> Span {
-        if let Some(source)=self.doc_members.get(key) {return source.signature_span;}
         self.named
             .member(member_key(key))
             .map(|source| source.field.ty.span)
@@ -898,7 +886,7 @@ impl NativeRegistry {
         }
         let (code, span, message) = match error {
             NamedTypeError::PendingContext { .. } => return,
-            NamedTypeError::InvalidMemberSignatures {member,..} => ("LUA2034",self.named_member_type_origin(member),"Bodyless member has invalid original signature identities.".into()),
+            NamedTypeError::InvalidMemberSignatures {member,..} => ("LUA2034",self.named_member_type_origin(member),"Member has invalid original signature identities.".into()),
             // Actual application spans are supplied by the annotation caller.
             NamedTypeError::TypeArgumentArity { .. }
             | NamedTypeError::TypeArgumentConstraint { .. } => return,
@@ -1032,8 +1020,6 @@ impl NativeRegistry {
 
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
         self.check_type_parameter_defaults(queries);
-        self.prepare_documentation_scopes(queries);
-        self.doc_members.validate(queries);
         self.validate_return_annotations(queries);
         self.validate_original_assignment_annotations(queries);
         let mut seen = HashSet::default();
@@ -1294,40 +1280,6 @@ mod dependency_tests {
         assert_eq!(registry.named_declaration_header_uncached(key), header);
         assert_eq!(registry.header_metadata.borrow().headers.len(), 1);
         assert!(registry.report.borrow().diagnostics.is_empty());
-    }
-
-    #[test]
-    fn documentation_owner_preparation_invalidates_completed_anonymous_headers() {
-        // A local qualified owner is also an immutable signature parent. Use
-        // the valid cross-file preparation path so only the mutable attached
-        // owner supplies T to this consumer's original signature.
-        let owner_source = registry("---@class Owner<T>\n");
-        let mut registry = registry("---@function Owner.read():{value:T}\n");
-        registry.types.import_original_scopes(&owner_source.types.original_scopes());
-        let owner = owner_source.named_candidates("Owner")[0];
-        let owner = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
-        let parameter = owner_source.types.own_parameters_in_context(NativeTypeContext::NamedType(owner))[0];
-        let source = registry.named.anonymous_heads().iter().find(|head| {
-            matches!(head.syntax.kind, TypeExprKind::Record(_))
-        }).expect("original written return record");
-        let key = anonymous(source.key);
-        let signature = registry.signature_context_for_annotation(source.syntax.span)
-            .expect("return record retains its original signature context");
-        let context = Some(NativeTypeContext::Signature(signature));
-        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Missing);
-        assert!(registry.named_declaration_header(key).outer_parameters.is_empty());
-        registry.types.attach_documentation_owner(signature, owner);
-        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Parameter(parameter));
-        let header = registry.named_declaration_header(key);
-        assert_eq!(header.outer_parameters, vec![parameter]);
-        registry.types.clear_documentation_owner(signature);
-        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Missing);
-        let uncached = registry.named_declaration_header_uncached(key);
-        assert!(uncached.outer_parameters.is_empty());
-        assert_eq!(registry.named_declaration_header(key), uncached);
-        registry.types.attach_documentation_owner(signature, owner);
-        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Parameter(parameter));
-        assert_eq!(registry.named_declaration_header(key), header);
     }
 
     #[test]

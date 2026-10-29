@@ -1,5 +1,11 @@
--- Bodyless signatures declare members without placeholder implementations.
+-- A declaration file's functions are declarations: their bodies are stubs, never run.
 ---@class ExampleCounter
 ---@field value number
----@function ExampleCounter:add(amount: number): number
----@function ExampleCounter:copy(): self
+local ExampleCounter = {}
+
+---@param amount number
+---@return number
+function ExampleCounter:add(amount) end
+
+---@return self
+function ExampleCounter:copy() end

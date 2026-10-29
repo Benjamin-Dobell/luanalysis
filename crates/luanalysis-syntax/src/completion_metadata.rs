@@ -86,17 +86,6 @@ pub(crate) fn validate(documentation: &ParsedDocumentation, diagnostics: &mut Ve
                 roots.push(&field.ty);
             }
             DeclarationItem::Overload { signature, .. } | DeclarationItem::Operator { signature, .. } => function(signature, &mut roots),
-            DeclarationItem::Function { signature, annotations, .. } => {
-                function(signature, &mut roots);
-                generics(&annotations.generics, &mut roots);
-                roots.extend(annotations.params.iter().map(|parameter| &parameter.ty));
-                if let Some(vararg) = &annotations.vararg {
-                    roots.push(&vararg.ty);
-                }
-                for annotation in annotations.returns.iter().chain(annotations.type_annotation.iter()) {
-                    roots.extend(&annotation.types);
-                }
-            }
         }
     }
     let mut pending: Vec<_> = roots.into_iter().map(|ty| (ty, false)).collect();

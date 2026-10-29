@@ -87,9 +87,6 @@ pub struct File {
     /// Documentation declarations are independent from runtime statements and
     /// remain available when standalone, at EOF, or grouped with other tags.
     pub type_declarations: Vec<NamedTypeDeclaration>,
-    /// Bodyless documentation functions own original signatures independently
-    /// from runtime Lua functions and their bodies.
-    pub function_declarations: Vec<DocFunctionDeclaration>,
     /// Explicit @field Owner.member augmentations do not declare another named type.
     pub type_extensions: Vec<TypeExtension>,
     /// Canonical original @overload heads. Documentation/function associations
@@ -290,33 +287,6 @@ pub struct FieldDeclaration {
     /// Original `<Owner>` spelling, retained for deprecated syntax tooling.
     pub deprecated_owner_span: Option<Span>,
     pub span: Span,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DocFunctionDeclarationId(pub u32);
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct DocFunctionDeclaration {
-    pub id: DocFunctionDeclarationId,
-    pub name: Name,
-    pub owner: Option<DocFunctionOwner>,
-    /// An ambiguous contextual owner or ownerless colon is retained for
-    /// recovery, and must not publish an ordinary global declaration.
-    pub invalid_owner: bool,
-    /// Original `:` before the member name; implicit self is semantic metadata,
-    /// never an invented source parameter.
-    pub method_colon: Option<Span>,
-    pub signature: FunctionType,
-    pub annotations: FunctionAnnotations,
-    pub span: Span,
-    pub tag_span: Span,
-    pub group_span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DocFunctionOwner {
-    Explicit(Name),
-    Contextual(NamedTypeDeclarationId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

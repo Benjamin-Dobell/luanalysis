@@ -64,15 +64,6 @@ pub(crate) enum DeclarationItem {
         enumeration: Option<bool>,
     },
     Field(FieldDeclaration),
-    Function {
-        name: Name,
-        explicit_owner: Option<Name>,
-        method_colon: Option<Span>,
-        signature: Box<FunctionType>,
-        annotations: FunctionAnnotations,
-        span: Span,
-        tag_span: Span,
-    },
     Overload {
         signature: Box<FunctionType>,
         span: Span,
@@ -115,7 +106,6 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
         return (result, diagnostics);
     };
     let mut line_offset = 0;
-    let mut active_function = None;
     let mut seen_tag = false;
     let lines: Vec<&str> = body.split_inclusive('\n').collect();
     for (index, line) in lines.iter().copied().enumerate() {
@@ -197,7 +187,6 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                     | "class"
                     | "module"
                     | "field"
-                    | "function"
                     | "overload"
                     | "operator"
                     | "see"
@@ -340,7 +329,6 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                         }
                     }
                     "alias" | "shape" | "class" | "interface" | "module" => {
-                        active_function = None;
                         // LuaLS's `---@class (exact) Name` and `(partial)` modifiers.
                         if matches!(tag_name, "class" | "interface") && parser.take("(").is_some() {
                             parser.declaration_name("@class modifier");
@@ -389,7 +377,6 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                         }
                     }
                     "enum" => {
-                        active_function = None;
                         // LuaLS's `---@enum (key) Name` names the values (or keys) of the table
                         // after it: `typeof X[keyof typeof X]` (or `keyof typeof X`) once it is
                         // attached to the statement that assigns `X`. Without one, the name is an
@@ -413,34 +400,15 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                         }
                     }
                     "operator" => {
-                        active_function = None;
                         let tag_span = Span::new(tag_offset, tag_offset + 1 + tag_len);
                         if let Some(item) = parser.operator_declaration(annotation_span, tag_span) {
                             result.declarations.push(item);
                         }
                     }
                     "field" => {
-                        active_function = None;
                         if let Some(field) = parser.field_declaration(annotation_span) {
                             if let TypeFieldKey::Named(name) = &field.key { subject = Some(name.text.clone()); }
                             result.declarations.push(DeclarationItem::Field(field));
-                        }
-                    }
-                    "function" => {
-                        if let Some((name, explicit_owner, method_colon, signature)) =
-                            parser.function_declaration()
-                        {
-                            subject = Some(name.text.clone());
-                            active_function = Some(result.declarations.len());
-                            result.declarations.push(DeclarationItem::Function {
-                                name,
-                                explicit_owner,
-                                method_colon,
-                                signature: Box::new(signature),
-                                annotations: std::mem::take(&mut result.functions),
-                                span: annotation_span,
-                                tag_span: Span::new(tag_offset, tag_offset + 1 + tag_len),
-                            });
                         }
                     }
                     "generic" => {
@@ -622,13 +590,7 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                 if !options.emmylua {
                     diagnostics.extend(parser.optional_suffixes.iter().map(|&span| optional_suffix_diagnostic(span)));
                 }
-                if let Some(DeclarationItem::Function { annotations, .. }) =
-                    active_function.map(|index| &mut result.declarations[index])
-                {
-                    merge_annotations(annotations, group, true, &mut diagnostics);
-                } else {
-                    merge_annotations(&mut result.functions, group, true, &mut diagnostics);
-                }
+                merge_annotations(&mut result.functions, group, true, &mut diagnostics);
             }
         }
         line_offset += line.len();
@@ -1405,26 +1367,6 @@ impl TypeParser {
             // `==` compares identity whatever a type declares, as in TypeScript.
             None => None,
         }
-    }
-
-    fn function_declaration(&mut self) -> Option<(Name, Option<Name>, Option<Span>, FunctionType)> {
-        let start = self.current().span;
-        let leading_colon = self.take(":");
-        let first = self.declaration_name("function")?;
-        let (name, owner, method_colon) = if leading_colon.is_some() {
-            (first, None, leading_colon)
-        } else if let Some(colon) = self.take(":") {
-            let method_colon = Some(colon);
-            (self.declaration_name("function member")?, Some(first), method_colon)
-        } else {
-            let (owner, name) = split_owner(first);
-            (name, owner, None)
-        };
-        let signature = self.function_type_tail(start);
-        if signature.parameters_span.is_none() {
-            self.error("@function requires a parenthesized parameter list".into());
-        }
-        Some((name, owner, method_colon, signature))
     }
 
     /// Where a description starts: the current token, when it is `#` or a word, string or

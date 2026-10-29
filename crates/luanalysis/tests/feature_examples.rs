@@ -78,7 +78,7 @@ fn documented_predicates_check_boolean_returns_and_nominal_narrowing() {
 }
 
 #[test]
-fn documented_bodyless_methods_check_the_consumer_without_stub_bodies() {
+fn declared_methods_check_the_consumer_without_running_their_stubs() {
     clean(cli(CONSUMER, Some(DECLARATIONS), false));
     let wrong = CONSUMER.replace("copy:add(1)", "copy:add('wrong')");
     rejected(cli(&wrong, Some(DECLARATIONS), false), &["TS2345"]);

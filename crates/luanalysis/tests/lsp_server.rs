@@ -461,9 +461,9 @@ fn globals_are_defined_referenced_and_renamed_across_files() {
 fn completions_include_declared_fields_and_functions_of_a_library_class() {
     let root = fixture();
     let library = root.join("api.def.lua");
-    fs::write(&library, "---@class tts__Vector\n---@field x number\n\n---@class tts__Object : userdata\n---@field guid string\n\n---@function tts__Object.getPosition(): tts__Vector\n\n---@function tts__Object:getName(): string\n").unwrap();
+    fs::write(&library, "---@class tts__Vector\n---@field x number\n\n---@class tts__Object : userdata\n---@field guid string\nlocal Object\n\n---@return tts__Vector\nfunction Object.getPosition() end\n\n---@return string\nfunction Object:getName() end\n").unwrap();
     let extra = root.join("extra.def.lua");
-    fs::write(&extra, "---@field tts__Object.color string\n\n---@function tts__Object.highlight(color: string)\n").unwrap();
+    fs::write(&extra, "---@field tts__Object.color string\n\n---@field tts__Object.highlight fun(color: string)\n").unwrap();
     let main = root.join("main.lua");
     let source = "---@param object tts__Object\nlocal function show(object)\n    return object.guid\nend\n";
     fs::write(&main, source).unwrap();
@@ -1055,7 +1055,7 @@ fn a_members_origins_and_documentation_are_its_owners() {
     let library = root.join("api.def.lua");
     // Members declared apart from their classes: every declaration's candidates include each
     // same-spelled one, of whichever owner.
-    fs::write(&library, "---@class Color\n---@field r number\n\n--- Sets the colour's components.\n---@function Color:set(r: number, g: number, b: number): void\n\n---@class Vector\n---@field x number\n\n--- Sets the vector's components.\n---@param x number # New X.\n---@function Vector:set(x: number): void\n\n---@class Object\n---@field name string\n\n--- This object's type.\n---@deprecated Use type instead.\n---@field Object.tag string\n\n---@shape ButtonElement\n---@field tag \"Button\"\n").unwrap();
+    fs::write(&library, "---@class Color\n---@field r number\nlocal Color\n\n--- Sets the colour's components.\n---@param r number\n---@param g number\n---@param b number\nfunction Color:set(r, g, b) end\n\n---@class Vector\n---@field x number\nlocal Vector\n\n--- Sets the vector's components.\n---@param x number # New X.\nfunction Vector:set(x) end\n\n---@class Object\n---@field name string\n\n--- This object's type.\n---@deprecated Use type instead.\n---@field Object.tag string\n\n---@shape ButtonElement\n---@field tag \"Button\"\n").unwrap();
     let main = root.join("main.lua");
     let text = "---@param vector Vector\nlocal function move(vector)\n    vector:set(1)\nend\n---@param element ButtonElement\nlocal function probe(element)\n    local kind = element.tag\n    local other = element.\nend\n";
     fs::write(&main, text).unwrap();
@@ -1070,11 +1070,11 @@ fn a_members_origins_and_documentation_are_its_owners() {
     assert!(signature.contains("Sets the vector's components.") && !signature.contains("colour"), "{signature}");
     let definition = server.request(4, "textDocument/definition", &main, 2, 12);
     assert_eq!(definition.matches(r#""uri""#).count(), 1, "{definition}");
-    assert!(definition.contains(r#""start":{"line":11,"#), "{definition}");
+    assert!(definition.contains(r#""start":{"line":16,"#), "{definition}");
     // Another class's deprecated field is not this shape's.
     let definition = server.request(5, "textDocument/definition", &main, 6, 26);
     assert_eq!(definition.matches(r#""uri""#).count(), 1, "{definition}");
-    assert!(definition.contains(r#""start":{"line":21,"#), "{definition}");
+    assert!(definition.contains(r#""start":{"line":26,"#), "{definition}");
     let completion = server.request(6, "textDocument/completion", &main, 7, 26);
     assert!(completion.contains(r#""label":"tag""#) && completion.contains(r#""detail":"\"Button\"""#), "{completion}");
     assert!(!completion.contains("Deprecated") && !completion.contains(r#""tags":[1]"#), "{completion}");
@@ -1083,10 +1083,10 @@ fn a_members_origins_and_documentation_are_its_owners() {
 }
 
 #[test]
-fn signature_help_documents_bodyless_global_and_member_functions() {
+fn signature_help_documents_declared_global_and_member_functions() {
     let root = fixture();
     let library = root.join("api.def.lua");
-    fs::write(&library, "---@class Methods\n\n--- Moves a member.\n---@function Methods.move(distance: number): boolean\n---@param distance number The spaces to move.\n\n--- Moves a global.\n---@param distance number The spaces it moves.\n---@function compact(distance: number): boolean\n\n---@type Methods\nMethods = nil\n\n--- Moves an ambient function.\n---@param distance number The ambient distance.\n---@return boolean Whether it moved.\nfunction ambientMove(distance) end\n").unwrap();
+    fs::write(&library, "---@class Methods\nMethods = {}\n\n--- Moves a member.\n---@param distance number The spaces to move.\n---@return boolean\nfunction Methods.move(distance) end\n\n--- Moves a global.\n---@param distance number The spaces it moves.\n---@return boolean\nfunction compact(distance) end\n\n--- Moves an ambient function.\n---@param distance number The ambient distance.\n---@return boolean Whether it moved.\nfunction ambientMove(distance) end\n").unwrap();
     let main = root.join("main.lua");
     let text = "Methods.move(1)\ncompact(1)\nambientMove(1)\n";
     fs::write(&main, text).unwrap();
@@ -1095,7 +1095,7 @@ fn signature_help_documents_bodyless_global_and_member_functions() {
     server.initialize(&root);
     server.open(&main, text);
     server.diagnostics(&main, |_| true);
-    // Written heads and ambient function statements both retain their own documentation.
+    // Each declared function retains its own documentation.
     let member = server.request(2, "textDocument/signatureHelp", &main, 0, 13);
     assert!(member.contains("Moves a member.") && member.contains("The spaces to move."), "{member}");
     let global = server.request(3, "textDocument/signatureHelp", &main, 1, 8);
@@ -1113,7 +1113,7 @@ fn signature_help_documents_bodyless_global_and_member_functions() {
 fn signature_help_and_hover_keep_each_global_overloads_documentation() {
     let root = fixture();
     let library = root.join("api.def.lua");
-    fs::write(&library, "--- Looks up a label.\n---@param value string The textual label.\n---@function auditPick(value: string): string\n\n--- Looks up a numeric count and label.\n---@param count number The numeric count.\n---@param label string The count label.\n---@function auditPick(count: number, label: string): number\n\n--- Shared fallback description.\n---@param value string The fallback value.\n---@function fallback(value: string): string\n\n---@function fallback(count: number): number\n").unwrap();
+    fs::write(&library, "--- Looks up a label.\n---@param value string The textual label.\n---@return string\nfunction auditPick(value) end\n\n--- Looks up a numeric count and label.\n---@param count number The numeric count.\n---@param label string The count label.\n---@return number\nfunction auditPick(count, label) end\n\n--- Shared fallback description.\n---@param value string The fallback value.\n---@return string\nfunction fallback(value) end\n\n---@param count number\n---@return number\nfunction fallback(count) end\n").unwrap();
     let main = root.join("main.lua");
     let text = "auditPick(1, \"x\")\nlocal alias = auditPick\nalias(1, \"x\")\nfallback(1)\n";
     fs::write(&main, text).unwrap();
@@ -1154,7 +1154,7 @@ fn signature_help_and_hover_keep_each_global_overloads_documentation() {
 fn inherited_generic_member_overloads_keep_their_documentation_through_aliases() {
     let root = fixture();
     let library = root.join("api.def.lua");
-    fs::write(&library, "---@class Box<T>\n\n--- Reads one stored value.\n---@param value T The stored value.\n---@function Box:pick(value: T): T\n\n--- Reads by count and label.\n---@param count number The member count.\n---@param label string The member label.\n---@function Box:pick(count: number, label: string): T\n\n---@class Derived: Box<string>\n\n---@alias Alias Derived\n").unwrap();
+    fs::write(&library, "---@class Box<T>\nlocal Box\n\n--- Reads one stored value.\n---@param value T The stored value.\n---@return T\nfunction Box:pick(value) end\n\n--- Reads by count and label.\n---@param count number The member count.\n---@param label string The member label.\n---@return T\nfunction Box:pick(count, label) end\n\n---@class Derived: Box<string>\n\n---@alias Alias Derived\n").unwrap();
     let main = root.join("main.lua");
     let text = "---@param box Alias\nlocal function use(box)\n    box:pick(1, \"x\")\n    box[\"pick\"](box, 1, \"x\")\nend\nreturn use\n";
     fs::write(&main, text).unwrap();
@@ -1238,7 +1238,7 @@ fn host_callbacks_complete_as_implementations() {
 fn deprecated_declarations_are_marked_and_explained() {
     let root = fixture();
     let library = root.join("api.def.lua");
-    fs::write(&library, "--- Summary explaining the old API and its replacement.\n---@deprecated Use newApi instead.\n---@function oldApi(value: string): boolean\n\n--- The new API.\n---@function newApi(value: string): boolean\n").unwrap();
+    fs::write(&library, "--- Summary explaining the old API and its replacement.\n---@deprecated Use newApi instead.\n---@param value string\n---@return boolean\nfunction oldApi(value) end\n\n--- The new API.\n---@param value string\n---@return boolean\nfunction newApi(value) end\n").unwrap();
     let main = root.join("main.lua");
     let source = "local ok = oldApi('x')\n";
     fs::write(&main, source).unwrap();
@@ -1358,7 +1358,7 @@ fn renames_that_would_merge_or_capture_names_are_refused() {
 fn library_declarations_are_navigable_but_not_renamed() {
     let root = fixture();
     let library = root.join("api.def.lua");
-    fs::write(&library, "---@class tts__Vector\n---@field x number\n\n---@class tts__Object\n---@field tag string\n\n---@function tts__Object.getPosition(): tts__Vector\n\n---@param guid string\n---@return tts__Object\nfunction getObjectFromGUID(guid) end\n\n---@type nil | fun(player_color: string, object: tts__Object): void\n_G.onObjectDrop = nil\n").unwrap();
+    fs::write(&library, "---@class tts__Vector\n---@field x number\n\n---@class tts__Object\n---@field tag string\nlocal Object\n\n---@return tts__Vector\nfunction Object.getPosition() end\n\n---@param guid string\n---@return tts__Object\nfunction getObjectFromGUID(guid) end\n\n---@type nil | fun(player_color: string, object: tts__Object): void\n_G.onObjectDrop = nil\n").unwrap();
     let main = root.join("main.lua");
     let text = "function onObjectDrop(colour, dropped)\n    local position = dropped.getPosition()\n    print(position.x, dropped.tag)\n    local found = getObjectFromGUID('abc')\nend\n\nlocal function lookup()\n    local getObjectFromGUID = 1\n    return getObjectFromGUID\nend\n";
     fs::write(&main, text).unwrap();
@@ -1367,10 +1367,10 @@ fn library_declarations_are_navigable_but_not_renamed() {
     server.initialize(&root);
     server.open(&main, text);
     server.diagnostics(&main, |_| true);
-    // A bodyless `---@function`'s definition is its declaration in the library.
+    // A declared function's definition is its declaration in the library.
     let (line, character) = position(text, "getPosition", 0);
     let definition = server.request(2, "textDocument/definition", &main, line, character + 1);
-    assert!(definition.contains(&uri(&library)) && definition.contains(r#""start":{"line":6,"character":25}"#), "{definition}");
+    assert!(definition.contains(&uri(&library)) && definition.contains(r#""start":{"line":8,"#), "{definition}");
     // The library's members, types, functions and callbacks are not the project's to rename.
     let refused = |response: &str| response.contains("-32803") && response.contains("declared by a library");
     for (id, needle) in [(3, "getPosition"), (4, "tag)"), (5, "x,"), (6, "getObjectFromGUID('"), (7, "onObjectDrop")] {

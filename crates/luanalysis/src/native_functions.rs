@@ -122,7 +122,6 @@ pub(super) struct NativeRegistry {
     named: std::sync::Arc<NativeNamed>,
     header_metadata: RefCell<named_provider::SourceHeaderMetadata>,
     pub(super) members: super::native_members::NativeMembers,
-    pub(super) doc_members: super::native_doc_members::NativeDocMembers,
     pub(super) runtime_tables: super::native_runtime_tables::NativeRuntimeTables,
     /// The runtime-table constructor each original store's receiver names, as a
     /// binder sees it (`runtime_store_owner`). Computed once per registry.
@@ -278,7 +277,7 @@ impl SourceRecipes {
         let flow = NativeFlowSources::new_with_snapshot(file, bound, snapshot, &function_spans, identity.flow).shared_recipes();
         let signatures = super::native_signatures::NativeSignatures::new(snapshot, file, &functions, &named);
         let type_scopes = type_scope_recipes(snapshot, &functions, bound);
-        let named_scopes = named.declarations().iter().map(|source| source.generic_scope.clone()).chain(signatures.scopes(file)).collect();
+        let named_scopes = named.declarations().iter().map(|source| source.generic_scope.clone()).chain(signatures.scopes()).collect();
         Self(std::sync::Arc::new(SourceRecipeParts {
             signatures: std::sync::Arc::new(signatures),
             type_scopes: std::sync::Arc::new(type_scopes),
@@ -330,14 +329,6 @@ impl NativeRegistry {
             (NativeFunctionCheckState::Provisional, _) | (_, NativeFunctionCheckState::Provisional) => NativeFunctionCheckState::Provisional,
             _ => NativeFunctionCheckState::Final,
         }
-    }
-
-    pub(super) fn invalidate_header_metadata(&self) {
-        self.header_metadata.borrow_mut().invalidate();
-    }
-    #[cfg(test)]
-    pub(super) fn header_metadata_revision(&self) -> (u64, u64) {
-        (self.types.own_metadata_revision(), self.header_metadata.borrow().generation())
     }
 
     pub(super) fn new(file: File, bound: BoundFile) -> Self {
@@ -433,7 +424,6 @@ impl NativeRegistry {
         let runtime_tables = super::native_runtime_tables::NativeRuntimeTables::from_recipes(std::sync::Arc::clone(&derived_recipes.runtime_tables));
         let globals = std::sync::Arc::clone(&derived_recipes.globals);
         let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));
-        let doc_members = super::native_doc_members::NativeDocMembers::new(snapshot,&file,&named,members.namespace_end(),|name|named.candidates(name).iter().map(|key|luanalysis_engine::NativeTypeDeclarationKey {snapshot:key.snapshot,index:key.index}).collect());
         let mut report = CheckReport::default();
         report.diagnostics.extend(file.diagnostics.iter().map(|diagnostic| Diagnostic {
             code: "LUA1001",
@@ -464,7 +454,6 @@ impl NativeRegistry {
             named,
             header_metadata: RefCell::new(named_provider::SourceHeaderMetadata::default()),
             members,
-            doc_members,
             runtime_tables,
             runtime_store_owners: Default::default(),
             table_escapes: Default::default(),
@@ -507,12 +496,11 @@ impl NativeRegistry {
         registry
     }
 
-    /// What a registry outside any project derives alone: its members, its documentation's
-    /// owners and a global index of its own. A project derives them for every source with the
-    /// project's names and globals (`ProjectRegistry`).
+    /// What a registry outside any project derives alone: its members and a global index of its
+    /// own. A project derives them for every source with the project's names and globals
+    /// (`ProjectRegistry`).
     fn complete_standalone(&mut self) {
         self.rebuild_original_members();
-        self.attach_documentation_signature_owners();
         self.project_globals = Some(std::rc::Rc::new(globals::ProjectGlobalIndex::new(
             luanalysis_engine::NativeEnvironmentKey { snapshot: self.snapshot, index: 0 }, &[&*self],
         )));
@@ -644,15 +632,15 @@ impl NativeRegistry {
             inputs.extend(self.original_external_method_inputs());
         }
         self.members = super::native_members::NativeMembers::new(self.snapshot, &self.named, inputs, self.globals.member_namespace_end(self.named.next_member_index()));
-        self.rebuild_documentation_members();
+        self.register_runtime_table_keys();
         for (context, owner) in self.original_member_owner_scopes() {
             self.types.attach_owner_scope(context, owner);
         }
     }
-    pub(super) fn rebuild_documentation_members(&mut self) {
+    /// Runtime-table member keys follow the original members'.
+    pub(super) fn register_runtime_table_keys(&mut self) {
         self.header_metadata.get_mut().invalidate();
-        self.doc_members=super::native_doc_members::NativeDocMembers::new(self.snapshot,&self.file,&self.named,self.members.namespace_end(),|name|self.named_candidates(name));
-        self.runtime_tables.register_keys(self.snapshot,(self.named.declarations().len()+self.named.anonymous_heads().len()).try_into().expect("original declaration namespace fits u32"),self.doc_members.namespace_end());
+        self.runtime_tables.register_keys(self.snapshot,(self.named.declarations().len()+self.named.anonymous_heads().len()).try_into().expect("original declaration namespace fits u32"),self.members.namespace_end());
     }
 
     pub(crate) fn set_legacy_builtin_policy(&mut self, policy: super::builtins::LegacyBuiltinPolicy) {
@@ -961,7 +949,6 @@ impl NativeRegistry {
     )> {
         self.project_names.as_ref().map(|names| (&names.result_pack_aliases, &names.result_pack_alias_summaries))
     }
-    pub(crate) fn documentation_function(&self,id:luanalysis_syntax::DocFunctionDeclarationId)->Option<&luanalysis_syntax::DocFunctionDeclaration> { self.file.function_declarations.iter().find(|source|source.id==id) }
 
     fn key(&self, index: u32) -> NativeFunctionKey {
         NativeFunctionKey {
@@ -2932,7 +2919,6 @@ impl NativeTypeProvider for NativeRegistry {
     fn value_declaration_contract(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
         self.global_contract(key, queries)
     }
-    fn value_declaration_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> { self.global_declaration_signatures(key) }
     fn value_declaration_function_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> { self.global_function_signatures(key) }
     fn value_declaration_initializer(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Type {
         self.global_initializer(key, queries)
@@ -3029,9 +3015,6 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn type_member_header(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TypeMemberHeader {
         self.named_member_header(key)
-    }
-    fn type_member_signatures(&self,key:luanalysis_engine::NativeTypeMemberKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> {
-        self.doc_members.signature_keys(key,|id|self.doc_signature_key(id))
     }
     fn type_member_is_function_type(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
         self.named_member_is_function_type(key)

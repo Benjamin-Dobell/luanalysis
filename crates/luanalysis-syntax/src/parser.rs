@@ -51,7 +51,6 @@ pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl 
         statements,
         expression_assertions: parser.expression_assertions,
         type_declarations: parser.type_declarations,
-        function_declarations: parser.function_declarations,
         type_extensions: parser.type_extensions,
         overload_annotations: parser.overload_annotations,
         operator_annotations: parser.operator_annotations,
@@ -84,7 +83,6 @@ struct Parser<'a> {
     pending_value_casts: Vec<types::CastAnnotation>,
     field_widenings: Vec<crate::FieldWidening>,
     type_declarations: Vec<NamedTypeDeclaration>,
-    function_declarations: Vec<crate::DocFunctionDeclaration>,
     type_extensions: Vec<TypeExtension>,
     expression_assertions: Vec<crate::ExpressionAssertion>,
     overload_annotations: Vec<OverloadAnnotation>,
@@ -111,8 +109,6 @@ struct DocumentationGroup {
     record: Option<usize>,
     overloads: Vec<usize>,
     operators: Vec<usize>,
-    functions: Vec<usize>,
-    active_function: Option<usize>,
     /// `---@enum` declarations, and whether each is `(key)`.
     enumerations: Vec<(usize, bool)>,
 }
@@ -239,7 +235,6 @@ impl<'a> Parser<'a> {
             pending_value_casts: Vec::new(),
             field_widenings: Vec::new(),
             type_declarations: Vec::new(),
-            function_declarations: Vec::new(),
             type_extensions: Vec::new(),
             expression_assertions: Vec::new(),
             overload_annotations: Vec::new(),
@@ -345,9 +340,6 @@ impl<'a> Parser<'a> {
             }
             let before = self.pos;
             let group = self.documentation_group.take();
-            if let Some(group) = &group {
-                self.finish_documentation_functions(group);
-            }
             let visibility = self.pending_annotations.visibility.take();
             let value_casts = std::mem::take(&mut self.pending_value_casts);
             let stmt = self.statement();
@@ -369,9 +361,7 @@ impl<'a> Parser<'a> {
         }
         let annotations = std::mem::take(&mut self.pending_annotations);
         self.unattached_annotations(&annotations);
-        if let Some(group) = self.documentation_group.take() {
-            self.finish_documentation_functions(&group);
-        }
+        self.documentation_group = None;
         self.finish_block_casts(widenings);
         statements
     }
@@ -399,40 +389,6 @@ impl<'a> Parser<'a> {
         };
         self.member_visibilities.extend(targets.into_iter().map(|target| crate::MemberVisibility { target, visibility }));
     }
-    fn finish_documentation_functions(&mut self, group: &DocumentationGroup) {
-        let owners = group
-            .declarations
-            .iter()
-            .filter(|&&index| {
-                matches!(self.type_declarations[index].kind,
-                    NamedTypeDeclarationKind::Record {
-                        flavor: crate::NamedRecordKind::Class | crate::NamedRecordKind::Shape, ..
-                    })
-            })
-            .count();
-        for &index in &group.functions {
-            let declaration = &mut self.function_declarations[index];
-            if declaration.owner.is_some() {
-                continue;
-            }
-            let message = if owners > 1 {
-                Some("@function has multiple class or shape owners in its documentation group")
-            } else if declaration.method_colon.is_some() {
-                Some("@function implicit-self member requires an explicit or documentation-group owner")
-            } else {
-                None
-            };
-            declaration.invalid_owner = message.is_some();
-            if let Some(message) = message {
-                self.diagnostics.push(Diagnostic {
-                    origin: crate::DiagnosticOrigin::Annotation,
-                    span: declaration.name.span,
-                    message: message.into(),
-                });
-            }
-        }
-    }
-
     fn attach_type_group(&mut self, group: DocumentationGroup, statement: &Stmt) {
         let gap = &self.source[group.span.end..statement.span.start];
         if !documentation_gap_is_contiguous(gap) {
@@ -486,9 +442,6 @@ impl<'a> Parser<'a> {
             documentation_gap_is_contiguous(gap)
         });
         if !contiguous {
-            if let Some(group) = self.documentation_group.take() {
-                self.finish_documentation_functions(&group);
-            }
             self.documentation_group = Some(DocumentationGroup {
                 span: comment.span,
                 declarations: Vec::new(),
@@ -496,8 +449,6 @@ impl<'a> Parser<'a> {
                 record: None,
                 overloads: Vec::new(),
                 operators: Vec::new(),
-                functions: Vec::new(),
-                active_function: None,
                 enumerations: Vec::new(),
             });
         }
@@ -515,54 +466,9 @@ impl<'a> Parser<'a> {
                         id, signature, span, tag_span, group_span: group.span, named_candidates: Vec::new(), in_type: false,
                     });
                     group.overloads.push(index);
-                    let reference = OverloadReference { id, span };
-                    if let Some(index) = group.active_function {
-                        self.function_declarations[index].annotations.overloads.push(reference);
-                    } else {
-                        documentation.functions.overloads.push(reference);
-                    }
-                }
-                types::DeclarationItem::Function {
-                    name,
-                    explicit_owner,
-                    method_colon,
-                    signature,
-                    mut annotations,
-                    span,
-                    tag_span,
-                } => {
-                    let index = self.function_declarations.len();
-                    let id = crate::DocFunctionDeclarationId(
-                        index.try_into().expect("documentation function index fits u32"),
-                    );
-                    if types::annotation_spans(&self.pending_annotations)
-                        .iter()
-                        .all(|span| span.start >= group.span.start)
-                    {
-                        types::merge_annotations(
-                            &mut annotations,
-                            std::mem::take(&mut self.pending_annotations),
-                            true,
-                            &mut self.diagnostics,
-                        );
-                    }
-                    self.function_declarations.push(crate::DocFunctionDeclaration {
-                        id,
-                        name,
-                        owner: explicit_owner.map(crate::DocFunctionOwner::Explicit),
-                        invalid_owner: false,
-                        method_colon,
-                        signature: *signature,
-                        annotations,
-                        span,
-                        tag_span,
-                        group_span: group.span,
-                    });
-                    group.functions.push(index);
-                    group.active_function = Some(index);
+                    documentation.functions.overloads.push(OverloadReference { id, span });
                 }
                 types::DeclarationItem::Named { name, generics, kind, span, enumeration } => {
-                    group.active_function = None;
                     let index = self.type_declarations.len();
                     if let Some(keys) = enumeration { group.enumerations.push((index, keys)); }
                     let record = matches!(kind, NamedTypeDeclarationKind::Record { .. });
@@ -583,14 +489,12 @@ impl<'a> Parser<'a> {
                     }
                 }
                 types::DeclarationItem::Operator { operator, signature, span, tag_span } => {
-                    group.active_function = None;
                     group.operators.push(self.operator_annotations.len());
                     self.operator_annotations.push(crate::OperatorAnnotation {
                         operator, signature, span, tag_span, group_span: group.span, named_candidates: Vec::new(),
                     });
                 }
                 types::DeclarationItem::Field(field) => {
-                    group.active_function = None;
                     let record = group.record.filter(|&index| {
                         field.explicit_owner.as_ref().is_none_or(|owner| {
                             owner.text == self.type_declarations[index].name.text
@@ -639,31 +543,6 @@ impl<'a> Parser<'a> {
         for &index in &group.operators {
             self.operator_annotations[index].group_span = group.span;
             self.operator_annotations[index].named_candidates.clone_from(&named_candidates);
-        }
-        let owners: Vec<_> = group.declarations.iter().filter_map(|&index| {
-            matches!(self.type_declarations[index].kind,
-                NamedTypeDeclarationKind::Record {
-                    flavor: crate::NamedRecordKind::Class | crate::NamedRecordKind::Shape, ..
-                })
-                .then_some(self.type_declarations[index].id)
-        }).collect();
-        for &index in &group.functions {
-            let declaration = &mut self.function_declarations[index];
-            declaration.group_span = group.span;
-            if !matches!(declaration.owner, Some(crate::DocFunctionOwner::Explicit(_))) {
-                declaration.owner = match owners.as_slice() {
-                    [owner] => Some(crate::DocFunctionOwner::Contextual(*owner)),
-                    _ => None,
-                };
-            }
-        }
-        if let Some(index) = group.active_function {
-            types::merge_annotations(
-                &mut self.function_declarations[index].annotations,
-                std::mem::take(&mut documentation.functions),
-                true,
-                &mut self.diagnostics,
-            );
         }
         documentation.functions
     }
@@ -793,9 +672,6 @@ impl<'a> Parser<'a> {
         self.diagnostics.extend(diagnostics);
         let outer = self.documentation_group.take();
         let annotations = self.record_documentation(comment, annotations);
-        if let Some(group) = self.documentation_group.take() {
-            self.finish_documentation_functions(&group);
-        }
         self.documentation_group = outer;
         annotations
     }

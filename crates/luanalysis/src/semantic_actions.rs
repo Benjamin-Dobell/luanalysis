@@ -53,7 +53,6 @@ pub fn actions(
                     }
                 }
             }
-            for declaration in &syntax.function_declarations { builder.annotation_function(&declaration.signature); }
             for overload in &syntax.overload_annotations { builder.annotation_function(&overload.signature); }
             builder.actions.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.edits[0].span.start.cmp(&b.edits[0].span.start)));
             builder.actions.dedup();

@@ -141,17 +141,16 @@ fn a_label_repeats_only_one_declared_before_it() {
 }
 
 #[test]
-fn dotted_owners_qualify_function_and_field_declarations() {
+fn dotted_owners_qualify_field_declarations() {
     let file = checked(concat!(
-        "---@function parser.object:visit(node: parser.object): boolean\n",
-        "---@function parser.object.create(): parser.object\n",
+        "---@field parser.object.visit fun(self: parser.object, node: parser.object): boolean\n",
         "---@field parser.object.kind string\n",
     ));
-    let owners: Vec<_> = file.function_declarations.iter().map(|declaration| {
-        let Some(DocFunctionOwner::Explicit(owner)) = &declaration.owner else { panic!("an explicit owner") };
-        (owner.text.as_str(), declaration.name.text.as_str())
-    }).collect();
-    assert_eq!(owners, [("parser.object", "visit"), ("parser.object", "create")]);
+    let owners: Vec<_> = file.type_extensions.iter().flat_map(|extension| extension.fields.iter().map(|field| {
+        let TypeFieldKey::Named(name) = &field.key else { panic!("a named field") };
+        (extension.owner.text.as_str(), name.text.as_str())
+    })).collect();
+    assert_eq!(owners, [("parser.object", "visit"), ("parser.object", "kind")]);
 }
 
 #[test]

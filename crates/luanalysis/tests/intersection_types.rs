@@ -4,7 +4,7 @@
 //! known member's own type, though a single type's index signature would conflict with them.
 use luanalysis::check;
 
-const NAMESPACE: &str = "---@class ColorValue\n---@field r number\n\n---@class ColorStatics\n---@field __isColor true\n---@field Red ColorValue\n---@field list string[]\n---@function ColorStatics.fromString(value: string): ColorValue\n\n---@alias ColorNamespace ColorStatics & { [string]: ColorValue | nil }\n\n";
+const NAMESPACE: &str = "---@class ColorValue\n---@field r number\n\n---@class ColorStatics\n---@field __isColor true\n---@field Red ColorValue\n---@field list string[]\n---@field fromString fun(value: string): ColorValue\n\n---@alias ColorNamespace ColorStatics & { [string]: ColorValue | nil }\n\n";
 
 #[test]
 fn an_intersections_declared_members_keep_their_types_and_other_names_use_its_index_signatures() {

@@ -383,9 +383,7 @@ fn closers(prefix: &str) -> String {
 /// them need not.
 pub fn prepare(project: Project, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace) {
     let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
-    crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
-        registry.prepare_documentation_members(queries);
-    });
+    crate::project_check::with_project_session(project, options, workspace, |_, _, _| {});
 }
 
 /// The completions at `site` in `file`, whose text in `project` is `site.text`. `deliver`
@@ -423,7 +421,6 @@ fn completions(
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Vec<CompletionItem> {
     let Some(source) = registry.source(file) else { return Vec::new() };
-    registry.prepare_documentation_members(queries);
     let mut items = Vec::new();
     match site.context {
         CompletionContext::LocalAttribute { .. } => {}
@@ -764,13 +761,11 @@ fn argument_metadata_hints(
                 continue;
             }
             let Some(signature) = &recipe.signature else { continue };
-            let documentation = recipe.documentation.and_then(|id| source.documentation_function(id));
             let hidden = usize::from(luanalysis_engine::NativeTypeProvider::signature_is_method(source, key));
             let Some(index) = index.checked_sub(hidden) else { continue };
             if let Some(parameter) = signature.params.get(index) {
-                let ty = parameter.ty.as_ref().or_else(|| documentation.and_then(|doc| doc.annotations.params.iter().find(|annotation| annotation.name.text == parameter.name.text)).map(|annotation| &annotation.ty));
-                if let Some(ty) = ty { completion_hints(ty, &mut hints); }
-            } else if let Some(annotation) = signature.vararg.as_ref().or_else(|| documentation.and_then(|doc| doc.annotations.vararg.as_ref())) {
+                if let Some(ty) = &parameter.ty { completion_hints(ty, &mut hints); }
+            } else if let Some(annotation) = &signature.vararg {
                 completion_hints(&annotation.ty, &mut hints);
             }
         }
@@ -1376,7 +1371,6 @@ fn signatures(
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Option<SignatureHelp> {
     let source = registry.source(file)?;
-    registry.prepare_documentation_members(queries);
     let text = &site.text;
     let opens_at = |end: usize| text.get(end..site.open).is_some_and(|between| between.trim().is_empty());
     // The innermost call whose arguments open at the site's `(`.
@@ -1511,7 +1505,7 @@ pub fn documentation_markdown(documentation: &Documentation, parameters: bool) -
 }
 
 /// The documentation of a value's declaration: a native function's doc comments, or those of a
-/// written signature (`---@function`, `---@overload`).
+/// written signature (`---@overload`).
 fn value_documentation(
     project: &Project,
     registry: &crate::native_functions::project_provider::ProjectRegistry,
@@ -1538,7 +1532,7 @@ fn value_documentation(
 
 /// Where member `name` of `receiver` is declared: in the receiver's class (or runtime table)
 /// or one it extends, nearest first. Each site is a file, a span, and whether the span is a
-/// documentation tag (`---@field`, `---@function`) rather than a statement.
+/// documentation tag (`---@field`) rather than a statement.
 pub(crate) fn member_sites(
     registry: &crate::native_functions::project_provider::ProjectRegistry,
     receiver: &Type,
@@ -1588,7 +1582,7 @@ pub(crate) fn member_sites(
 }
 
 /// The documentation of member `name` of `receiver`: what its declaration's documentation says
-/// (a `---@field`'s description, a `---@function`'s or a function statement's doc comments), or
+/// (a `---@field`'s description or a function statement's doc comments), or
 /// failing that, its value's.
 fn member_documentation(
     project: &Project,
@@ -1616,7 +1610,7 @@ fn member_documentation(
 }
 
 /// The documentation of the global `name`: what its declaration's doc comments say, whether it
-/// is declared by a statement or a `---@function` tag.
+/// is declared by a statement.
 fn global_documentation(
     project: &Project,
     registry: &crate::native_functions::project_provider::ProjectRegistry,
@@ -1685,7 +1679,6 @@ fn overload_hover_documentation(
 ) -> Option<String> {
     let source = registry.source(file)?;
     let text = &project.file(file)?.source;
-    registry.prepare_documentation_members(queries);
     let contains = |span: Span| span.start <= offset && offset <= span.end;
     let mut member = None;
     let mut name = None;
@@ -1755,7 +1748,6 @@ fn documentation_at_offset(
 ) -> Option<Documentation> {
     let source = registry.source(file)?;
     let text = &project.file(file)?.source;
-    registry.prepare_documentation_members(queries);
     let contains = |span: Span| span.start <= offset && offset <= span.end;
     let mut member = None;
     let mut name = None;
@@ -1838,7 +1830,6 @@ fn navigation(
     if let Some(at) = names.iter().find(|name| contains(name.span)) {
         return type_navigation(project, registry, file, at, &names, references);
     }
-    registry.prepare_documentation_members(queries);
     let (name, span, sites) = member_target(registry, file, text, offset, queries)?;
     let mut navigation = Navigation { name: name.clone(), span, ..Navigation::default() };
     if references {
@@ -1908,7 +1899,7 @@ fn type_navigation(
 }
 
 /// The member named at `offset`: in `receiver.name`, `receiver:name(...)`, a table constructor's
-/// `name = value`, a `---@field name` or a `---@function Owner.name`; with its span and the
+/// `name = value` or a `---@field name`; with its span and the
 /// sites that declare it.
 fn member_target(
     registry: &crate::native_functions::project_provider::ProjectRegistry,
@@ -1934,11 +1925,6 @@ fn member_target(
             if let luanalysis_syntax::TypeFieldKey::Named(name) = &field.key && contains(name.span) {
                 return Some((name.text.clone(), name.span, vec![(file, field.span, true)]));
             }
-        }
-    }
-    for declaration in &syntax.function_declarations {
-        if declaration.owner.is_some() && contains(declaration.name.span) {
-            return Some((declaration.name.text.clone(), declaration.name.span, vec![(file, declaration.span, true)]));
         }
     }
     let mut found = None;
@@ -2010,7 +1996,7 @@ fn type_definitions(
 }
 
 /// Every use of the member declared at `sites` in the project: member reads and calls, table
-/// constructor keys, `---@field` and `---@function` tags. A use's receiver is typed at its flow
+/// constructor keys and `---@field` tags. A use's receiver is typed at its flow
 /// position; one whose members are declared elsewhere is another member of the same name.
 fn member_occurrences(
     project: &Project,
@@ -2043,11 +2029,6 @@ fn member_occurrences(
                 {
                     add_occurrence(navigation, &other.path, &other.source, field_name.span, true);
                 }
-            }
-        }
-        for declaration in &syntax.function_declarations {
-            if declaration.name.text == name && sites.contains(&(other.id, declaration.span, true)) {
-                add_occurrence(navigation, &other.path, &other.source, declaration.name.span, true);
             }
         }
         let mut candidates = Vec::new();
@@ -2198,7 +2179,6 @@ fn renaming(
         if let Some(name) = name.filter(|name| *name != at.name) { type_rename_conflict(project, registry, file, at, &names, &navigation, name)?; }
         return Ok(Some(navigation));
     }
-    registry.prepare_documentation_members(queries);
     let Some((member, span, sites)) = member_target(registry, file, text, offset, queries) else { return Ok(None) };
     let mut navigation = Navigation { name: member.clone(), span, ..Navigation::default() };
     for &(site_file, site, _) in &sites {
@@ -2243,7 +2223,7 @@ fn owned_by_library(project: &Project, navigation: &Navigation) -> Result<(), Re
     }
 }
 
-/// The name of the type whose member the `---@field` or `---@function` at `site` declares.
+/// The name of the type whose member the `---@field` at `site` declares.
 fn tag_owner(syntax: &luanalysis_syntax::File, site: Span) -> Option<String> {
     for declaration in &syntax.type_declarations {
         if let luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } = &declaration.kind
@@ -2252,17 +2232,11 @@ fn tag_owner(syntax: &luanalysis_syntax::File, site: Span) -> Option<String> {
             return Some(declaration.name.text.clone());
         }
     }
-    if let Some(extension) = syntax.type_extensions.iter().find(|extension| extension.fields.iter().any(|field| field.span == site)) {
-        return Some(extension.owner.text.clone());
-    }
-    let declaration = syntax.function_declarations.iter().find(|declaration| declaration.span == site)?;
-    match declaration.owner.as_ref()? {
-        luanalysis_syntax::DocFunctionOwner::Explicit(owner) => Some(owner.text.clone()),
-        luanalysis_syntax::DocFunctionOwner::Contextual(id) => syntax.type_declarations.iter().find(|declaration| declaration.id == *id).map(|declaration| declaration.name.text.clone()),
-    }
+    syntax.type_extensions.iter().find(|extension| extension.fields.iter().any(|field| field.span == site))
+        .map(|extension| extension.owner.text.clone())
 }
 
-/// The span of a member name `syntax` declares for `owner` with a `---@field` or `---@function`.
+/// The span of a member name `syntax` declares for `owner` with a `---@field`.
 fn tag_declares(syntax: &luanalysis_syntax::File, owner: &str, name: &str) -> Option<Span> {
     let named = |key: &luanalysis_syntax::TypeFieldKey| match key {
         luanalysis_syntax::TypeFieldKey::Named(field) if field.text == name => Some(field.span),
@@ -2276,16 +2250,8 @@ fn tag_declares(syntax: &luanalysis_syntax::File, owner: &str, name: &str) -> Op
             return Some(span);
         }
     }
-    for extension in &syntax.type_extensions {
-        if extension.owner.text == owner && let Some(span) = extension.fields.iter().find_map(|field| named(&field.key)) {
-            return Some(span);
-        }
-    }
-    syntax.function_declarations.iter().find(|declaration| declaration.name.text == name && match &declaration.owner {
-        Some(luanalysis_syntax::DocFunctionOwner::Explicit(explicit)) => explicit.text == owner,
-        Some(luanalysis_syntax::DocFunctionOwner::Contextual(id)) => syntax.type_declarations.iter().any(|declaration| declaration.id == *id && declaration.name.text == owner),
-        None => false,
-    }).map(|declaration| declaration.name.span)
+    syntax.type_extensions.iter().filter(|extension| extension.owner.text == owner)
+        .find_map(|extension| extension.fields.iter().find_map(|field| named(&field.key)))
 }
 
 /// Why renaming type name `at` of `file` (whose type names are `names`) to `name` would change
@@ -3461,7 +3427,6 @@ fn calls(
 ) -> Option<CallHierarchy> {
     let source = registry.source(file)?;
     let contains = |span: Span| span.start <= offset && offset <= span.end;
-    registry.prepare_documentation_members(queries);
     // The function declared at the position, or failing that, called there.
     let callee_key = |source: &crate::native_functions::NativeRegistry, callee: Span, method: Option<&str>, queries: &mut dyn luanalysis_engine::TypeQueries| {
         let value = source.source_check_expression(source.expression_key_for_span(callee), None, NativeCheckMode::empty(), queries);
@@ -3830,7 +3795,7 @@ mod tests {
         assert!(items.iter().any(|item| item.label == "Suggested.PUBLIC"));
         assert!(!items.iter().any(|item| item.label == "Private.IMPLEMENTATION"));
 
-        let text = "---@param callback function | `function(event) end`\n---@function listen(callback)\nlisten(--[[caret]]";
+        let text = "---@type fun(callback: function | `function(event) end`)\nlocal listen\nlisten(--[[caret]]";
         let (_, _, items) = completion_buffer(text, None);
         assert!(items.iter().any(|item| item.label == "function(event) end"));
     }

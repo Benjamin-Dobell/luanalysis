@@ -15,9 +15,9 @@ const PROFILES: [(StandardEnvironmentProfile, &str); 2] = [
     (StandardEnvironmentProfile::Lua52, "5.2"),
     (StandardEnvironmentProfile::Lua54, "5.4"),
 ];
-const CONSUMERS: &str = "---@function takeArray(values:number[]):void\n---@function takeDictionary(values:table<number,number>):void\n\n";
+const CONSUMERS: &str = "local takeArray = --[[---@type fun(values:number[]):void]] (nil)\nlocal takeDictionary = --[[---@type fun(values:table<number,number>):void]] (nil)\n\n";
 const CHOOSE: &str =
-    "---@function choose<T>(first:T[],...:T[]):T[]\n---@function choose<T>(first:T,...:T):T\n\n";
+    "local choose = --[[---@type (fun<T>(first:T[],...:T[]):T[]) & (fun<T>(first:T,...:T):T)]] (nil)\n\n";
 const CONTAINERS: &str = r#"---@shape Options
 ---@field limit number
 ---@field label string
@@ -463,7 +463,7 @@ fn cli_preserves_original_array_argument_ranges_and_accepts_dictionary_correctio
 #[test]
 fn nullable_arrays_accept_original_dense_nil_slots_with_and_without_context() {
     let fixture = Fixture::new();
-    let source = r#"---@function takeNullable(values:(number|nil)[]):void
+    let source = r#"local takeNullable = --[[---@type fun(values:(number|nil)[]):void]] (nil)
 
 ---@type (number|nil)[]
 local contextual={nil,1}
@@ -489,7 +489,7 @@ local retainedSecond=values[2]
 #[test]
 fn generic_array_element_inference_keeps_nil_from_original_constructor_rows() {
     let fixture = Fixture::new();
-    let source = r#"---@function elements<T>(values:T[]):T
+    let source = r#"local elements = --[[---@type fun<T>(values:T[]):T]] (nil)
 local values={nil,1}
 local element=elements(values)
 ---@type number|nil
@@ -539,8 +539,8 @@ local values={nil,1}
 return {identity=identity,values=values}
 "#,
     );
-    let source = r#"---@function arrayIdentity<T>(values:T[]):T[]
----@function takeNullable(values:(number|nil)[]):void
+    let source = r#"local arrayIdentity = --[[---@type fun<T>(values:T[]):T[] ]] (nil)
+local takeNullable = --[[---@type fun(values:(number|nil)[]):void]] (nil)
 local arrays=require('nullable_arrays')
 local values={nil,1}
 local mapped=arrayIdentity(values)
@@ -633,7 +633,7 @@ fn constructor_rows_still_reject_nil_for_nonnullable_arrays_and_wrong_element_ty
         ("(number|nil)[]", "{nil,'wrong'}", "{nil,1}"),
     ] {
         let call = format!("take({literal})");
-        let source = format!("---@function take(values:{annotation}):void\n{call}\n");
+        let source = format!("local take = --[[---@type fun(values:{annotation}):void]] (nil)\n{call}\n");
         let corrected = source.replace(&call, &format!("take({correction})"));
         for (profile, _) in PROFILES {
             error_at(
@@ -653,7 +653,7 @@ fn nullable_array_elements_do_not_make_explicit_constructor_gaps_dense() {
     let fixture = Fixture::new();
     for (source, code, statement) in [
         (
-            "---@function take(values:(number|nil)[]):void\ntake({[2]=1})\n",
+            "local take = --[[---@type fun(values:(number|nil)[]):void]] (nil)\ntake({[2]=1})\n",
             "TS2345",
             "take({[2]=1})",
         ),
@@ -680,7 +680,7 @@ fn nullable_array_elements_do_not_make_explicit_constructor_gaps_dense() {
 #[test]
 fn cli_rejects_original_nil_array_elements_at_original_ranges_and_accepts_correction() {
     let fixture = Fixture::new();
-    let source = "-- café\n---@function take(values:number[]):void\ntake({nil,1})\n";
+    let source = "-- café\nlocal take = --[[---@type fun(values:number[]):void]] (nil)\ntake({nil,1})\n";
     let corrected = source.replace("{nil,1}", "{0,1}");
     let (start, end) = span(source, "take({nil,1})", "{nil,1}");
     let range = format!("\"range\":{{\"start\":{start},\"end\":{end}}}");
@@ -709,7 +709,7 @@ fn cli_rejects_original_nil_array_elements_at_original_ranges_and_accepts_correc
 #[test]
 fn proven_writes_replace_original_nil_sequence_types_for_relation_and_inference() {
     let fixture = Fixture::new();
-    let source = "---@function take(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={nil,1}\nvalues[1]=2\ntake(values)\n---@type number\nlocal current=elements(values)\n";
+    let source = "local take = --[[---@type fun(values:number[]):void]] (nil)\nlocal elements = --[[---@type fun<T>(values:T[]):T]] (nil)\nlocal values={nil,1}\nvalues[1]=2\ntake(values)\n---@type number\nlocal current=elements(values)\n";
     let wrong = source.replace("values[1]=2", "values[1]='wrong'").replace(
         "---@type number\nlocal current",
         "---@type string|number\nlocal current",
@@ -730,7 +730,7 @@ fn proven_writes_replace_original_nil_sequence_types_for_relation_and_inference(
 #[test]
 fn proven_deletion_uses_current_nil_instead_of_the_preceding_numeric_store() {
     let fixture = Fixture::new();
-    let source = "---@function takeNullable(values:(number|nil)[]):void\n---@function takeNumber(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={nil,1}\nvalues[1]=2\nvalues[1]=nil\ntakeNullable(values)\n---@type number|nil\nlocal current=elements(values)\n";
+    let source = "local takeNullable = --[[---@type fun(values:(number|nil)[]):void]] (nil)\nlocal takeNumber = --[[---@type fun(values:number[]):void]] (nil)\nlocal elements = --[[---@type fun<T>(values:T[]):T]] (nil)\nlocal values={nil,1}\nvalues[1]=2\nvalues[1]=nil\ntakeNullable(values)\n---@type number|nil\nlocal current=elements(values)\n";
     let wrong_argument = source.replace("takeNullable(values)", "takeNumber(values)");
     let wrong_result = source.replace(
         "---@type number|nil\nlocal current",
@@ -772,7 +772,7 @@ fn replacing_or_deleting_a_written_number_preserves_its_contract_and_reached_vie
         ),
     ] {
         let source = format!(
-            "---@function take(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={{nil,--[[---@type number]]1}}\nvalues[1]=2\nvalues[2]={value}\n---@type {annotation}\nlocal current=elements(values)\n{}",
+            "local take = --[[---@type fun(values:number[]):void]] (nil)\nlocal elements = --[[---@type fun<T>(values:T[]):T]] (nil)\nlocal values={{nil,--[[---@type number]]1}}\nvalues[1]=2\nvalues[2]={value}\n---@type {annotation}\nlocal current=elements(values)\n{}",
             if value == "nil" { "" } else { "take(values)\n" }
         );
         let corrected = source.replace(&format!("values[2]={value}"), "values[2]=3");
@@ -815,11 +815,11 @@ fn replacing_or_deleting_a_written_number_preserves_its_contract_and_reached_vie
 #[test]
 fn contextual_nullable_literal_elements_keep_their_literal_and_reject_other_numbers() {
     let fixture = Fixture::new();
-    let source = "---@function take(values:(1|nil)[]):void\n\n---@type (1|nil)[]\nlocal values={nil,1}\ntake(values)\ntake({nil,1})\n";
+    let source = "local take = --[[---@type fun(values:(1|nil)[]):void]] (nil)\n\n---@type (1|nil)[]\nlocal values={nil,1}\ntake(values)\ntake({nil,1})\n";
     let wrong_local = source.replace("local values={nil,1}", "local values={nil,2}");
     let wrong_argument = source.replace("take({nil,1})", "take({nil,2})");
     let inferred =
-        "---@function take(values:(1|nil)[]):void\n\nlocal values={nil,1}\ntake(values)\n";
+        "local take = --[[---@type fun(values:(1|nil)[]):void]] (nil)\n\nlocal values={nil,1}\ntake(values)\n";
     let wrong_inferred = inferred.replace("{nil,1}", "{nil,2}");
     let wrong_store = format!("{inferred}values[2]=2\n");
     let corrected_store = wrong_store.replace("values[2]=2", "values[2]=1");

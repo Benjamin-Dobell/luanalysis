@@ -47,7 +47,7 @@ const USE: &str = "---@param hand Hand\nlocal function value(hand)\n    ---@type
 fn a_def_file_in_a_checked_directory_declares_and_is_not_run() {
     let project = Project::new(&[("types/Hand.def.lua", HAND), ("types/Pile.def.ttslua", "---@class Pile\nlocal Pile\n\n---@return number\nfunction Pile.count() end\n"), ("main.lua", USE)]);
     let report = project.check(&[Path::new(".")]);
-    // The stub's local is no nil value, and its bodyless function returns nothing it promises.
+    // The stub's local is no nil value, and its empty function returns nothing it promises.
     assert!(!report.contains("Hand.def.lua") && !report.contains("Pile.def.ttslua"), "{report}");
     assert!(report.contains("main.lua:4:19: error[TS2322]: Type 'string' is not assignable to type 'number'."), "{report}");
     // As one named explicitly, and as a library, it is the same declaration.

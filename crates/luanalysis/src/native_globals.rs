@@ -10,7 +10,7 @@ use luanalysis_engine::{
     ValueDeclarationHeader, ValuePack,
 };
 use luanalysis_project::SourceRole;
-use luanalysis_syntax::{DocFunctionDeclarationId, Expr, ExprKind, File, Name, Span, Stmt, StmtKind, TypeExpr};
+use luanalysis_syntax::{Expr, ExprKind, File, Name, Span, Stmt, StmtKind, TypeExpr};
 use std::collections::BTreeMap;
 use crate::collections::{HashMap, HashSet};
 
@@ -26,7 +26,6 @@ pub(super) struct GlobalDeclarationSource {
     pub statement: Span,
     pub annotation: Option<TypeExpr>,
     pub function: Option<NativeFunctionKey>,
-    pub documentation_function: Option<DocFunctionDeclarationId>,
     pub initializer: Option<NativeExpressionKey>,
     pub expanded_initializer: bool,
     pub namespace: Option<NamespaceTarget>,
@@ -127,7 +126,6 @@ impl NativeGlobals {
                                 .and_then(|annotation| annotation.types.get(index))
                                 .cloned(),
                             function: None,
-                            documentation_function: None,
                             initializer,
                             expanded_initializer: index >= values.len()
                                 && values.last().is_some_and(|value| {
@@ -188,7 +186,6 @@ impl NativeGlobals {
                             snapshot,
                             index: functions[&(function.span.start, function.span.end)],
                         }),
-                        documentation_function: None,
                         initializer: None,
                         expanded_initializer: false,
                         namespace,
@@ -197,15 +194,6 @@ impl NativeGlobals {
                 }
                 _ => result.unsupported.push(statement.span),
             }
-        }
-        for declaration in &file.function_declarations {
-            if declaration.invalid_owner || declaration.owner.is_some() { continue; }
-            let key=NativeValueDeclarationKey {snapshot,index:result.declarations.len() as u32};
-            result.declarations.push(GlobalDeclarationSource {
-                key,name:declaration.name.clone(),statement:declaration.span,annotation:None,
-                function:None,documentation_function:Some(declaration.id),initializer:None,
-                expanded_initializer:false,namespace:None,nested:false,
-            });
         }
         result.nested_declarations(snapshot, file, bound, functions, expressions);
         result
@@ -251,7 +239,6 @@ impl NativeGlobals {
                             statement: statement.span,
                             annotation: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).cloned(),
                             function: None,
-                            documentation_function: None,
                             initializer: values.get(index).map(|value| expressions.key_for_span(value.span)),
                             expanded_initializer: index >= values.len() && values.last().is_some_and(|value| {
                                 matches!(value.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg)
@@ -270,7 +257,6 @@ impl NativeGlobals {
                         statement: statement.span,
                         annotation: None,
                         function: Some(NativeFunctionKey { snapshot, index: functions[&(function.span.start, function.span.end)] }),
-                        documentation_function: None,
                         initializer: None,
                         expanded_initializer: false,
                         namespace: None,
@@ -337,7 +323,7 @@ impl ProjectGlobalIndex {
                 if !explicit && !first {
                     continue;
                 }
-                if source.index_role() == SourceRole::Declaration || declaration.documentation_function.is_some() {
+                if source.index_role() == SourceRole::Declaration {
                     declaration_owners.insert(declaration.key);
                 }
                 if source.index_role() == SourceRole::Declaration
@@ -463,7 +449,7 @@ impl GlobalIndexSource for NativeRegistry {
 
 /// Whether a global declaration's source writes its contract, rather than assigning a value.
 fn global_contract_owner(owner: &dyn GlobalIndexSource, source: &GlobalDeclarationSource) -> bool {
-    source.documentation_function.is_some() || owner.index_role() == SourceRole::Declaration
+    owner.index_role() == SourceRole::Declaration
         || source.annotation.is_some()
         || attached_type(owner.index_named(), source).is_some()
         || source.function.is_some_and(|key| {
@@ -500,13 +486,8 @@ impl NativeRegistry {
     /// takes more), from its signature alone: no function body or value is inferred.
     pub(super) fn global_function_parameters(&self, key: NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<(Vec<String>, bool)> {
         let source = self.globals.declaration(key)?;
-        let (parameters, variadic) = if let Some(function) = source.function {
-            (self.metadata(function, queries).0, self.function(function).vararg.is_some())
-        } else {
-            let declaration = self.documentation_function(source.documentation_function?)?;
-            let signature = self.signature_key_for(declaration.signature.span)?;
-            (self.source_signature_parameters(signature, queries), declaration.signature.vararg.is_some())
-        };
+        let function = source.function?;
+        let (parameters, variadic) = (self.metadata(function, queries).0, self.function(function).vararg.is_some());
         let required: Vec<String> = parameters.iter().take_while(|parameter| !parameter.optional).map(|parameter| parameter.name.clone()).collect();
         let more = variadic || parameters.len() > required.len();
         Some((required, more))
@@ -531,13 +512,13 @@ impl NativeRegistry {
             .declaration(key)
             .expect("original global declaration");
         ValueDeclarationHeader {
-            role: if source.documentation_function.is_some() {GlobalSourceRole::Declaration} else {match self.source_role() {
+            role: match self.source_role() {
                 SourceRole::Implementation => GlobalSourceRole::Implementation,
                 SourceRole::Declaration => GlobalSourceRole::Declaration,
-            }},
+            },
             kind: if source.namespace.is_some() {
                 GlobalValueKind::Member
-            } else if source.function.is_some() || source.documentation_function.is_some() {
+            } else if source.function.is_some() {
                 GlobalValueKind::Function
             } else {
                 GlobalValueKind::Variable
@@ -564,9 +545,6 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> Option<Type> {
         let source = self.globals.declaration(key)?;
-        if let Some(id)=source.documentation_function {
-            return Some(queries.signature_group_type(&[self.doc_signature_key(id).expect("valid original doc head")]));
-        }
         if let Some(annotation) = &source.annotation {
             let mut checker = self.checker(queries);
             let ty = checker.annotation(annotation);
@@ -608,16 +586,8 @@ impl NativeRegistry {
         }
         None
     }
-    pub(super) fn global_declaration_signatures(&self,key:NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> {
-        let declaration=self.globals.declaration(key)?.documentation_function?;
-        Some(vec![self.doc_signature_key(declaration).expect("valid original documentation function signature")])
-    }
     pub(super) fn global_function_signatures(&self,key:NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> {
-        let declaration=self.globals.declaration(key)?;
-        if let Some(documentation)=declaration.documentation_function {
-            return Some(vec![self.doc_signature_key(documentation).expect("valid original documentation function signature")]);
-        }
-        let function=declaration.function?;
+        let function=self.globals.declaration(key)?.function?;
         let heads=self.function_overload_signatures(function);
         if !heads.is_empty() { return Some(heads); }
         Some(vec![self.implementation_annotation_signature(function)?])

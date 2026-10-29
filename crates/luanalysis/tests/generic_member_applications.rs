@@ -129,35 +129,6 @@ end
 }
 
 #[test]
-fn bodyless_captured_alias_application_maps_its_original_enclosing_formal() {
-    let source = r#"---@class Box<T>
----@field value T
-
----@generic U
----@param input Box<U>
-local function attach(input)
-    ---@alias Captured Box<U>
-    ---@function Captured:read():U
-
-    ---@type Captured
-    local object = input
-    return object
-end
-
----@param numeric Box<number>
----@param textual Box<string>
-local function use(numeric, textual)
-    local numberResult = attach(numeric):read()
-    local stringResult = attach(textual):read()
-    return numberResult, stringResult
-end
-"#;
-    let report = clean(source);
-    assert_eq!(ty(&report, "numberResult"), "number");
-    assert_eq!(ty(&report, "stringResult"), "string");
-}
-
-#[test]
 fn applied_colon_method_keeps_its_owner_arguments_and_polymorphic_derived_self() {
     let source = r#"---@class Box<T>
 ---@field value T

@@ -6,7 +6,7 @@
 //! and dotted property names are not expressions. Annotation types come from
 //! their original source spans, not from the number of metadata associations.
 //! Function-type roots are also represented directly by `FunctionType` for
-//! overloads and bodyless declarations; count those roots once alongside the
+//! overloads; count those roots once alongside the
 //! `TypeExpr` roots. This maps Lua syntax to the same estimate, rather than
 //! claiming Lua and TypeScript construct identical HIR nodes.
 
@@ -48,10 +48,6 @@ pub(crate) fn checking_cost(file: &File, bound: &BoundFile, type_node_cost: usiz
                 }
             }
         }
-    }
-    for declaration in &file.function_declarations {
-        types.signature(&declaration.signature);
-        types.function_annotations(&declaration.annotations);
     }
     for extension in &file.type_extensions {
         for field in &extension.fields {
@@ -368,7 +364,6 @@ mod tests {
             "---@class Box<T : table>\n---@field [string] number\n\n",
             "---@class Box : Parent\n\n",
             "---@field Box.value number\n",
-            "---@function identity(value: number): number\n",
             "---@overload fun(value:number):number\n---@param value number\n---@return number\nlocal function identity(value) return value end\n",
             "---@generic T : table\n---@param value T\n---@vararg number\n---@return T\nlocal function identity(value,...) return value end\n",
             "---@type fun(value:number):number\nlocal function identity(value) return value end\n",
@@ -383,15 +378,13 @@ mod tests {
     #[test]
     fn metadata_associations_do_not_count_original_types_again() {
         let mut file = luanalysis_syntax::parse(
-            "---@class Box\n---@field value number\n\n---@function Box.read(value:number):number\n---@overload fun(value:string):string\n",
+            "---@class Box\n---@field value number\n---@field read fun(value:number):number\n---@overload fun(value:string):string\n",
         );
         assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
         let bound = crate::bind::bind(&file);
         let original = checking_cost(&file, &bound, 8);
         file.type_declarations
             .extend(file.type_declarations.clone());
-        file.function_declarations
-            .extend(file.function_declarations.clone());
         file.overload_annotations
             .extend(file.overload_annotations.clone());
         assert_eq!(checking_cost(&file, &bound, 8), original);

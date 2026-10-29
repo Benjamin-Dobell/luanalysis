@@ -121,8 +121,8 @@ fn multiline_casts_keep_the_same_operand_and_runtime_neighbors() {
 
 #[test]
 fn wrapped_named_declarations_keep_class_fields_and_overload_owners() {
-    use luanalysis_syntax::{DocFunctionOwner, NamedTypeDeclarationKind};
-    let source = "---@class Owner\n---@field private field fun(value: number, index: number, context: string): boolean\n---@function visit(value: number, index: number, context: string): boolean\n---@overload fun(value: number, index: number, context: string): Owner\nlocal Owner = {}\n";
+    use luanalysis_syntax::{NamedTypeDeclarationKind, TypeExprKind, TypeFieldKey};
+    let source = "---@class Owner\n---@field private field fun(value: number, index: number, context: string): boolean\n---@field visit fun(value: number, index: number, context: string): boolean\n---@overload fun(value: number, index: number, context: string): Owner\nlocal Owner = {}\n";
     let result = apply(source, &FormattingOptions { max_line_length: 55, ..FormattingOptions::default() }, None);
     assert!(result.contains("---    "), "{result}");
     for text in [source, result.as_str()] {
@@ -133,11 +133,10 @@ fn wrapped_named_declarations_keep_class_fields_and_overload_owners() {
         assert_eq!(owner.name.text, "Owner");
         assert_eq!(owner.attachment, Some(file.statements[0].span));
         let NamedTypeDeclarationKind::Record { fields, .. } = &owner.kind else { panic!() };
-        assert_eq!(fields.len(), 1);
+        assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].visibility.unwrap().kind, luanalysis_syntax::FieldVisibility::Private);
-        assert_eq!(file.function_declarations[0].owner, Some(DocFunctionOwner::Contextual(owner.id)));
-        assert_eq!(file.function_declarations[0].name.text, "visit");
-        assert_eq!(file.function_declarations[0].signature.params.len(), 3);
+        assert!(matches!(&fields[1].key, TypeFieldKey::Named(name) if name.text == "visit"));
+        assert!(matches!(&fields[1].ty.kind, TypeExprKind::Function(signature) if signature.params.len() == 3));
         assert_eq!(file.overload_annotations[0].named_candidates, [owner.id]);
     }
 }

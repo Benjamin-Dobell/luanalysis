@@ -7,7 +7,7 @@ use crate::{CommentKind, File};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Documentation {
     /// The block's prose, and the description of the tag that declares it (`@type`, `@class`,
-    /// `@alias`, `@function` and the like).
+    /// `@alias`, `@overload` and the like).
     pub description: String,
     /// Each `@param`'s description, by parameter name (`...` for the variadic parameters).
     pub params: Vec<(String, String)>,
@@ -47,7 +47,7 @@ pub fn documentation_above(file: &File, source: &str, offset: usize) -> Document
 }
 
 /// The documentation of the block of documentation comments that contains `offset`, such as a
-/// `---@function` or `---@field` tag's.
+/// `---@field` or `---@overload` tag's.
 pub fn documentation_at(file: &File, source: &str, offset: usize) -> Documentation {
     let Some(index) = file.comments.iter().position(|comment| {
         comment.kind == CommentKind::Documentation && comment.span.start <= offset && offset < comment.span.end
@@ -95,7 +95,7 @@ fn collect(file: &File, source: &str, first: usize, last: usize) -> Documentatio
                 ("param", Some(name)) => documentation.params.push((name, tag.text)),
                 ("return", _) => documentation.returns.push(tag.text),
                 ("field", Some(name)) => documentation.fields.push((name, tag.text)),
-                ("type" | "class" | "shape" | "alias" | "module" | "enum" | "function" | "overload", _) => description.push(tag.text),
+                ("type" | "class" | "shape" | "alias" | "module" | "enum" | "overload", _) => description.push(tag.text),
                 _ => {}
             }
         }

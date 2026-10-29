@@ -102,7 +102,7 @@ fn direct_discard_and_padding_examples_are_opt_in_nonfatal_hints() {
 
 #[test]
 fn assignment_padding_and_excess_literal_rhs_keep_original_utf8_byte_spans() {
-    let source = "-- 🦀\r\n---@function one():number\r\nlocal first,second,third=0,nil,nil\r\nfirst,second,third=one()\r\nlocal kept=1,2,3\r\nreturn first,second,third,kept\r\n";
+    let source = "-- 🦀\r\nlocal one = --[[---@type fun():number]] (nil)\r\nlocal first,second,third=0,nil,nil\r\nfirst,second,third=one()\r\nlocal kept=1,2,3\r\nreturn first,second,third,kept\r\n";
     let checked = check(source, true);
     clean(&checked);
     assert_eq!(
@@ -130,7 +130,7 @@ fn assignment_padding_and_excess_literal_rhs_keep_original_utf8_byte_spans() {
 
 #[test]
 fn scalar_and_table_values_are_one_result_nil_is_a_value_and_void_is_absence() {
-    let source = "---@return nil\nlocal function nilValue() return nil end\n---@return void\nlocal function noValues() end\n---@function unknownValue():unknown\nlocal pending\nlocal scalar,scalar_padding=42\nlocal whole={1,2,3}\nlocal table_value,table_padding={1,2,3}\nlocal explicit_nil=nilValue()\nlocal nil_value,nil_padding=nilValue()\nlocal void_padding=noValues()\nlocal opaque,opaque_padding=unknownValue()\nreturn pending,scalar,scalar_padding,whole,table_value,table_padding,explicit_nil,nil_value,nil_padding,void_padding,opaque,opaque_padding\n";
+    let source = "---@return nil\nlocal function nilValue() return nil end\n---@return void\nlocal function noValues() end\nlocal unknownValue = --[[---@type fun():unknown]] (nil)\nlocal pending\nlocal scalar,scalar_padding=42\nlocal whole={1,2,3}\nlocal table_value,table_padding={1,2,3}\nlocal explicit_nil=nilValue()\nlocal nil_value,nil_padding=nilValue()\nlocal void_padding=noValues()\nlocal opaque,opaque_padding=unknownValue()\nreturn pending,scalar,scalar_padding,whole,table_value,table_padding,explicit_nil,nil_value,nil_padding,void_padding,opaque,opaque_padding\n";
     let checked = check(source, true);
     clean(&checked);
     assert_eq!(
@@ -157,7 +157,7 @@ fn explicit_scalarization_table_expansion_forwarding_and_call_statements_are_qui
 
 #[test]
 fn required_prefixes_prove_discard_but_optional_union_and_open_tail_lengths_do_not() {
-    let source = "---@function prefix():number,string,boolean...\n---@function alternative():(number,string)|(number,string,boolean)\n---@function tail():number,string...\n---@function choice():number|(number,string)\nlocal first=prefix()\nlocal second=alternative()\nlocal tail_first,tail_second=tail()\nlocal prefix_first,prefix_second=prefix()\nlocal union_first,union_second=alternative()\nlocal choice_first=choice()\nlocal choice_one,choice_two=choice()\nreturn first,second,tail_first,tail_second,prefix_first,prefix_second,union_first,union_second,choice_first,choice_one,choice_two\n";
+    let source = "local prefix = --[[---@type fun():number,string,boolean...]] (nil)\nlocal alternative = --[[---@type fun():(number,string)|(number,string,boolean)]] (nil)\nlocal tail = --[[---@type fun():number,string...]] (nil)\nlocal choice = --[[---@type fun():number|(number,string)]] (nil)\nlocal first=prefix()\nlocal second=alternative()\nlocal tail_first,tail_second=tail()\nlocal prefix_first,prefix_second=prefix()\nlocal union_first,union_second=alternative()\nlocal choice_first=choice()\nlocal choice_one,choice_two=choice()\nreturn first,second,tail_first,tail_second,prefix_first,prefix_second,union_first,union_second,choice_first,choice_one,choice_two\n";
     let checked = check(source, true);
     clean(&checked);
     assert_eq!(
@@ -168,7 +168,7 @@ fn required_prefixes_prove_discard_but_optional_union_and_open_tail_lengths_do_n
 
 #[test]
 fn finite_union_and_optional_rows_only_hint_destinations_missing_from_every_row() {
-    let source = "---@function choice():number|(number,string)\n\n---@param flag boolean\n---@return number|void\nlocal function maybe(flag) if flag then return 1 end end\nlocal first,uncertain,absent=choice()\nlocal possible=maybe(true)\nlocal optional_first,optional_absent=maybe(false)\nreturn first,uncertain,absent,possible,optional_first,optional_absent\n";
+    let source = "local choice = --[[---@type fun():number|(number,string)]] (nil)\n\n---@param flag boolean\n---@return number|void\nlocal function maybe(flag) if flag then return 1 end end\nlocal first,uncertain,absent=choice()\nlocal possible=maybe(true)\nlocal optional_first,optional_absent=maybe(false)\nreturn first,uncertain,absent,possible,optional_first,optional_absent\n";
     let checked = check(source, true);
     clean(&checked);
     assert_eq!(
@@ -204,7 +204,7 @@ fn whole_dynamic_and_symbolic_packs_and_never_prefixes_remain_quiet() {
     let checked = check(dynamic, true);
     clean(&checked);
     assert!(found(&checked).is_empty(), "{:?}", found(&checked));
-    let reachable = check("---@function choice():never|(number,string)\nlocal first=choice()\nreturn first\n", true);
+    let reachable = check("local choice = --[[---@type fun():never|(number,string)]] (nil)\nlocal first=choice()\nreturn first\n", true);
     clean(&reachable);
     assert_eq!(found(&reachable), ["LUA4002 choice()"]);
     for prefix in ["stop()", "(stop())"] {

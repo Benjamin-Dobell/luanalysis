@@ -94,7 +94,7 @@ every member's type. In a declaration file:
 ```lua
 ---@class ColorStatics
 ---@field Red ColorValue
----@function ColorStatics.fromString(value: string): ColorValue
+---@field fromString fun(value: string): ColorValue
 
 ---@alias ColorNamespace ColorStatics & { [string]: ColorValue | nil }
 

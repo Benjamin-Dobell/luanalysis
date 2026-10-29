@@ -282,11 +282,11 @@ fn a_blocked_import_does_not_apply_original_module_writes_to_saved_standard_valu
 #[test]
 fn written_member_contracts_do_not_require_a_constructor_origin_certificate() {
     let fixture = Fixture::new();
-    let source = r#"---@function opaque()
+    let source = r#"local function opaque() end
 
 ---@class Instance
 ---@field value number
----@function read(): number
+---@field read fun(): number
 
 ---@class StaticInstance
 ---@overload fun(): Instance

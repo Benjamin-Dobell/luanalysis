@@ -14,7 +14,7 @@ const TYPES: &str = r#"---@alias tts__PlayerColor "Red" | "Blue"
 ---@class tts__Object
 ---@field tag string
 
----@function tts__Object.getPosition(): tts__Vector
+---@field tts__Object.getPosition fun(): tts__Vector
 "#;
 
 const CALLBACKS: &str = r#"---@type nil | fun(player_color: tts__PlayerColor, object: tts__Object): void

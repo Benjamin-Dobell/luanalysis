@@ -12,7 +12,7 @@ use luanalysis_engine::{
 };
 use luanalysis_engine::{NativeTypeParameterKey, Parameter, Type, TypeQueries, ValuePack};
 use luanalysis_syntax::{
-    DocFunctionDeclarationId, DocFunctionOwner, File, FunctionType, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
+    File, FunctionType, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
     TypeExprKind, TypeFieldKey,
 };
 use crate::collections::{HashMap, HashSet};
@@ -262,10 +262,7 @@ impl NativeRegistry {
         };
         match source.owner {
             NativeTypeContext::Function(function) => annotations(&self.function(function).annotations),
-            NativeTypeContext::Signature(owner) => {
-                self.signatures.get(owner).signature.as_ref().is_some_and(signature)
-                    || self.documentation_signature(owner).is_some_and(|documentation| annotations(&documentation.annotations))
-            }
+            NativeTypeContext::Signature(owner) => self.signatures.get(owner).signature.as_ref().is_some_and(signature),
             NativeTypeContext::Annotation(key) => self.types.annotation(key).is_some_and(|annotation| matches!(&annotation.syntax,
                 luanalysis_syntax::AnnotationDeclaration::Conditional(conditional) if conditional.extends_type.spreads(name))),
             NativeTypeContext::NamedType(_) => false,
@@ -370,10 +367,7 @@ impl NativeRegistry {
         let recipe = self.signatures.get(key);
         if let Some(function) = recipe.ambient_function { return self.source_function_may_have_type_predicate(function); }
         let Some(signature) = &recipe.signature else { return false };
-        let returns = if signature.returns_span.is_none() {
-            self.documentation_signature(key).and_then(|doc| doc.annotations.returns.as_ref()).map(|annotation| annotation.types.as_slice())
-        } else { Some(signature.returns.as_slice()) };
-        matches!(returns, Some([TypeExpr { kind: TypeExprKind::TypePredicate { .. }, .. }]))
+        matches!(signature.returns.as_slice(), [TypeExpr { kind: TypeExprKind::TypePredicate { .. }, .. }])
     }
 
     pub(super) fn source_function_type_predicate(
@@ -406,12 +400,7 @@ impl NativeRegistry {
             return self.source_function_type_predicate(function, queries);
         }
         let signature = recipe.signature.as_ref()?;
-        let returns = if signature.returns_span.is_none() {
-            &self.documentation_signature(key)?.annotations.returns.as_ref()?.types
-        } else {
-            &signature.returns
-        };
-        let [source] = returns.as_slice() else { return None };
+        let [source] = signature.returns.as_slice() else { return None };
         if !matches!(source.kind, TypeExprKind::TypePredicate { .. }) { return None; }
         let parameters = self.source_signature_parameters(key, queries);
         let mut checker = self.signature_checker(key, queries);
@@ -420,20 +409,16 @@ impl NativeRegistry {
         predicate
     }
 
-    /// A missing doc-function result is distinct from an explicit any/void row.
+    /// A function type's missing result is distinct from an explicit any/void row.
     /// Runtime implementation signatures keep their actual inferred result.
     pub(super) fn signature_has_omitted_result(&self, key: NativeSignatureKey) -> bool {
         let recipe = self.signatures.get(key);
         recipe.ambient_function.is_none()
             && recipe.signature.as_ref().is_some_and(|signature| signature.returns_span.is_none())
-            && self.documentation_signature(key).is_none_or(|doc| doc.annotations.returns.is_none())
     }
 
     pub(super) fn signature_has_method_origin(&self, key: NativeSignatureKey) -> bool {
         let recipe = self.signatures.get(key);
-        if let Some(source) = self.documentation_signature(key) {
-            return source.owner.is_some();
-        }
         let SignatureOwner::Function(function) = recipe.header.owner else { return false };
         luanalysis_engine::NativeTypeProvider::function_is_method(self, function)
             && (recipe.ambient_function == Some(function)
@@ -454,92 +439,7 @@ impl NativeRegistry {
         })
     }
     pub(super) fn signature_available(&self, key: NativeSignatureKey) -> bool {
-        if !self.signatures.contains(key) { return false; }
-        self.signatures.get(key).documentation.and_then(|id| self.doc_members.for_declaration(id))
-            .is_none_or(|source| matches!(source.scope.get(), crate::native_doc_members::DocOwnerScope::Scoped(_) | crate::native_doc_members::DocOwnerScope::Ready(_)))
-    }
-    pub(crate) fn prepare_documentation_scope_keys(&self, queries: &mut dyn TypeQueries) {
-        use crate::native_doc_members::DocOwnerScope;
-        for source in self.doc_members.sources() {
-            if source.scope.get() != DocOwnerScope::Unprepared { continue; }
-            let signature = self.doc_signature_key(source.declaration).expect("original documentation signature");
-            self.types.clear_documentation_owner(signature);
-            match queries.named_member_scope_owner(source.key) {
-                Ok(owner) => {
-                    let owner = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
-                    let doc = self.documentation_function(source.declaration).unwrap();
-                    if doc.method_colon.is_some() && self.types.self_parameter(owner).is_none()
-                        && !doc.annotations.params.iter().any(|tag| tag.name.text == "self")
-                    {
-                        self.merge_report(super::CheckReport { diagnostics: vec![Diagnostic {
-                            code: "LUA2034", span: source.owner_span,
-                            message: "Bodyless colon declaration has no original class or shape receiver scope.".into(),
-                        }], ..Default::default() });
-                        source.scope.set(DocOwnerScope::Failed);
-                        self.invalidate_header_metadata();
-                        continue;
-                    }
-                    self.types.attach_documentation_owner(signature, owner);
-                    source.scope.set(DocOwnerScope::Scoped(owner));
-                    self.invalidate_header_metadata();
-                }
-                Err(_) => {
-                    source.scope.set(DocOwnerScope::Failed);
-                    self.invalidate_header_metadata();
-                },
-            }
-        }
-    }
-    pub(crate) fn validate_documentation_scope_owners(&self, queries: &mut dyn TypeQueries) {
-        use crate::native_doc_members::DocOwnerScope;
-        for source in self.doc_members.sources() {
-            let DocOwnerScope::Scoped(expected) = source.scope.get() else { continue; };
-            match queries.named_member_owner(source.key) {
-                Ok(owner) if owner.declaration.snapshot == expected.snapshot && owner.declaration.index == expected.index => {
-                    source.scope.set(DocOwnerScope::Ready(expected));
-                    self.invalidate_header_metadata();
-                }
-                _ => {
-                    source.scope.set(DocOwnerScope::Failed);
-                    self.invalidate_header_metadata();
-                    self.types.clear_documentation_owner(self.doc_signature_key(source.declaration).unwrap());
-                }
-            }
-        }
-    }
-    pub(crate) fn prepare_documentation_scopes(&self, queries: &mut dyn TypeQueries) {
-        self.prepare_documentation_scope_keys(queries);
-        self.validate_documentation_scope_owners(queries);
-    }
-    pub(crate) fn doc_signature_key(&self, id: DocFunctionDeclarationId) -> Option<NativeSignatureKey> {
-        self.signatures.documentation.get(&id).copied()
-    }
-    fn documentation_signature(&self, key: NativeSignatureKey) -> Option<&luanalysis_syntax::DocFunctionDeclaration> {
-        let id = self.signatures.get(key).documentation?;
-        self.documentation_function(id)
-    }
-    pub(super) fn documentation_signature_owner(&self, key: NativeSignatureKey) -> Option<NativeNamedKey> {
-        if let Some(source) = self.signatures.get(key).documentation.and_then(|id| self.doc_members.for_declaration(id)) {
-            match source.scope.get() {
-                crate::native_doc_members::DocOwnerScope::Scoped(owner) | crate::native_doc_members::DocOwnerScope::Ready(owner) => return Some(owner),
-                crate::native_doc_members::DocOwnerScope::Failed => return None,
-                crate::native_doc_members::DocOwnerScope::Unprepared => {}
-            }
-        }
-        match self.documentation_signature(key)?.owner.as_ref()? {
-            DocFunctionOwner::Contextual(id) => self.named_metadata().key_for_syntax(*id),
-            DocFunctionOwner::Explicit(name) => {
-                let candidates = self.named_candidates(&name.text);
-                let [key] = candidates.as_slice() else { return None };
-                Some(NativeNamedKey { snapshot:key.snapshot,index:key.index })
-            }
-        }
-    }
-    pub(super) fn attach_documentation_signature_owners(&mut self) {
-        let owners:Vec<_> = self.signatures.documentation.values().filter_map(|&key| {
-            Some((key,self.documentation_signature_owner(key)?))
-        }).collect();
-        for (signature, owner) in owners { self.types.attach_documentation_owner(signature,owner); }
+        self.signatures.contains(key)
     }
     pub(super) fn implementation_annotation_signature(
         &self,
@@ -620,8 +520,7 @@ impl NativeRegistry {
             .params
             .iter()
             .map(|parameter| {
-                let tag = self.documentation_signature(key).and_then(|doc| doc.annotations.params.iter().find(|tag| tag.name.text == parameter.name.text));
-                let parameter_optional = parameter.optional || tag.is_some_and(|tag| tag.optional);
+                let parameter_optional = parameter.optional;
                 if optional && !parameter_optional {
                     checker.error(
                         "TS1016",
@@ -633,7 +532,6 @@ impl NativeRegistry {
                 let ty = parameter
                     .ty
                     .as_ref()
-                    .or_else(|| tag.map(|tag| &tag.ty))
                     .map(|ty| checker.annotation(ty))
                     .unwrap_or_else(|| {
                         checker.implicit_parameter_any(
@@ -651,13 +549,6 @@ impl NativeRegistry {
                 }
             })
             .collect();
-        if self.documentation_signature(key).is_some_and(|source| source.method_colon.is_some()) {
-            let explicit = self.documentation_signature(key).unwrap().annotations.params.iter().find(|tag| tag.name.text == "self");
-            let ty = explicit.map(|tag| checker.annotation(&tag.ty)).or_else(|| {
-                self.documentation_signature_owner(key).and_then(|owner| self.types.self_parameter(owner)).map(Type::NativeTypeParameter)
-            }).expect("a published bodyless colon signature has a prepared original receiver contract");
-            parameters.insert(0,Parameter {name:"self".into(),ty,optional:false});
-        }
         if let Some(function) = self.signature_method_function(key) {
             let original = self.function(function);
             let explicit = (!original.params.iter().any(|parameter| parameter.text == "self"))
@@ -689,7 +580,7 @@ impl NativeRegistry {
             return self.source_rest_pack(function, queries);
         }
         let signature = recipe.signature.as_ref().expect("original function-type annotation");
-        let Some(source) = signature.vararg.as_ref().or_else(|| self.documentation_signature(key).and_then(|doc| doc.annotations.vararg.as_ref())) else {
+        let Some(source) = signature.vararg.as_ref() else {
             return signature.parameters_span.is_none().then(|| ValuePack::variadic(Type::Any));
         };
         let mut checker = self.signature_checker(key, queries);
@@ -710,12 +601,6 @@ impl NativeRegistry {
             return queries.declared_result_pack(&contract);
         }
         let source = recipe.signature.as_ref().expect("original function-type annotation");
-        if source.returns_span.is_none() && let Some(annotation) = self.documentation_signature(key).and_then(|doc| doc.annotations.returns.as_ref()) {
-            let mut checker=self.signature_checker(key,queries);
-            let pack=AnnotationPack::annotation(annotation).lower(&mut |ty| checker.annotation(ty));
-            self.merge_report(checker.report);
-            return pack;
-        }
         if source.returns_span.is_none() {
             return ValuePack::variadic(Type::Any);
         }
@@ -739,20 +624,6 @@ impl NativeRegistry {
             let ty = queries.signature_type(recipe.key);
             queries.format(&ty);
             self.source_signature_type_predicate(recipe.key, queries);
-            if let Some(source) = self.documentation_signature(recipe.key) {
-                let mut checker=self.signature_checker(recipe.key,queries);
-                let mut names=crate::collections::HashSet::default();
-                for tag in &source.annotations.params {
-                    if !names.insert(&tag.name.text) || (!source.signature.params.iter().any(|p|p.name.text==tag.name.text) && !(tag.name.text=="self" && source.method_colon.is_some())) {
-                        checker.error("LUA2011",tag.name.span,"Parameter annotation has a duplicate or unknown original parameter owner.");
-                    }
-                    checker.annotation(&tag.ty);
-                }
-                if !source.annotations.overloads.is_empty() || source.annotations.type_annotation.is_some() {
-                    checker.error("LUA2034",source.tag_span,"Bodyless function declarations use their original header and long-form tags; @overload and @type on this head are unsupported.");
-                }
-                self.merge_report(checker.report);
-            }
         }
     }
     pub(super) fn check_all_signatures(&self, queries: &mut dyn TypeQueries) {
@@ -868,13 +739,6 @@ impl NativeRegistry {
             used.insert(parameter);
         }
         let context = Some(NativeTypeContext::Signature(key));
-        if let Some(doc) = self.documentation_signature(key) {
-            for generic in &doc.annotations.generics { if let Some(ty)=&generic.constraint { self.annotation_parameter_dependencies(context,ty,&mut used); } }
-            for parameter in &doc.annotations.params { self.annotation_parameter_dependencies(context,&parameter.ty,&mut used); }
-            if let Some(vararg)=&doc.annotations.vararg { self.annotation_parameter_dependencies(context,&vararg.ty,&mut used); }
-            if let Some(returns)=&doc.annotations.returns { for ty in &returns.types { self.annotation_parameter_dependencies(context,ty,&mut used); } }
-            if doc.method_colon.is_some() && let Some(owner)=self.documentation_signature_owner(key) && let Some(parameter)=self.types.self_parameter(owner) { used.insert(parameter); }
-        }
         for parameter in &source.generics {
             if let Some(ty) = &parameter.constraint {
                 self.annotation_parameter_dependencies(context, ty, &mut used)
@@ -936,7 +800,6 @@ pub(super) struct SignatureRecipe {
     /// A real ambient function declaration's written parameter/result tags.
     /// It has an original key and source span, not a synthesized function AST.
     pub ambient_function: Option<NativeFunctionKey>,
-    pub documentation: Option<DocFunctionDeclarationId>,
     pub span: Span,
 }
 
@@ -949,7 +812,6 @@ pub(super) struct NativeSignatures {
     ambient_mains: HashMap<NativeFunctionKey, NativeSignatureKey>,
     named: HashMap<NativeNamedKey, Vec<NativeSignatureKey>>,
     operators: HashMap<(NativeNamedKey, luanalysis_engine::NativeOperator), Vec<NativeSignatureKey>>,
-    documentation: HashMap<DocFunctionDeclarationId,NativeSignatureKey>,
     sites: HashMap<(usize, usize), SignatureSite>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -1012,37 +874,10 @@ impl NativeSignatures {
             ambient_mains: HashMap::default(),
             named: HashMap::default(),
             operators: HashMap::default(),
-            documentation: HashMap::default(),
             sites: HashMap::default(),
             diagnostics: Vec::new(),
         };
         let nesting = FunctionNesting::new(functions);
-        for declaration in &file.function_declarations {
-            if declaration.invalid_owner { continue; }
-            let context = match declaration.owner.as_ref() {
-                Some(DocFunctionOwner::Contextual(id)) => named.key_for_syntax(*id).map(NativeTypeContext::NamedType),
-                Some(DocFunctionOwner::Explicit(name)) => {
-                    let mut candidates=named.declarations().iter().filter(|source|source.syntax.name.text==name.text);
-                    let candidate=candidates.next();
-                    if candidates.next().is_none() { candidate.map(|source|NativeTypeContext::NamedType(source.key)) } else { None }
-                }
-                None => None,
-            };
-            let key=result.insert(SignatureOwner::Standalone,context,None,&declaration.signature,declaration.span,declaration.group_span);
-            result.recipes[key.index as usize].documentation=Some(declaration.id);
-            result.recipes[key.index as usize].header.has_direct_literal_parameter |= declaration.signature.params.iter().any(|parameter| {
-                parameter.ty.as_ref().or_else(||declaration.annotations.params.iter().find(|tag|tag.name.text==parameter.name.text).map(|tag|&tag.ty)).is_some_and(|ty| {
-                    let ty=ty.value_syntax();
-                    matches!(ty.kind,TypeExprKind::Literal(_)) || matches!(&ty.kind,TypeExprKind::Named(name) if name=="nil")
-                })
-            });
-            result.documentation.insert(declaration.id,key);
-            let context=Some(NativeTypeContext::Signature(key));
-            for generic in &declaration.annotations.generics { if let Some(ty)=&generic.constraint { result.visit_type(SignatureOwner::Standalone,context,Some(key),ty); } }
-            for parameter in &declaration.annotations.params { result.visit_type(SignatureOwner::Standalone,context,Some(key),&parameter.ty); }
-            if let Some(vararg)=&declaration.annotations.vararg { result.visit_type(SignatureOwner::Standalone,context,Some(key),&vararg.ty); }
-            if let Some(returns)=&declaration.annotations.returns { for ty in &returns.types { result.visit_type(SignatureOwner::Standalone,context,Some(key),ty); } }
-        }
         // An overload written into a documented local's type is that type's call signature.
         for head in file.overload_annotations.iter().filter(|head| !head.in_type) {
             let named_key = match head.named_candidates.as_slice() {
@@ -1325,7 +1160,6 @@ impl NativeSignatures {
                 context: Some(NativeTypeContext::Function(owner)),
                 signature: None,
                 ambient_function: Some(owner),
-                documentation: None,
                 span: function.span,
             });
             result.ambient_mains.insert(owner, key);
@@ -1421,7 +1255,6 @@ impl NativeSignatures {
             context,
             signature: Some(signature.clone()),
             ambient_function: None,
-            documentation: None,
             span,
         });
         let nested = Some(NativeTypeContext::Signature(key));
@@ -1565,7 +1398,7 @@ impl NativeSignatures {
     pub(super) fn operator_heads(&self, key: NativeNamedKey, operator: luanalysis_engine::NativeOperator) -> Vec<NativeSignatureKey> {
         self.operators.get(&(key, operator)).cloned().unwrap_or_default()
     }
-    pub(super) fn scopes(&self, file: &File) -> Vec<NamedGenericScopeRecipe> {
+    pub(super) fn scopes(&self) -> Vec<NamedGenericScopeRecipe> {
         self.recipes
             .iter()
             .filter_map(|recipe| Some(NamedGenericScopeRecipe {
@@ -1576,7 +1409,6 @@ impl NativeSignatures {
                     .signature.as_ref()?
                     .generics
                     .iter()
-                    .chain(recipe.documentation.and_then(|id|file.function_declarations.iter().find(|doc|doc.id==id)).into_iter().flat_map(|doc|doc.annotations.generics.iter()))
                     .map(|generic| NamedGenericParameterRecipe {
                         name: generic.name.clone(),
                         constraint: generic.constraint.clone(),

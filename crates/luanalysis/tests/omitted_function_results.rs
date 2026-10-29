@@ -74,7 +74,7 @@ fn calling_an_omitted_result_contract_produces_any_in_every_pack_slot() {
         DECLARED.to_string(),
         DECLARED.replace(
             "---@type fun(value:number)\nlocal declared",
-            "---@function declared(value:number)",
+            "local declared = --[[---@type fun(value:number)]] (nil)",
         ),
     ] {
         for no_implicit_any in [false, true] {
@@ -92,7 +92,7 @@ fn calling_an_omitted_result_contract_produces_any_in_every_pack_slot() {
 #[test]
 fn an_omitted_source_result_cannot_satisfy_a_written_result_contract() {
     for declaration in [
-        "---@function unspecified()\nlocal boundary = true\n",
+        "local unspecified = --[[---@type fun()]] (nil)\nlocal boundary = true\n",
         "---@type fun()\nlocal unspecified\n",
     ] {
         for result in [
@@ -124,7 +124,7 @@ fn an_omitted_source_result_cannot_satisfy_a_written_result_contract() {
 fn omitted_targets_accept_written_results_and_written_any_keeps_ordinary_relations() {
     for no_implicit_any in [false, true] {
         clean(
-            "---@function unspecified()\nlocal boundary = true\n---@type fun()\nlocal accepted = unspecified\n",
+            "local unspecified = --[[---@type fun()]] (nil)\nlocal boundary = true\n---@type fun()\nlocal accepted = unspecified\n",
             no_implicit_any,
         );
         for result in [
@@ -136,7 +136,7 @@ fn omitted_targets_accept_written_results_and_written_any_keeps_ordinary_relatio
         ] {
             clean(
                 &format!(
-                    "---@function written():{result}\nlocal boundary = true\n---@type fun()\nlocal accepted = written\n"
+                    "local written = --[[---@type fun():{result}]] (nil)\nlocal boundary = true\n---@type fun()\nlocal accepted = written\n"
                 ),
                 no_implicit_any,
             );
@@ -144,7 +144,7 @@ fn omitted_targets_accept_written_results_and_written_any_keeps_ordinary_relatio
         // Written any retains its ordinary scalar relation. Its function pack
         // also allows zero physical results, so compare matching pack contracts.
         clean(
-            "---@function written():any\nlocal boundary = true\n---@type fun():any\nlocal accepted = written\n---@type number\nlocal numeric = written()\n",
+            "local written = --[[---@type fun():any]] (nil)\nlocal boundary = true\n---@type fun():any\nlocal accepted = written\n---@type number\nlocal numeric = written()\n",
             no_implicit_any,
         );
     }
@@ -152,7 +152,7 @@ fn omitted_targets_accept_written_results_and_written_any_keeps_ordinary_relatio
 
 #[test]
 fn written_any_with_an_empty_physical_row_does_not_establish_a_required_result() {
-    let source = "---@function written():any\nlocal boundary = true\n---@type fun():number\nlocal rejected = written\n";
+    let source = "local written = --[[---@type fun():any]] (nil)\nlocal boundary = true\n---@type fun():number\nlocal rejected = written\n";
     for no_implicit_any in [false, true] {
         let rejected = report(source, no_implicit_any);
         assert_eq!(rejected.diagnostics.len(), 1, "{:#?}", rejected.diagnostics);
@@ -163,7 +163,7 @@ fn written_any_with_an_empty_physical_row_does_not_establish_a_required_result()
 
 #[test]
 fn omitted_target_results_preserve_parameter_contravariance() {
-    let source = "---@function unspecified(value:string)\nlocal boundary = true\n---@type fun(value:number)\nlocal rejected = unspecified\n";
+    let source = "local unspecified = --[[---@type fun(value:string)]] (nil)\nlocal boundary = true\n---@type fun(value:number)\nlocal rejected = unspecified\n";
     for no_implicit_any in [false, true] {
         let rejected = report(source, no_implicit_any);
         assert_eq!(rejected.diagnostics.len(), 1, "{:#?}", rejected.diagnostics);

@@ -123,8 +123,8 @@ replacement(42)
 fn written_overload_effects_keep_ordinary_branches_reachable() {
     let fixture = Fixture::new();
     let source = r#"---@shape EffectService
----@function EffectService.run(value:number): never
----@function EffectService.run(value:string): nil
+---@field run fun(value:number): never
+---@field run fun(value:string): nil
 
 ---@param service EffectService
 ---@return number
@@ -133,9 +133,9 @@ local function use(service)
 end
 "#;
     rejected(fixture.check(source, None), "TS2355");
-    let all_never = source.replace("run(value:string): nil", "run(value:string): never");
+    let all_never = source.replace("fun(value:string): nil", "fun(value:string): never");
     clean(fixture.check(&all_never, None));
-    let ordinary = source.replace("run(value:number): never", "run(value:number): number");
+    let ordinary = source.replace("fun(value:number): never", "fun(value:number): number");
     rejected(fixture.check(&ordinary, None), "TS2355");
     clean(fixture.check(&ordinary.replace("    service.run('word')\n", "    service.run('word')\n    return 42\n"), None));
 }
@@ -144,8 +144,8 @@ end
 fn written_multihead_member_calls_keep_selected_captured_bodies_checked() {
     let fixture = Fixture::new();
     let source = r#"---@shape CapturedEffectService
----@function CapturedEffectService.run(value:number): true
----@function CapturedEffectService.run(value:string): true
+---@field run fun(value:number): true
+---@field run fun(value:string): true
 
 ---@param service CapturedEffectService
 local function factory(service)

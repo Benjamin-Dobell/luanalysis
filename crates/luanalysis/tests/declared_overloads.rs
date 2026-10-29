@@ -149,3 +149,20 @@ fn a_declaration_files_repeated_methods_of_a_local_class_are_overloads() {
     assert!(report.contains("main.lua:9:14: error[TS2769]: No overload matches this call."), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
+
+#[test]
+fn an_overload_with_a_literal_parameter_is_tried_first() {
+    // As TypeScript's chooser tries signatures with literal parameter types before the others.
+    let source = "---@class Chooser\n---@field choose fun(value: string): number\n---@field choose fun(value: \"literal\"): string\nlocal Chooser = {}\n\n\
+---@type string\nlocal special = Chooser.choose('literal')\n---@type number\nlocal ordinary = Chooser.choose('other')\n";
+    assert_eq!(errors(source), Vec::<String>::new());
+}
+
+#[test]
+fn member_overloads_declared_in_several_files_map_through_inheritance() {
+    let owner = "---@class Box<T>\n---@field choose fun(self: Box<T>, value: T): T\n\n---@class Derived<T>: Box<T>\n";
+    let more = "---@field Box.choose fun(self: Box<number>, value: string): string\n";
+    let main = "---@param box Derived<number>\nlocal function inspect(box)\n    ---@type number\n    local count = box:choose(1)\n    ---@type string\n    local text = box:choose('x')\nend\n";
+    let report = Project::new(&[("owner.def.lua", owner), ("more.def.lua", more), ("main.lua", main)]).check();
+    assert!(!report.contains("error["), "{report}");
+}

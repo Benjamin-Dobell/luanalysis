@@ -151,17 +151,23 @@ fn function_valued_fields_and_assignment_expressions_remain_contravariant() {
 }
 
 #[test]
-fn bodyless_dot_and_colon_methods_keep_origins_through_generic_inheritance() {
+fn dot_and_colon_methods_keep_origins_through_generic_inheritance() {
     clean(
         r#"---@class Base<T>
----@function dot(value:T):void
----@function :colon(value:T):void
+local Base
+---@param value T
+function Base.dot(value) end
+---@param value T
+function Base:colon(value) end
 
 ---@class Middle<U>:Base<U>
 
 ---@class Derived:Middle<string|number>
----@function dot(value:number):void
----@function :colon(value:number):void
+local Derived
+---@param value number
+function Derived.dot(value) end
+---@param value number
+function Derived:colon(value) end
 "#,
     );
 }
