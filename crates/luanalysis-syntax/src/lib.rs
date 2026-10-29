@@ -354,8 +354,9 @@ pub enum StmtKind {
     },
     NumericFor {
         name: Name,
-        /// The variable's written type: LuaLS's `---@type T` above the loop.
-        name_type: Option<TypeExpr>,
+        /// The variable's written type: LuaLS's `---@type T` above the loop. Boxed, as a statement's
+        /// other parts are, so that it does not enlarge every statement.
+        name_type: Option<Box<TypeExpr>>,
         start: Box<Expr>,
         limit: Box<Expr>,
         step: Option<Box<Expr>>,

@@ -516,7 +516,7 @@ impl NativeNamed {
                 StmtKind::Local { annotation, .. } | StmtKind::Assign { annotation, .. } => {
                     annotation.iter().flat_map(|annotation| &annotation.types).collect()
                 }
-                StmtKind::NumericFor { name_type, .. } => name_type.iter().collect(),
+                StmtKind::NumericFor { name_type, .. } => name_type.as_deref().into_iter().collect(),
                 StmtKind::GenericFor { name_types, .. } => name_types.iter().flatten().collect(),
                 _ => Vec::new(),
             };

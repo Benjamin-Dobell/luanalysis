@@ -3653,7 +3653,7 @@ impl RegistryIndex<'_> {
                         .binding_at(name.span.start)
                         .expect("bound numeric loop variable");
                     self.declarations
-                        .insert(binding, DeclarationSource::NumericLoop { annotation: name_type.clone(), owner });
+                        .insert(binding, DeclarationSource::NumericLoop { annotation: name_type.as_deref().cloned(), owner });
                     self.statements(body, owner);
                 }
                 StmtKind::GenericFor {

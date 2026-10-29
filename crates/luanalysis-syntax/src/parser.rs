@@ -2200,7 +2200,7 @@ fn loop_variable_annotations(statement: &mut Stmt, annotations: &mut FunctionAnn
         }
         StmtKind::NumericFor { name_type, .. } => {
             if annotations.type_annotation.as_ref().is_some_and(|annotation| annotation.types.len() == 1 && annotation.packs.is_none()) {
-                *name_type = annotations.type_annotation.take().and_then(|annotation| annotation.types.into_iter().next());
+                *name_type = annotations.type_annotation.take().and_then(|annotation| annotation.types.into_iter().next()).map(Box::new);
             }
         }
         _ => {}
