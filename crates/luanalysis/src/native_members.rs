@@ -167,7 +167,7 @@ impl NativeRegistry {
                 }
             }
             if let Some(receiver) = input.receiver_owner {
-                let (receiver, incomplete) = self.original_member_expression_result(receiver, queries);
+                let (receiver, incomplete) = self.original_member_receiver_result(receiver, queries);
                 if incomplete { return Some((TypeMemberActivation::Pending, Vec::new())); }
                 let expected = self.canonical_declaration(luanalysis_engine::NativeTypeDeclarationKey { snapshot: input.owner.snapshot, index: input.owner.index });
                 if queries.named_object_declaration(&receiver).map(|owner| self.canonical_declaration(owner)) != Some(expected) { continue; }
@@ -308,7 +308,7 @@ impl NativeRegistry {
                 MemberOwnerApplication { reference, parameters }
             },
             OriginalOwnerApplication::Receiver(receiver) => MemberOwnerApplication {
-                reference: self.original_member_expression_type(*receiver, queries), parameters: Vec::new(),
+                reference: self.original_member_receiver_result(*receiver, queries).0, parameters: Vec::new(),
             },
             OriginalOwnerApplication::Member { receiver, key } => {
                 let receiver = self.original_owner_application(receiver, queries);
@@ -329,6 +329,23 @@ impl NativeRegistry {
     }
     fn original_member_expression_type(&self, key: NativeExpressionKey, queries: &mut dyn TypeQueries) -> Type {
         self.original_member_expression_result(key, queries).0
+    }
+    /// The receiver a member is stored on (`function math.f()` stores `f` on `math`). A global
+    /// whose class another file declares is that class, as its written contract says: written
+    /// schemas are authoritative, and a store replacing the global is checked against it. Reading
+    /// it through the file's flow instead waited, past any later call, on the bodies of the very
+    /// functions stored on it, which read the global themselves (`math.abs` inside `math.f`).
+    fn original_member_receiver_result(&self, key: NativeExpressionKey, queries: &mut dyn TypeQueries) -> (Type, bool) {
+        let expression = &self.expressions().get(key).expression;
+        if let ExprKind::Name(name) = &expression.kind
+            && self.bound().binding_at(name.span.start).is_none()
+            && !crate::native_functions::globals::nonstandard_environment(self.bound(), name.span.start)
+            && let Some(binding) = self.global_binding(&name.text)
+            && let Ok(ty) = queries.global_binding_type(binding)
+        {
+            return (ty, false);
+        }
+        self.original_member_expression_result(key, queries)
     }
     fn original_member_expression_result(&self, key: NativeExpressionKey, queries: &mut dyn TypeQueries) -> (Type, bool) {
         let expression = &self.expressions().get(key).expression;
