@@ -175,7 +175,7 @@ fn snapshot(report: &ProjectCheckReport, root: &Path) -> ProjectSnapshot {
         .iter()
         .map(|source| SourceSnapshot {
             path: normalize(&source.path),
-            source: source.source.clone(),
+            source: source.source.to_string(),
             role: source.role,
             origin: source.origin.clone(),
         })

@@ -115,7 +115,7 @@ fn diagnostics_retain_the_importing_original_utf8_crlf_file_and_source_correctio
     fs::write(&main, wrong.replace("---@type string", "---@type number")).unwrap();
     let corrected = check_project(fixture.load(vec![main], vec![types]));
     assert_clean(&corrected);
-    assert_eq!(first.source(id).unwrap().source, wrong);
+    assert_eq!(&*first.source(id).unwrap().source, wrong);
     assert!(corrected.file(id).is_none());
     assert!(corrected.source(id).is_none());
 }
@@ -215,7 +215,7 @@ fn syntax_invalid_sources_remain_owned_and_do_not_poison_other_files() {
     assert!(report.files[1].report.diagnostics.is_empty());
     assert_eq!(binding(&report, "value"), "number");
     assert_eq!(
-        report.source(report.files[0].file).unwrap().source,
+        report.source(report.files[0].file).unwrap().source.as_ref(),
         "local = ?"
     );
 }

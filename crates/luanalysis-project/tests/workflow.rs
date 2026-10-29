@@ -161,11 +161,11 @@ fn source_snapshots_remain_owned_and_ids_reject_other_projects() {
     let first = Project::load(&resolver(&temp.0), [entry.clone()], |_| vec![]);
     fs::write(&entry, "edited").unwrap();
     let second = Project::load(&resolver(&temp.0), [entry.clone()], |_| vec![]);
-    assert_eq!(first.file(first.entries[0]).unwrap().source, "original");
-    assert_eq!(second.file(second.entries[0]).unwrap().source, "edited");
+    assert_eq!(first.file(first.entries[0]).unwrap().source.as_ref(), "original");
+    assert_eq!(second.file(second.entries[0]).unwrap().source.as_ref(), "edited");
     assert!(second.file(first.entries[0]).is_none());
     fs::remove_file(&entry).unwrap();
-    assert_eq!(first.file_by_path(&entry).unwrap().source, "original");
+    assert_eq!(first.file_by_path(&entry).unwrap().source.as_ref(), "original");
 }
 
 #[test]

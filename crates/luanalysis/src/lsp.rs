@@ -250,7 +250,17 @@ impl RequestError {
     }
 }
 
-struct Job {
+/// Work for the checking thread.
+enum Job {
+    Check(CheckJob),
+    /// The types of these documents, as the last check checked them, for hovers waiting for them:
+    /// a check publishes diagnostics only, as tsserver answers `geterr`, and types are described
+    /// when a hover asks for them, as tsserver computes quick info.
+    Describe(Vec<PathBuf>),
+}
+
+/// A check of the workspace with the editor's buffers.
+struct CheckJob {
     overlays: HashMap<PathBuf, String>,
     /// The server's `disk_generation`, when the client reports changes on disk: a check may then
     /// reuse the project it loaded at the same generation (`LoadedCheck`).
@@ -481,9 +491,11 @@ struct Server {
     published: HashSet<PathBuf>,
     /// What was last published for each document: an unchanged result is not sent again.
     published_results: HashMap<PathBuf, u64>,
-    /// Whether the open documents' types, which a check describes after publishing its
-    /// diagnostics, are still to come for the last snapshot.
-    awaiting_types: bool,
+    /// Whether a description of types has ended since the last snapshot: a hover then waits for
+    /// no other.
+    snapshot_described: bool,
+    /// Whether a description has been asked for and not yet ended.
+    describe_requested: bool,
     /// Hovers over a checked document that wait for its types.
     deferred_hovers: Vec<(Json, Json)>,
     /// The checked paths and options before the client's settings, and what the settings make of
@@ -534,7 +546,8 @@ impl Server {
             snapshot: None,
             published: HashSet::new(),
             published_results: HashMap::new(),
-            awaiting_types: false,
+            snapshot_described: false,
+            describe_requested: false,
             deferred_hovers: Vec::new(),
             base: None,
             settings: Json::Null,
@@ -591,7 +604,7 @@ impl Server {
         let Some(jobs) = &self.jobs else { return; };
         let overlays = self.documents.iter().map(|(path, document)| (path.clone(), document.text.clone())).collect();
         let disk = self.watching.then_some(self.disk_generation);
-        if jobs.send(Job { overlays, disk }).is_ok() {
+        if jobs.send(Job::Check(CheckJob { overlays, disk })).is_ok() {
             // A newer edit makes the last check's type descriptions out of date: they stop.
             self.describing.cancel();
             self.requested = Some(self.revision);
@@ -756,16 +769,14 @@ impl Server {
                         let Some(text) = change.get("text").and_then(Json::as_str) else { continue };
                         match change.get("range") {
                             Some(range) => {
-                                let lines = LineIndex::new(std::mem::take(&mut document.text));
+                                let lines = LineIndex::new(document.text.as_str());
                                 let offset = |name: &str| lines.offset(
                                     range.path(&[name, "line"]).and_then(Json::as_u64).unwrap_or(0) as usize,
                                     range.path(&[name, "character"]).and_then(Json::as_u64).unwrap_or(0) as usize,
                                     encoding,
                                 );
                                 let (start, end) = (offset("start"), offset("end"));
-                                let mut edited = lines.text;
-                                edited.replace_range(start..end.max(start), text);
-                                document.text = edited;
+                                document.text.replace_range(start..end.max(start), text);
                             }
                             None => document.text = text.to_owned(),
                         }
@@ -1051,7 +1062,7 @@ impl Server {
             let result = {
                 use std::hash::{Hash, Hasher};
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                let version = self.documents.get(path).filter(|document| document.text == file.lines.text).map(|document| document.version.to_string());
+                let version = self.documents.get(path).filter(|document| *document.text == *file.lines.text).map(|document| document.version.to_string());
                 version.hash(&mut hasher);
                 for diagnostic in &file.diagnostics {
                     (diagnostic.start, diagnostic.end, diagnostic.code, &diagnostic.message, diagnostic.unnecessary).hash(&mut hasher);
@@ -1087,10 +1098,11 @@ impl Server {
             eprintln!("luanalysis profile: server publish files={} seconds={:.3}", published.len(), publish_started.elapsed().as_secs_f64());
         }
         self.published = published;
-        // A failed check describes nothing: a hover waiting for it is answered without a type.
-        self.awaiting_types = snapshot.error.is_none();
         self.snapshot = Some(snapshot);
-        if !self.awaiting_types { self.answer_deferred_hovers(); }
+        // A description asked for before this check was for the snapshot it replaced.
+        self.snapshot_described = false;
+        self.describe_requested = false;
+        self.answer_deferred_hovers();
     }
 
     fn answer_deferred_hovers(&mut self) {
@@ -1102,7 +1114,8 @@ impl Server {
     /// Adds the types a description recorded to the files of the snapshot they describe, as their
     /// text was checked.
     fn described(&mut self, described: Snapshot) {
-        self.awaiting_types = false;
+        self.snapshot_described = true;
+        self.describe_requested = false;
         if let Some(snapshot) = &mut self.snapshot {
             for (path, file) in described.files {
                 if let Some(current) = snapshot.files.get_mut(&path)
@@ -1142,16 +1155,27 @@ impl Server {
             let checked = self.hover(params);
             return self.respond(id, checked);
         };
-        // A hover over the text the last check checked waits for its types: that check's, or a
-        // newer check's when one is to come (a document opened after a check began is described
-        // by the next).
-        let types_pending = self.jobs.is_some() && self.revision != 0
-            && (self.awaiting_types || self.checking || self.requested != Some(self.revision));
-        if types_pending
+        // A hover over the text the last check checked, which has no types yet, waits for them:
+        // they are described once no check is to come, and once a description ends it waits for
+        // no other.
+        if self.jobs.is_some() && !self.snapshot_described
             && let Some(document) = self.documents.get(&path)
-            && self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)).is_some_and(|file| file.lines.text == document.text)
+            && self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path))
+                .is_some_and(|file| *file.lines.text == *document.text && file.bindings.is_empty() && file.types.is_empty())
         {
             self.deferred_hovers.push((id, params.clone()));
+            let check_pending = self.checking || self.requested != Some(self.revision);
+            if !check_pending && !self.describe_requested {
+                let mut paths: Vec<PathBuf> = Vec::new();
+                for (_, params) in &self.deferred_hovers {
+                    if let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path)
+                        && !paths.contains(&path)
+                    { paths.push(path); }
+                }
+                if let Some(jobs) = &self.jobs && jobs.send(Job::Describe(paths)).is_ok() {
+                    self.describe_requested = true;
+                }
+            }
             return;
         }
         let checked = self.hover(params);
@@ -1162,7 +1186,7 @@ impl Server {
         let offset = lines.offset(line, character, self.encoding);
         // The checked type applies only while the document is as it was checked.
         let current = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path))
-            .is_some_and(|file| file.lines.text == document.text);
+            .is_some_and(|file| *file.lines.text == *document.text);
         let (ty, range) = match (&checked, current) {
             (Json::Object(_), true) => (
                 checked.path(&["contents", "value"]).and_then(Json::as_str)
@@ -1507,7 +1531,7 @@ impl Server {
             };
             let Some(name) = text.get(span.start..span.end) else { continue };
             let checked_unused = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path))
-                .is_some_and(|file| file.lines.text == text && file.diagnostics.iter().any(|diagnostic|
+                .is_some_and(|file| *file.lines.text == *text && file.diagnostics.iter().any(|diagnostic|
                     diagnostic.code == "TS6133" && diagnostic.start == span.start && diagnostic.end == span.end));
             match code.as_str() {
                 "TS6133" if checked_unused && name.starts_with(|ch: char| ch.is_alphabetic()) && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_') => {
@@ -1599,7 +1623,7 @@ impl Server {
     fn document_links(&self, params: &Json) -> Json {
         let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else { return Json::Null };
         let Some(file) = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)) else { return Json::Null };
-        if self.documents.get(&path).is_some_and(|document| document.text != file.lines.text) { return Json::Array(Vec::new()); }
+        if self.documents.get(&path).is_some_and(|document| *document.text != *file.lines.text) { return Json::Array(Vec::new()); }
         Json::Array(file.requires.iter().map(|require| Json::object([
             ("range", file.range(require.start, require.end, self.encoding)),
             ("target", Json::from(path_to_uri(&require.target))),
@@ -1609,7 +1633,7 @@ impl Server {
     /// A file's text: its open document's, or the last check's.
     fn file_text(&self, path: &Path) -> Option<String> {
         self.documents.get(path).map(|document| document.text.clone())
-            .or_else(|| self.snapshot.as_ref()?.files.get(path).map(|file| file.lines.text.clone()))
+            .or_else(|| self.snapshot.as_ref()?.files.get(path).map(|file| file.lines.text.to_string()))
     }
 
     /// A file's outline, made again only when its text changes.
@@ -1630,7 +1654,7 @@ impl Server {
         let text = match self.documents.get(&path) {
             Some(document) => document.text.clone(),
             None => match self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)) {
-                Some(file) => file.lines.text.clone(),
+                Some(file) => file.lines.text.to_string(),
                 None => return self.respond(id, Json::Null),
             },
         };
@@ -1688,7 +1712,7 @@ impl Server {
     fn documents_are_checked(&self) -> bool {
         let Some(snapshot) = &self.snapshot else { return false };
         self.documents.iter().all(|(path, document)| {
-            snapshot.files.get(path).is_some_and(|file| document.text == file.lines.text)
+            snapshot.files.get(path).is_some_and(|file| *document.text == *file.lines.text)
         })
     }
 
@@ -1761,7 +1785,7 @@ impl Server {
         let mut changes: Vec<(String, Json)> = Vec::new();
         for occurrence in occurrences {
             let Some(file) = snapshot.files.get(&occurrence.path) else { continue };
-            if self.documents.get(&occurrence.path).is_some_and(|document| document.text != file.lines.text) {
+            if self.documents.get(&occurrence.path).is_some_and(|document| *document.text != *file.lines.text) {
                 return Err(RequestError::rename(RenameFailure::new(RenameReason::Unavailable,
                     "the project is being checked; rename again when it has been"), self.encoding, |path| self.uri(path)));
             }
@@ -1811,23 +1835,75 @@ impl Server {
 }
 
 
+/// A workspace of the server's shared sources that parses them as `options` check them: the
+/// requires a load finds are those the check reads, and a cold load parses each source once.
+fn server_workspace(sources: &Arc<crate::incremental::SharedSources>, options: &ProjectCheckOptions) -> ProjectWorkspace {
+    let mut workspace = ProjectWorkspace::shared(Arc::clone(sources));
+    workspace.set_parse_options(options.parse_options());
+    workspace
+}
+
 fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Receiver<Job>, events: mpsc::Sender<Event>, sources: Arc<crate::incremental::SharedSources>, generation: u64, describing: crate::project_check::Cancellation) {
     // Its work, and its sessions', unwinds when the server cancels it.
     options.cancellation.enter();
-    let mut workspace = ProjectWorkspace::shared(Arc::clone(&sources));
-    // An edit's diagnostics are published first, as tsserver answers `geterr`. The open documents'
-    // types, which hover reads, are described after, and a newer edit stops that.
+    let mut workspace = server_workspace(&sources, &options);
+    // A check publishes an edit's diagnostics, as tsserver answers `geterr`. The open documents'
+    // types, which hover reads, are described when a hover asks for them, and a newer edit stops
+    // that.
     let diagnostics = ProjectCheckOptions { describe_types: false, ..options.clone() };
     let described = ProjectCheckOptions { describe_types: true, cancellation: describing.clone(), ..options.clone() };
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let mut loaded = None;
     // The line index of each source the last check published, for the next to reuse.
     let mut lines = HashMap::new();
+    // The project the last check checked, which a description describes.
+    let mut checked_project: Option<Project> = None;
     while let Ok(mut job) = jobs.recv() {
-        // Only the latest revision is worth checking.
-        while let Ok(newer) = jobs.try_recv() { job = newer; }
+        // Only the latest revision is worth checking. A description asked for before it is for
+        // the snapshot it replaces: the server asks again.
+        while let Ok(newer) = jobs.try_recv() {
+            job = match (job, newer) {
+                (Job::Describe(mut paths), Job::Describe(more)) => {
+                    for path in more { if !paths.contains(&path) { paths.push(path); } }
+                    Job::Describe(paths)
+                }
+                (Job::Check(check), Job::Describe(_)) => Job::Check(check),
+                (_, newer) => newer,
+            };
+        }
         describing.reset();
         if options.cancellation.is_cancelled() { return; }
+        let job = match job {
+            Job::Check(job) => job,
+            Job::Describe(paths) => {
+                let started = std::time::Instant::now();
+                let types = match checked_project.clone() {
+                    Some(project) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| workspace.describe_incrementally(project, described.clone(), &paths))).map(Some),
+                    None => Ok(None),
+                };
+                options.cancellation.enter();
+                if options.cancellation.is_cancelled() { return; }
+                // A newer edit stopped the description: it is checked next.
+                if describing.is_cancelled() { continue; }
+                // The server hears that the description ended, even when it found nothing to
+                // describe or failed: hovers wait for it.
+                let described = match types {
+                    Ok(Some(report)) => {
+                        if profile { eprintln!("luanalysis profile: server described files={} seconds={:.3}", report.files.len(), started.elapsed().as_secs_f64()); }
+                        Snapshot::of(&report)
+                    }
+                    Ok(None) => Snapshot::failed(String::new()),
+                    Err(_) => {
+                        workspace = server_workspace(&sources, &options);
+                        loaded = None;
+                        checked_project = None;
+                        Snapshot::failed(String::new())
+                    }
+                };
+                if events.send(Event::Described(Box::new(described), generation)).is_err() { return; }
+                continue;
+            }
+        };
         let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&inputs, diagnostics.clone(), &mut workspace, &mut loaded, &job)));
         // A cancelled check is incomplete: newer settings or a stopping server have replaced it.
         if options.cancellation.is_cancelled() { return; }
@@ -1840,40 +1916,19 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
             }
             Ok(Err(error)) => (Snapshot::failed(error), None),
             Err(_) => {
-                workspace = ProjectWorkspace::shared(Arc::clone(&sources));
+                workspace = server_workspace(&sources, &options);
                 loaded = None;
                 (Snapshot::failed("checking failed internally; see the server's standard error".into()), None)
             }
         };
+        checked_project = project;
         if events.send(Event::Checked(Box::new(snapshot), generation)).is_err() { return; }
-        let Some(project) = project else { continue };
-        let started = std::time::Instant::now();
-        let open: Vec<PathBuf> = job.overlays.keys().cloned().collect();
-        let types = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| workspace.describe_incrementally(project, described.clone(), &open)));
-        options.cancellation.enter();
-        if options.cancellation.is_cancelled() { return; }
-        // A newer edit stopped the description: it is checked next.
-        if describing.is_cancelled() { continue; }
-        // The server hears that the description ended, even when it found nothing to describe or
-        // failed: hovers wait for it.
-        let described = match types {
-            Ok(report) => {
-                if profile { eprintln!("luanalysis profile: server described files={} seconds={:.3}", report.files.len(), started.elapsed().as_secs_f64()); }
-                Snapshot::of(&report)
-            }
-            Err(_) => {
-                workspace = ProjectWorkspace::shared(Arc::clone(&sources));
-                loaded = None;
-                Snapshot::failed(String::new())
-            }
-        };
-        if events.send(Event::Described(Box::new(described), generation)).is_err() { return; }
     }
 }
 
 fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>, cancelled: Arc<std::sync::Mutex<HashSet<String>>>, sources: Arc<crate::incremental::SharedSources>) {
     options.cancellation.enter();
-    let mut workspace = ProjectWorkspace::shared(Arc::clone(&sources));
+    let mut workspace = server_workspace(&sources, &options);
     let mut loaded = None;
     while let Ok(first) = queries.recv() {
         let mut pending = vec![first];
@@ -1938,7 +1993,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Hierarchy(site) => hierarchy(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
             }));
             if completed.is_err() {
-                workspace = ProjectWorkspace::shared(Arc::clone(&sources));
+                workspace = server_workspace(&sources, &options);
                 loaded = None;
             }
             // A warm-up has no answer.
@@ -1973,7 +2028,7 @@ fn load(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Opt
         && last.disk == query.disk && last.path == query.path && last.others == others && last.module_map == module_map
         && let Some(file) = last.project.file_by_path(&query.path).cloned()
     {
-        let edited = luanalysis_project::SourceFile { source: query.text().to_owned(), ..file };
+        let edited = luanalysis_project::SourceFile { source: query.text().into(), ..file };
         let requests = workspace.static_require_requests(&edited);
         if last.project.replace_source(edited.id, edited.source, requests) {
             return Some(last.project.clone());
@@ -2191,7 +2246,7 @@ fn file_rename(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &m
     let mut grouped: std::collections::BTreeMap<PathBuf, Vec<Json>> = std::collections::BTreeMap::new();
     for edit in edits {
         let Some(source) = report.project.file_by_path(&edit.path) else { return answer(Err("rename source disappeared".to_owned())) };
-        let lines = LineIndex::new(source.source.clone());
+        let lines = LineIndex::new(Arc::clone(&source.source));
         grouped.entry(edit.path).or_default().push(Json::object([
             ("range", lines.range(edit.span.start, edit.span.end, query.encoding)),
             ("newText", Json::from(edit.replacement)),
@@ -2429,7 +2484,7 @@ struct LoadedCheck {
     project: Project,
 }
 
-fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedCheck>, job: &Job) -> Result<ProjectCheckReport, String> {
+fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedCheck>, job: &CheckJob) -> Result<ProjectCheckReport, String> {
     let started = std::time::Instant::now();
     let project = match reloaded(inputs, workspace, loaded, job) {
         Some(project) => project,
@@ -2456,7 +2511,7 @@ fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut Pro
 /// changed one requires the same modules, the last project is reused with their new texts rather
 /// than discovered, read and resolved again. A client that reports no changes on disk gets no
 /// reuse.
-fn reloaded(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedCheck>, job: &Job) -> Option<Project> {
+fn reloaded(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedCheck>, job: &CheckJob) -> Option<Project> {
     let last = loaded.as_mut()?;
     if job.disk != Some(last.disk) || last.overlays.len() != job.overlays.len() || !job.overlays.keys().all(|path| last.overlays.contains_key(path)) {
         return None;
@@ -2467,7 +2522,7 @@ fn reloaded(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut
     for (path, text) in &job.overlays {
         if last.overlays.get(path) == Some(text) { continue; }
         let replaced = last.project.file_by_path(path).cloned().is_some_and(|file| {
-            let edited = luanalysis_project::SourceFile { source: text.clone(), ..file };
+            let edited = luanalysis_project::SourceFile { source: text.as_str().into(), ..file };
             let requests = workspace.static_require_requests(&edited);
             last.project.replace_source(edited.id, edited.source, requests)
         });
@@ -2558,11 +2613,14 @@ impl Snapshot {
         let mut files = HashMap::new();
         let mut symbol_sources = Vec::new();
         let mut indexed = HashMap::new();
+        // Each file's requires, gathered once rather than searched for in every file's turn.
+        let mut dependencies: HashMap<luanalysis_project::FileId, Vec<&luanalysis_project::Dependency>> = HashMap::new();
+        for dependency in &report.project.dependencies { dependencies.entry(dependency.from).or_default().push(dependency); }
         for checked in &report.files {
             let Some(source) = report.project.file(checked.file) else { continue };
             let line_index = match lines.remove(&source.path) {
-                Some(index) if index.text == source.source => index,
-                _ => Arc::new(LineIndex::new(source.source.clone())),
+                Some(index) if Arc::ptr_eq(&index.text, &source.source) || index.text == source.source => index,
+                _ => Arc::new(LineIndex::new(Arc::clone(&source.source))),
             };
             indexed.insert(source.path.clone(), Arc::clone(&line_index));
             if let Some(bound) = &checked.report.bound {
@@ -2576,7 +2634,7 @@ impl Snapshot {
             // A module is a `require` call's only when the check took its callee as the
             // standard loader, not merely spelled `require`.
             let imported = |start, end| result.imports.iter().any(|span| span.start == start && span.end == end);
-            let requires = report.project.dependencies.iter().filter(|dependency| dependency.from == checked.file).filter_map(|dependency| {
+            let requires = dependencies.get(&checked.file).into_iter().flatten().filter_map(|dependency| {
                 let DependencyOutcome::Resolved(target) = dependency.outcome else { return None };
                 if !imported(dependency.request.span.start, dependency.request.span.end) { return None; }
                 Some(CheckedRequire {
@@ -2615,12 +2673,14 @@ impl CheckedFile {
 
 /// Byte offsets of a text and LSP positions in it.
 struct LineIndex {
-    text: String,
+    /// Shared with the project the text was checked in, when it was.
+    text: Arc<str>,
     line_starts: Vec<usize>,
 }
 
 impl LineIndex {
-    fn new(text: String) -> Self {
+    fn new(text: impl Into<Arc<str>>) -> Self {
+        let text = text.into();
         let mut line_starts = vec![0];
         for (index, byte) in text.bytes().enumerate() {
             if byte == b'\n' || byte == b'\r' && text.as_bytes().get(index + 1) != Some(&b'\n') {

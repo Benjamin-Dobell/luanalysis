@@ -167,6 +167,8 @@ pub struct ProjectCheckReport {
     pub execution: Option<NativeTaskRunStats>,
     /// Maximum task count in a step of Bun's source/cost plan.
     pub planned_parallelism: usize,
+    /// The files whose reports an incremental check kept from the check before it, unchanged.
+    pub kept: HashSet<FileId>,
 }
 impl ProjectCheckReport {
     pub fn file(&self, file: FileId) -> Option<&FileCheckReport> {
@@ -371,6 +373,7 @@ pub(crate) fn check_project_with_workspace(
         environment_errors: prepared.environment_errors,
         execution: run.execution,
         planned_parallelism: run.parallelism,
+        kept: HashSet::default(),
     }
 }
 
@@ -540,6 +543,9 @@ fn finish_reports(files: &mut Vec<FileCheckReport>, prepared: &mut PreparedProgr
 #[derive(Default)]
 pub(crate) struct IncrementalState {
     key: Option<String>,
+    /// The file part of `key` and the project it was made for: a loaded project's files are
+    /// fixed, only their texts replaced, so an edit need not list them again.
+    files_key: Option<(u64, String)>,
     files: HashMap<std::path::PathBuf, IncrementalFile>,
     /// How many files the check that made this state checked.
     pub(crate) checked: usize,
@@ -557,15 +563,25 @@ struct IncrementalFile {
 impl IncrementalState {
     /// What every check of this workspace must agree on: the options it checks with and the files
     /// it loads, in their roles. A change checks the whole program.
-    fn key(project: &Project, options: &ProjectCheckOptions) -> String {
-        let mut files: Vec<_> = project.files.iter()
-            .map(|file| format!("{}|{:?}|{}|{}", file.path.display(), file.role, project.entries.contains(&file.id), project.libraries.contains(&file.id)))
-            .collect();
-        files.sort();
+    fn key(&mut self, project: &Project, options: &ProjectCheckOptions) -> String {
+        let files = match &self.files_key {
+            Some((id, files)) if *id == project.id && project.files.len() == files.lines().count() => files.clone(),
+            _ => {
+                let entries: HashSet<FileId> = project.entries.iter().copied().collect();
+                let libraries: HashSet<FileId> = project.libraries.iter().copied().collect();
+                let mut files: Vec<_> = project.files.iter()
+                    .map(|file| format!("{}|{:?}|{}|{}", file.path.display(), file.role, entries.contains(&file.id), libraries.contains(&file.id)))
+                    .collect();
+                files.sort();
+                let files = files.join("\n");
+                self.files_key = Some((project.id, files.clone()));
+                files
+            }
+        };
         format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}\n{}",
             options.loader_policy, options.environment, options.standard_library, options.overload_mode, options.parse_options(),
             options.no_implicit_any, options.no_unsafe_any, options.strict_nil, options.assume_unknown_standard_effects,
-            options.describe_types, options.inspections, options.emmylua_syntax, options.decay_optionals, files.join("\n"))
+            options.describe_types, options.inspections, options.emmylua_syntax, options.decay_optionals, files)
     }
 }
 
@@ -585,7 +601,7 @@ pub(crate) fn check_project_incrementally(
     let mut state = workspace.take_incremental_state();
     let mut prepared = prepare_program(&mut project, &options, workspace);
     let prepare_elapsed = started.elapsed();
-    let key = IncrementalState::key(&project, &options);
+    let key = state.key(&project, &options);
     let path = |file: FileId| project.file(file).map(|source| source.path.clone()).expect("a program file");
     let names: HashMap<FileId, std::sync::Arc<crate::affected::FileNames>> = prepared.sources.iter().map(|(&file, snapshot)| {
         let known = state.files.get(&path(file)).filter(|known| known.revision == snapshot.revision());
@@ -688,22 +704,25 @@ pub(crate) fn check_project_incrementally(
     files.extend(checked.into_values().filter(|report| !roots.contains(&report.file)));
     finish_reports(&mut files, &mut prepared);
     let cancelled = options.cancellation.is_cancelled();
-    let mut next = IncrementalState { key: (!cancelled).then_some(key), files: HashMap::default(), checked: checked_count };
+    // A whole check knows every file anew. Otherwise the files are those of the check before, as
+    // the key says, and only those checked again change: a reused file keeps its entry.
+    if whole { state.files.clear(); }
+    state.key = (!cancelled).then_some(key);
+    state.checked = checked_count;
     for report in &files {
+        if reused.contains(&report.file) { continue; }
         let Some(snapshot) = prepared.sources.get(&report.file) else { continue };
         let file = path(report.file);
         let kept = state.files.get(&file).filter(|known| known.revision == snapshot.revision());
         let signature = signatures.get(&report.file).copied().or_else(|| kept.and_then(|known| known.signature));
-        let described = if reused.contains(&report.file) { kept.is_some_and(|known| known.described) } else { options.describe_types };
-        next.files.insert(file, IncrementalFile {
+        state.files.insert(file, IncrementalFile {
             revision: snapshot.revision(),
             report: report.report.clone(),
-            described,
+            described: options.describe_types,
             signature,
             names: std::sync::Arc::clone(&names[&report.file]),
         });
     }
-    state = next;
     workspace.put_incremental_state(state);
     if profile {
         let total = started.elapsed();
@@ -718,6 +737,7 @@ pub(crate) fn check_project_incrementally(
         environment_errors: prepared.environment_errors,
         execution,
         planned_parallelism: parallelism,
+        kept: reused,
     }
 }
 
@@ -780,6 +800,7 @@ pub(crate) fn describe_incrementally(
         environment_errors: prepared.environment_errors,
         execution: None,
         planned_parallelism: 1,
+        kept: HashSet::default(),
     }
 }
 

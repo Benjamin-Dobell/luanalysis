@@ -3443,7 +3443,7 @@ fn source_functions(source: &crate::native_functions::NativeRegistry) -> Vec<(Sp
 fn call_item(project: &Project, registry: &crate::native_functions::project_provider::ProjectRegistry, key: luanalysis_engine::NativeFunctionKey, texts: &mut std::collections::HashMap<std::path::PathBuf, String>) -> Option<CallItem> {
     let (file, span) = registry.function_site(key)?;
     let source = project.file(file)?;
-    texts.entry(source.path.clone()).or_insert_with(|| source.source.clone());
+    texts.entry(source.path.clone()).or_insert_with(|| source.source.to_string());
     let functions = source_functions(registry.source(file)?);
     let (name, range, selection, kind) = functions.into_iter().find(|(function, _, _)| *function == span)
         .and_then(|(_, _, declared)| declared)
@@ -3517,7 +3517,7 @@ fn calls(
                     let item = match caller {
                         Some((_, caller, _)) => call_item(project, registry, *caller, &mut hierarchy.texts),
                         None => {
-                            hierarchy.texts.entry(other.path.clone()).or_insert_with(|| other.source.clone());
+                            hierarchy.texts.entry(other.path.clone()).or_insert_with(|| other.source.to_string());
                             let name = other.path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
                             Some(CallItem { name, kind: SymbolKind::Module, chunk: true, path: other.path.clone(), span: Span { start: 0, end: other.source.len() }, selection: Span { start: 0, end: 0 } })
                         }
@@ -3624,7 +3624,7 @@ fn types_related(
         }
     }
     let item = |(other, item, _): &(&luanalysis_project::SourceFile, TypeItem, Vec<String>), texts: &mut std::collections::HashMap<std::path::PathBuf, String>| {
-        texts.entry(other.path.clone()).or_insert_with(|| other.source.clone());
+        texts.entry(other.path.clone()).or_insert_with(|| other.source.to_string());
         item.clone()
     };
     let items = match supertypes {

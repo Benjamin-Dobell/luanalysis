@@ -228,9 +228,9 @@ fn declaration_roles_are_explicit_and_belong_to_an_owned_immutable_snapshot() {
     fs::write(&declaration, "return 'updated'").unwrap();
     let second = Project::load(&resolver(&temp.0), [declaration.clone()], |_| vec![]);
     assert_eq!(first.files[0].role, SourceRole::Declaration);
-    assert_eq!(first.files[0].source, "---@alias Count number");
+    assert_eq!(first.files[0].source.as_ref(), "---@alias Count number");
     assert_eq!(second.files[0].role, SourceRole::Implementation);
-    assert_eq!(second.files[0].source, "return 'updated'");
+    assert_eq!(second.files[0].source.as_ref(), "return 'updated'");
     assert!(second.file(first.files[0].id).is_none());
     fs::remove_file(&declaration).unwrap();
     assert_eq!(

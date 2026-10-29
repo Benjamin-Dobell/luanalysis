@@ -303,7 +303,7 @@ fn minimal_profile_attests_original_require_across_successive_imports_and_saved_
     let standard = report.source(report.standard_library_files[0]).unwrap();
     assert!(matches!(standard.origin, SourceOrigin::DeclarationLibrary { .. }));
     assert_eq!(standard.path, PathBuf::from("stdlib/LegacyMinimal/require.def.lua"));
-    assert_eq!(standard.source, include_str!("../stdlib/LegacyMinimal/require.def.lua"));
+    assert_eq!(standard.source.as_ref(), include_str!("../stdlib/LegacyMinimal/require.def.lua"));
     let rejected = fixture.check(&source.replace("local textual=second", "local textual=first"), StandardEnvironmentProfile::LegacyMinimal);
     assert!(code(&rejected, "TS2322"), "{:#?}", rejected.files);
     clean(&fixture.check(source, StandardEnvironmentProfile::LegacyMinimal));
@@ -382,7 +382,7 @@ fn selected_profile_registers_active_declarations_without_runtime_membership_or_
         // The utility types are one file for every version.
         let directory = if name == "utility.def.lua" { "stdlib" } else { "stdlib/Lua54" };
         let active = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(directory).join(name);
-        assert_eq!(source.source, fs::read_to_string(active).unwrap());
+        assert_eq!(*source.source, *fs::read_to_string(active).unwrap());
     }
     names.sort_unstable();
     assert_eq!(names, ["builtin.def.lua", "coroutine.def.lua", "debug.def.lua", "global.def.lua", "io.def.lua", "math.def.lua", "os.def.lua", "package.def.lua", "string.def.lua", "table.def.lua", "utf8.def.lua", "utility.def.lua"]);

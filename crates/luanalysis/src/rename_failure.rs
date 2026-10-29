@@ -61,7 +61,7 @@ impl RenameFailure {
 
     pub(crate) fn with_related(mut self, source: &SourceFile, span: Span) -> Self {
         self.related.push(RenameRelatedInformation {
-            path: source.path.clone(), span, text: source.source.clone(),
+            path: source.path.clone(), span, text: source.source.to_string(),
             origin: source.origin.clone(), role: source.role,
         });
         self

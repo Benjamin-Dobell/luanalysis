@@ -333,7 +333,7 @@ impl ProjectWorkspace {
         let identity = SourceIdentity::of(source);
         let options = self.parse_options;
         if let Some(known) = self.sources.get(&identity)
-            && known.source.as_ref() == source.source.as_str()
+            && (Arc::ptr_eq(&known.source, &source.source) || *known.source == *source.source)
             && known.syntax.options == options
         {
             return (Arc::clone(known), false);
@@ -341,7 +341,7 @@ impl ProjectWorkspace {
         // Another workspace's revision of the same text.
         if let Some(shared) = &self.shared
             && let Some(known) = shared.state().snapshots.get(&identity)
-                .and_then(|snapshots| snapshots.iter().filter_map(std::sync::Weak::upgrade).find(|known| known.source.as_ref() == source.source.as_str() && known.syntax.options == options))
+                .and_then(|snapshots| snapshots.iter().filter_map(std::sync::Weak::upgrade).find(|known| (Arc::ptr_eq(&known.source, &source.source) || *known.source == *source.source) && known.syntax.options == options))
         {
             self.sources.insert(identity, Arc::clone(&known));
             return (known, false);
@@ -364,7 +364,8 @@ impl ProjectWorkspace {
         };
         let snapshot = Arc::new(SourceSnapshot {
             revision,
-            source: Arc::from(source.source.as_str()),
+            // The project's text itself, not a copy of it.
+            source: Arc::clone(&source.source),
             syntax: Arc::new(syntax),
             bound,
             checking_cost: std::sync::OnceLock::new(),
@@ -485,7 +486,7 @@ mod tests {
             let parsed = luanalysis_syntax::parse(&source.source);
             assert_eq!(cached.id, source.id);
             assert_eq!(cached.role, source.role);
-            assert_eq!(cached.snapshot.source(), source.source.as_str());
+            assert_eq!(cached.snapshot.source(), source.source.as_ref());
             assert_eq!(cached.snapshot.syntax(), &parsed);
             assert_eq!(cached.snapshot.bound(), Some(&bind::bind(&parsed)));
         }

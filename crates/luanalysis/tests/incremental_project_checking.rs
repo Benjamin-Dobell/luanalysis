@@ -142,7 +142,7 @@ fn normalized(report: &ProjectCheckReport) -> NormalizedReport {
         .map(|source| {
             (
                 source.path.clone(),
-                source.source.clone(),
+                source.source.to_string(),
                 source.role,
                 format!("{:?}", source.origin),
             )
@@ -318,7 +318,7 @@ fn same_length_source_edit_rechecks_semantics_and_preserves_previous_report() {
     preparation(&workspace, 1, 0, 1);
     assert!(second.source(old_id).is_none());
     assert!(second.file(old_id).is_none());
-    assert_eq!(first.source(old_id).unwrap().source, wrong);
+    assert_eq!(&*first.source(old_id).unwrap().source, wrong);
     diagnostic_at(&first, &main, "TS2322", "'bad'");
     let unchanged = fixture.compare(&mut workspace, fixture.plan(&["main.lua"], &[]), options());
     clean(&unchanged);

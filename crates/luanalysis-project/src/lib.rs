@@ -488,7 +488,8 @@ impl ProjectLoadPlan {
 pub struct SourceFile {
     pub id: FileId,
     pub path: PathBuf,
-    pub source: String,
+    /// Shared, so that cloning a project, or keeping a source's text beside it, copies no text.
+    pub source: std::sync::Arc<str>,
     pub role: SourceRole,
     pub origin: SourceOrigin,
 }
@@ -776,7 +777,7 @@ impl Project {
         }
         if let Some(&id) = self.declaration_sources.get(&source.identity) {
             let existing = self.file(id).expect("registered declaration source");
-            if existing.path == source.path && existing.source == source.source {
+            if existing.path == source.path && *existing.source == *source.source {
                 return Ok(id);
             }
             return Err(DeclarationSourceError::ConflictingIdentity {
@@ -794,7 +795,7 @@ impl Project {
         self.files.push(SourceFile {
             id,
             path: source.path,
-            source: source.source,
+            source: source.source.into(),
             role: SourceRole::Declaration,
             origin: SourceOrigin::DeclarationLibrary { identity: source.identity },
         });
@@ -806,7 +807,7 @@ impl Project {
     /// order: the loaded files and their resolutions stay as they are, and only the requests'
     /// spans move. Returns false, changing nothing, when the requests differ; the project must
     /// then be loaded again.
-    pub fn replace_source(&mut self, id: FileId, source: String, requests: impl Into<FileRequests>) -> bool {
+    pub fn replace_source(&mut self, id: FileId, source: impl Into<std::sync::Arc<str>>, requests: impl Into<FileRequests>) -> bool {
         let Some(file) = self.file(id) else { return false };
         if file.role != SourceRole::Implementation { return false; }
         let FileRequests { requires: requests, provides } = requests.into();
@@ -823,7 +824,7 @@ impl Project {
         for (index, request) in edges.into_iter().zip(requests) {
             self.dependencies[index].request = request;
         }
-        self.files[id.index as usize].source = source;
+        self.files[id.index as usize].source = source.into();
         true
     }
 
@@ -880,7 +881,7 @@ impl Project {
         self.files.push(SourceFile {
             id,
             path: canonical.clone(),
-            source,
+            source: source.into(),
             role: role.unwrap_or(SourceRole::Implementation),
             origin: SourceOrigin::Filesystem,
         });

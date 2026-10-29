@@ -26,7 +26,7 @@ fn declaration_resources_retain_original_text_without_filesystem_or_runtime_memb
     assert!(!input.path.exists());
     let file = project.add_declaration_source(input).unwrap();
     let original = project.file(file).unwrap();
-    assert_eq!(original.source, source);
+    assert_eq!(&*original.source, source);
     assert_eq!(original.path, PathBuf::from("stdlib/Lua54/base.def.lua"));
     assert_eq!(original.role, SourceRole::Declaration);
     assert_eq!(
@@ -76,7 +76,7 @@ fn declaration_identity_deduplicates_identical_bytes_and_rejects_conflicting_ori
     }
     assert_eq!(project.files.len(), 1);
     assert_eq!(project.libraries, [first]);
-    assert_eq!(project.file(first).unwrap().source, "original");
+    assert_eq!(project.file(first).unwrap().source.as_ref(), "original");
     assert_eq!(
         project.add_declaration_source(resource("", "empty", "")),
         Err(DeclarationSourceError::EmptyIdentity)
