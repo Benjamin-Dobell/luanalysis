@@ -273,6 +273,9 @@ pub struct IteratorRecipe {
     pub values: Vec<EvaluationId>,
     /// Successful first/later steps join here before body-visible stores.
     pub step: FlowId,
+    /// Which of the loop's variables have a written type (`StmtKind::GenericFor::name_types`),
+    /// which they keep rather than the iterator's values.
+    pub written: Vec<bool>,
 }
 impl ProgramFlow {
     pub fn iterator(&self, id: IteratorId) -> &IteratorRecipe {
@@ -1114,6 +1117,7 @@ impl Builder<'_> {
             }
             StmtKind::GenericFor {
                 names,
+                name_types,
                 values,
                 body,
                 ..
@@ -1133,6 +1137,7 @@ impl Builder<'_> {
                     input,
                     values,
                     step: context.current,
+                    written: name_types.iter().map(Option::is_some).collect(),
                 });
                 self.generic_iteration(context, iterator, names, body, span);
             }

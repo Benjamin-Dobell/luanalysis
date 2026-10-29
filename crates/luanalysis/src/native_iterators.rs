@@ -137,6 +137,8 @@ impl NativeRegistry {
         binding: BindingId,
         queries: &mut dyn TypeQueries,
     ) -> Option<(Binding, bool)> {
+        // A variable whose type is written keeps it, as a typed local does.
+        if self.binding_has_written_contract(binding) { return None; }
         let sources = self.iterator_sources();
         let write = sources.declaration_write(binding)?;
         if !matches!(

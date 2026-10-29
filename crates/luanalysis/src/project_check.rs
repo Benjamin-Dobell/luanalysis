@@ -34,8 +34,10 @@ pub struct ProjectCheckOptions {
     /// Opt-in reading of EmmyLua Analyzer Rust's own annotation syntax
     /// ([`luanalysis_syntax::ParseOptions::emmylua`]).
     pub emmylua_syntax: bool,
-    /// Opt-in reading of every optional as `nil | T`, as EmmyLua Analyzer does, rather than as a
-    /// value that may be absent ([`luanalysis_syntax::ParseOptions::decay_optionals`]).
+    /// Opt-in reading of every optional as `nil | T`, and of absence as nil, as EmmyLua Analyzer
+    /// does, rather than as a value that may be absent
+    /// ([`luanalysis_syntax::ParseOptions::decay_optionals`]): a final result or parameter that
+    /// admits nil may then be left out.
     pub decay_optionals: bool,
     /// False selects v1's permissive nil assignments; runtime nil remains represented.
     pub strict_nil: bool,

@@ -550,6 +550,7 @@ impl Binder {
                     step,
                     body,
                     body_span,
+                    ..
                 } => {
                     self.expression(start);
                     self.expression(limit);
@@ -566,6 +567,7 @@ impl Binder {
                     values,
                     body,
                     body_span,
+                    ..
                 } => {
                     for value in values {
                         self.expression(value);

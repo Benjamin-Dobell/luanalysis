@@ -705,6 +705,18 @@ enable(state)
 if state.ready then print("ready") end -- state.ready is boolean
 ```
 
+A loop's variables take the values its iterator gives. A `---@param name T` line above a
+`for ... in` loop gives its variable `name` the type `T` instead, as Luanalysis for IntelliJ and
+lua-language-server read it, and a `---@type T` line does the same for a numeric loop's variable.
+Each value the loop gives it is checked against that type, as a typed local's value is.
+
+```lua
+---@param item Item
+for _, item in pairs(registry) do
+    print(item.name)
+end
+```
+
 ### Inspections
 
 In editors, Luanalysis also points out code that type checks but is probably wrong: unreachable
@@ -792,7 +804,7 @@ files ignore unless a `.luarc.json` says otherwise.
 | `--no-implicit-any` | Require types for parameters and for locals whose type cannot be inferred. |
 | `--no-unsafe-any` | Report reading a member of, indexing or calling a value of type `any`, as Luanalysis for IntelliJ did with "unknown callable/indexable" off. `any` stays assignable either way. |
 | `--emmylua-syntax` | Read EmmyLua Analyzer's own annotation syntax (see [Compatibility](#compatibility)). |
-| `--dangerously-decay-optionals` | Read every optional as `nil \| T`, as EmmyLua Analyzer does, rather than as a value that may be absent. |
+| `--dangerously-decay-optionals` | Read absence as nil, as EmmyLua Analyzer does: every optional is `nil \| T`, and a final result or parameter that admits nil may be left out. |
 | `--no-strict-nil` | Permit nil assignments for v1 compatibility; preserve runtime nil flow and physical result counts. |
 | `--format text\|json` | Report format. JSON reports include exact source ranges. |
 
@@ -891,7 +903,7 @@ with `settings` in `workspace/didChangeConfiguration`, either directly or under 
 | `noImplicitAny` | boolean | `false` | `--no-implicit-any` | | Require types for parameters and for locals whose type cannot be inferred. |
 | `noUnsafeAny` | boolean | `false` | `--no-unsafe-any` | | Report reading a member of, indexing or calling a value of type `any`. |
 | `emmyluaSyntax` | boolean | `false` | `--emmylua-syntax` | | Read EmmyLua Analyzer's own annotation syntax. |
-| `dangerouslyDecayOptionals` | boolean | `false` | `--dangerously-decay-optionals` | | Read every optional as `nil \| T`, as EmmyLua Analyzer does. |
+| `dangerouslyDecayOptionals` | boolean | `false` | `--dangerously-decay-optionals` | | Read absence as nil, as EmmyLua Analyzer does. |
 | `strictNil` | boolean | `true` | `--no-strict-nil` (`false`) | | `false` permits nil assignments, for v1 compatibility. |
 | `inlayHints.types` | boolean | `true` | | | Show the inferred types of locals declared without one. |
 | `inlayHints.parameterNames` | boolean | `true` | | | Show parameter names at literal arguments: `nil`, booleans, numbers and strings. |
@@ -1059,12 +1071,18 @@ other additions:
   writes the `?` on a name or writes `nil | T`. Without the option it is reported. With it, a
   parameter's or field's `T?` is its name's, optional, and any other is `nil | T`.
 
-EmmyLua Analyzer and lua-language-server read every optional as `nil | T`, conflating a value
-that may be absent with nil. `--dangerously-decay-optionals` (the `dangerouslyDecayOptionals`
-setting) reads them that way: a `T?` result is a value that may be nil, so `---@return string?,
-boolean` is `nil | string, boolean`; a `T?` parameter is a required `nil | T`; and an optional
-parameter takes nil. It is separate from `--emmylua-syntax`, which does not enable it, because
-it is incorrect.
+EmmyLua Analyzer and lua-language-server read every optional as `nil | T` and a missing value as
+nil, conflating a value that may be absent with nil. `--dangerously-decay-optionals` (the
+`dangerouslyDecayOptionals` setting) reads them that way, absence as nil:
+
+- A `T?` is `nil | T`, so `---@return string?, boolean` is `nil | string, boolean`.
+- A final result that admits nil may be left out: a bare `return`, or none, satisfies
+  `---@return string?` and `---@return string | nil`, and `function() end` is a
+  `fun(): string?`.
+- A final parameter that admits nil may be omitted, as an optional parameter may, and an optional
+  parameter takes nil: `f()` calls `---@param x string | nil`.
+
+It is separate from `--emmylua-syntax`, which does not enable it, because it is incorrect.
 
 Some checks deliberately differ from Luanalysis for IntelliJ's. Stricter, as TypeScript's are:
 

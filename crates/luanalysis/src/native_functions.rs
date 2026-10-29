@@ -93,8 +93,10 @@ enum DeclarationSource {
         function: u32,
         index: usize,
     },
-    NumericLoop,
-    GenericLoop,
+    /// A loop's variable, with its written type (`StmtKind::NumericFor::name_type`,
+    /// `StmtKind::GenericFor::name_types`) and the function whose body declares it.
+    NumericLoop { annotation: Option<TypeExpr>, owner: Option<u32> },
+    GenericLoop { annotation: Option<TypeExpr>, owner: Option<u32> },
 }
 
 pub(super) struct NativeRegistry {
@@ -509,6 +511,7 @@ impl NativeRegistry {
             Some(DeclarationSource::Local { annotation, initializer_assertion, .. }) => {
                 annotation.is_some() || initializer_assertion.is_some()
             }
+            Some(DeclarationSource::NumericLoop { annotation, .. } | DeclarationSource::GenericLoop { annotation, .. }) => annotation.is_some(),
             Some(DeclarationSource::Parameter { function, index }) => {
                 let function = &self.functions[*function as usize];
                 if function.annotations.type_annotation.is_some() { return true; }
@@ -1293,7 +1296,7 @@ impl NativeRegistry {
     pub(super) fn flow_sources(&self) -> &NativeFlowSources { &self.flow }
 
     pub(super) fn publish_binding(&self, binding: BindingId, value: &Binding) {
-        if matches!(self.declarations.get(&binding), Some(DeclarationSource::GenericLoop)) { return; }
+        if matches!(self.declarations.get(&binding), Some(DeclarationSource::GenericLoop { annotation: None, .. })) { return; }
         let mut captured = value.clone();
         captured.value = captured.constraint.clone();
         self.completed_bindings
@@ -1477,8 +1480,13 @@ impl NativeRegistry {
                 };
                 (ty, false)
             }
-            DeclarationSource::NumericLoop => (Type::Number, false),
-            DeclarationSource::GenericLoop => {
+            DeclarationSource::NumericLoop { annotation: None, .. } => (Type::Number, false),
+            // A written type is the variable's contract, as a local's is.
+            DeclarationSource::NumericLoop { annotation: Some(ty), owner } | DeclarationSource::GenericLoop { annotation: Some(ty), owner } => {
+                checker.type_context = owner.map(|owner| self.key(owner));
+                (checker.annotation(&ty), false)
+            }
+            DeclarationSource::GenericLoop { annotation: None, .. } => {
                 return self.iterator_binding_in_current_context(binding, checker.engine).map(|(binding, _)| binding);
             },
         };
@@ -2247,7 +2255,11 @@ impl NativeRegistry {
                     }
                 }
             }
-            DeclarationSource::NumericLoop | DeclarationSource::GenericLoop => {}
+            DeclarationSource::NumericLoop { annotation, owner } | DeclarationSource::GenericLoop { annotation, owner } => {
+                if let Some(ty) = annotation {
+                    self.function_annotation_parameter_dependencies(owner.map(|owner| self.key(owner)), ty, used);
+                }
+            }
         }
     }
 
@@ -3624,6 +3636,7 @@ impl RegistryIndex<'_> {
                 }
                 StmtKind::NumericFor {
                     name,
+                    name_type,
                     start,
                     limit,
                     step,
@@ -3640,11 +3653,12 @@ impl RegistryIndex<'_> {
                         .binding_at(name.span.start)
                         .expect("bound numeric loop variable");
                     self.declarations
-                        .insert(binding, DeclarationSource::NumericLoop);
+                        .insert(binding, DeclarationSource::NumericLoop { annotation: name_type.clone(), owner });
                     self.statements(body, owner);
                 }
                 StmtKind::GenericFor {
                     names,
+                    name_types,
                     values,
                     body,
                     ..
@@ -3652,13 +3666,13 @@ impl RegistryIndex<'_> {
                     for value in values {
                         self.expression(value, None);
                     }
-                    for name in names {
+                    for (name, ty) in names.iter().zip(name_types) {
                         let binding = self
                             .bound
                             .binding_at(name.span.start)
                             .expect("bound generic loop variable");
                         self.declarations
-                            .insert(binding, DeclarationSource::GenericLoop);
+                            .insert(binding, DeclarationSource::GenericLoop { annotation: ty.clone(), owner });
                     }
                     self.statements(body, owner);
                 }

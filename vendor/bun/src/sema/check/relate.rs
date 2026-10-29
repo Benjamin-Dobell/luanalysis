@@ -7176,13 +7176,15 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
         let mut count = count.unwrap_or_else(|| Self::min_args(params));
-        // Trailing parameters that accept `void` are optional.
+        // Trailing parameters that accept `void` are optional. Without exact optionals, as
+        // EmmyLua Analyzer reads them, absence is nil, so those that accept nil are too.
+        let absence_is_nil = !self.native_exact_optionals;
         while count > 0 {
             let ty = match params.get(count - 1) {
                 Some(param) if !param.rest => self.get_type_of_parameter(param),
                 _ => self.param_type_at(params, count - 1).unwrap_or(TypeId::ANY),
             };
-            if !self.some_type(ty, |_, m| m == TypeId::VOID) {
+            if !self.some_type(ty, |_, m| m == TypeId::VOID || (absence_is_nil && m == TypeId::UNDEFINED)) {
                 break;
             }
             count -= 1;

@@ -1,6 +1,7 @@
 //! An optional is a value that may be absent, never nil, which is a value. A result or a tuple
 //! element is written `T?`, having no name to write the `?` on; a parameter or field writes it on
-//! its name. `--dangerously-decay-optionals` reads them as EmmyLua Analyzer does: `nil | T`.
+//! its name. `--dangerously-decay-optionals` reads them as EmmyLua Analyzer does: `nil | T`, and
+//! absence as nil.
 use luanalysis::{CheckOptions, check, check_with_options};
 
 fn decayed() -> CheckOptions {
@@ -85,7 +86,7 @@ fn an_optional_parameter_may_be_absent_but_is_not_nil() {
     accepted(&format!("{declaration}f('a')\nf('a', 1)"));
     rejected(&format!("{declaration}f('a', nil)"), "Argument of type 'nil' is not assignable to parameter of type 'number'.");
     rejected(&format!("{declaration}---@param maybe nil | number\nlocal function g(maybe) f('a', maybe) end"), "Argument of type 'nil | number' is not assignable to parameter of type 'number'.");
-    rejected(&format!("{declaration}---@return nil\nlocal function none() return nil end\nf('a', none())"), "is not assignable to parameter of type '[] | [number]'.");
+    rejected(&format!("{declaration}---@return nil\nlocal function none() return nil end\nf('a', none())"), "Argument of type 'nil' is not assignable to parameter of type 'number'.");
     accepted(&format!("{declaration}---@param x boolean\n---@return number?\nlocal function some(x) if x then return 1 end end\nf('a', some(true))"));
     rejected("---@type fun(s: string, t?: number)\nlocal g\ng('a', nil)", "Argument of type 'nil' is not assignable to parameter of type 'number'.");
     // Its own type may admit nil; within its function it may be nil.
@@ -120,14 +121,24 @@ fn only_results_and_tuple_elements_are_written_optional() {
 
 #[test]
 fn decayed_optionals_are_nil() {
-    // `T?` is `nil | T`, a value: a result must be returned, and may be nil.
+    // `T?` is `nil | T`, and absence is nil, as EmmyLua Analyzer reads them: a final result
+    // that admits nil may be nil or left out.
     assert!(diagnostics("---@return number?\nlocal function f() return nil end", decayed()).is_empty());
-    assert!(!diagnostics("---@param x boolean\n---@return number?\nlocal function f(x) if x then return end return 1 end", decayed()).is_empty());
+    assert!(diagnostics("---@param x boolean\n---@return number?\nlocal function f(x) if x then return end return 1 end", decayed()).is_empty());
+    assert!(diagnostics("---@return number?\n---@return number?\nlocal function f() return end", decayed()).is_empty());
+    assert!(diagnostics("---@return number?\nlocal function f() end", decayed()).is_empty());
+    assert!(diagnostics("---@param x boolean\n---@return number | nil\nlocal function f(x) if x then return end return 1 end", decayed()).is_empty());
+    assert!(diagnostics("---@param cb fun(): string | nil\nlocal function take(cb) end\ntake(function() end)", decayed()).is_empty());
     assert!(diagnostics("---@return string?, boolean\nlocal function f() return nil, true end", decayed()).is_empty());
-    // An optional parameter takes nil.
+    // A result that does not admit nil, or that a required result follows, is still required.
+    let codes = |source| diagnostics(source, decayed()).into_iter().map(|error| error.0).collect::<Vec<_>>();
+    assert_eq!(codes("---@param x boolean\n---@return number\nlocal function f(x) if x then return end return 1 end"), ["TS2322"]);
+    assert_eq!(codes("---@return string?, boolean\nlocal function f() return end"), ["TS2322"]);
+    // An optional parameter takes nil, and a final parameter that admits nil may be omitted.
     assert!(diagnostics("---@param t? number\nlocal function f(t) end\nf()\nf(nil)", decayed()).is_empty());
-    // A parameter's `T?` is a required `nil | T`.
+    assert!(diagnostics("---@param a string\n---@param b string | nil\nlocal function f(a, b) end\nf(\"a\")\nf(\"a\", nil)", decayed()).is_empty());
+    assert_eq!(codes("---@param a string\n---@param b string | nil\nlocal function f(a, b) end\nf()"), ["TS2554"]);
+    // A parameter's `T?` is `nil | T`, and so may be omitted.
     let decayed = CheckOptions { emmylua_syntax: true, ..decayed() };
-    let codes: Vec<_> = diagnostics("---@param x string?\nlocal function f(x) end\nf(nil)\nf()", decayed).into_iter().map(|error| error.0).collect();
-    assert_eq!(codes, ["TS2554"]);
+    assert!(diagnostics("---@param x string?\nlocal function f(x) end\nf(nil)\nf()", decayed).is_empty());
 }

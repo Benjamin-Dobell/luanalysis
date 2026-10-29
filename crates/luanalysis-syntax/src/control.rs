@@ -148,7 +148,7 @@ impl Parser<'_> {
             let end = self.expect_end();
             return Some(Stmt {
                 kind: StmtKind::NumericFor {
-                    name: first, start: Box::new(initial), limit: Box::new(limit), step: step.map(Box::new), body,
+                    name: first, name_type: None, start: Box::new(initial), limit: Box::new(limit), step: step.map(Box::new), body,
                     body_span: Span::new(do_token.end, body_end),
                 },
                 span: start.join(end),
@@ -172,7 +172,7 @@ impl Parser<'_> {
         let end = self.expect_end();
         Some(Stmt {
             kind: StmtKind::GenericFor {
-                names, values, body,
+                name_types: vec![None; names.len()], names, values, body,
                 body_span: Span::new(do_token.end, body_end),
             },
             span: start.join(end),

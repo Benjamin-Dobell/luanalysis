@@ -1078,10 +1078,37 @@ impl Checker<'_, '_> {
             if !self.is_resolved_call_argument_applicable(actual, expected, relation)
                 && !self.native_union_any_argument_applicable(sig, boundary, actual, expected, relation, true) {
                 self.note_parameter_types_resolved(sig, &params, boundary);
+                let (actual, expected) = self.native_argument_sequence_mismatch(actual, expected, relation).unwrap_or((actual, expected));
                 return Some((boundary, actual, expected));
             }
         }
         self.note_parameter_types_resolved(sig, &params, args.len());
+        None
+    }
+
+    /// The first value of an expansion its parameter does not admit, as TypeScript reports a
+    /// spread tuple's elements as arguments of their own: `f(g())`, with `g` returning a string
+    /// and `f` taking a number, is a string that is not a number, not `[string]` that is not
+    /// `[number]`. None when the expansion has several rows, or fails only by its count.
+    fn native_argument_sequence_mismatch(&mut self, actual: TypeId, expected: TypeId, relation: Relation) -> Option<(TypeId, TypeId)> {
+        let actual_rows = self.native_pack_alternatives(NativeResultPack { ty: actual })?;
+        let [actual] = actual_rows.as_slice() else { return None };
+        if actual.tail.is_some() { return None }
+        let expected_rows = self.native_pack_alternatives(NativeResultPack { ty: expected })?;
+        let count = actual.fixed.len();
+        let expected = expected_rows.iter().find(|row| match row.tail {
+            Some(_) => row.fixed.len() <= count,
+            None => row.fixed.len() == count,
+        })?;
+        for (index, slot) in actual.fixed.iter().enumerate() {
+            let target = match expected.fixed.get(index) {
+                Some(target) => target.ty,
+                None => expected.tail?,
+            };
+            if !self.is_resolved_call_argument_applicable(slot.ty, target, relation) {
+                return Some((slot.ty, target));
+            }
+        }
         None
     }
 

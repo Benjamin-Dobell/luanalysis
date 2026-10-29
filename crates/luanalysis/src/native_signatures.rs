@@ -1490,11 +1490,17 @@ impl NativeSignatures {
                         }
                     }
                 }
+                StmtKind::NumericFor { name_type, body, .. } => {
+                    if let Some(ty) = name_type { self.visit_type(owner, context, None, ty) }
+                    self.visit_statements(owner, context, body)
+                }
+                StmtKind::GenericFor { name_types, body, .. } => {
+                    for ty in name_types.iter().flatten() { self.visit_type(owner, context, None, ty) }
+                    self.visit_statements(owner, context, body)
+                }
                 StmtKind::Block { body, .. }
                 | StmtKind::While { body, .. }
-                | StmtKind::Repeat { body, .. }
-                | StmtKind::NumericFor { body, .. }
-                | StmtKind::GenericFor { body, .. } => self.visit_statements(owner, context, body),
+                | StmtKind::Repeat { body, .. } => self.visit_statements(owner, context, body),
                 StmtKind::If {
                     branches,
                     else_branch,

@@ -3158,6 +3158,24 @@
       "patch": "vendor/patches/bun-sema-v1-result-lists.patch",
       "reason": "Let a result pack parameter in a written union of one result be its whole sequence, a row of its own, as Luanalysis v1 substitutes `string | T`; and relate a function that may return values to a native void callback as assignable but no subtype, as v1 relates it, so that overload choice's subtype pass prefers an overload that takes the callback's results over a void one written first.",
       "patch_sha256": "e78702456e00fa2682eddb4d5de2a7ab2ed588555c4d135346820e32f1dd6fae"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-decayed-absence.patch",
+      "reason": "Without exact optionals, as EmmyLua Analyzer reads them, let a final result or parameter that admits nil be absent, so that `return` satisfies `nil | T` and `f()` calls `(x: nil | T)`; and report a final argument expansion's first value that its parameter does not admit, as TypeScript reports a spread tuple's elements, rather than the expansion's list.",
+      "patch_sha256": "4895ffd50be614b826da5c4dfb4370b90e141978fda3beae70fbe9d0df1cfaf2"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-decayed-absence.patch",
+      "reason": "Without exact optionals, as EmmyLua Analyzer reads them, let a final result or parameter that admits nil be absent, so that `return` satisfies `nil | T` and `f()` calls `(x: nil | T)`; and report a final argument expansion's first value that its parameter does not admit, as TypeScript reports a spread tuple's elements, rather than the expansion's list.",
+      "patch_sha256": "4895ffd50be614b826da5c4dfb4370b90e141978fda3beae70fbe9d0df1cfaf2"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-decayed-absence.patch",
+      "reason": "Without exact optionals, as EmmyLua Analyzer reads them, let a final result or parameter that admits nil be absent, so that `return` satisfies `nil | T` and `f()` calls `(x: nil | T)`; and report a final argument expansion's first value that its parameter does not admit, as TypeScript reports a spread tuple's elements, rather than the expansion's list.",
+      "patch_sha256": "4895ffd50be614b826da5c4dfb4370b90e141978fda3beae70fbe9d0df1cfaf2"
     }
   ],
   "source_additions": {
@@ -3206,7 +3224,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-nil-compatibility.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "d7b25a650770215bd7d3e003b5ce0af33b7b08dfcf705d069029390df0b05b40",
+      "extracted_sha256": "570d8193ce59c28ab500dea2822a864022b77452fea8437ff98f3c5dfdc1ebc9",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -3982,7 +4000,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "ee5760201fd0860a4adc56599d85aa9ce19b6cfad91e8fa6fcd7e0ff34661618"
+      "extracted_sha256": "dbcec598732336c73cb6af614a37d88d9eff41645a9556ce30d8d6eb1bf6e8cd"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -4217,7 +4235,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "069e691759554fa19698cc762c9a2534d00a8ef2acffe0700e10628fa6f0c747"
+      "extracted_sha256": "1e4054e50628ab819db66aaf7fa8e0c72abe1a6cc28c42252eb90423cb975375"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",

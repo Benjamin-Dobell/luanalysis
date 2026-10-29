@@ -122,7 +122,8 @@ pub struct ParseOptions {
     pub emmylua: bool,
     /// `T?` is `nil | T` everywhere, as EmmyLua Analyzer and lua-language-server read it, rather
     /// than a value that may be absent: a `T?` result may then be nil, and a `T?` parameter is a
-    /// required nil-admitting one.
+    /// nil-admitting one. The checker reads absence as nil too, so such a final result or
+    /// parameter may also be left out.
     pub decay_optionals: bool,
 }
 
@@ -353,6 +354,8 @@ pub enum StmtKind {
     },
     NumericFor {
         name: Name,
+        /// The variable's written type: LuaLS's `---@type T` above the loop.
+        name_type: Option<TypeExpr>,
         start: Box<Expr>,
         limit: Box<Expr>,
         step: Option<Box<Expr>>,
@@ -361,6 +364,9 @@ pub enum StmtKind {
     },
     GenericFor {
         names: Vec<Name>,
+        /// Each variable's written type, by its name: `---@param name T` above the loop, as
+        /// Luanalysis v1 and LuaLS read it.
+        name_types: Vec<Option<TypeExpr>>,
         values: Vec<Expr>,
         body: Vec<Stmt>,
         body_span: Span,

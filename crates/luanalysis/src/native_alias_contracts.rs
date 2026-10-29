@@ -41,7 +41,11 @@ impl NativeRegistry {
                 let parameter = signature.params.get(*index)?;
                 Some(if parameter.optional { Type::Union(vec![parameter.ty.clone(), Type::Nil]) } else { parameter.ty.clone() })
             }
-            DeclarationSource::Function(_) | DeclarationSource::NumericLoop | DeclarationSource::GenericLoop => None,
+            DeclarationSource::NumericLoop { annotation: Some(ty), owner } | DeclarationSource::GenericLoop { annotation: Some(ty), owner } => {
+                checker.type_context = owner.map(|owner| self.key(owner));
+                Some(checker.annotation(ty))
+            }
+            DeclarationSource::Function(_) | DeclarationSource::NumericLoop { annotation: None, .. } | DeclarationSource::GenericLoop { annotation: None, .. } => None,
         }
     }
 }

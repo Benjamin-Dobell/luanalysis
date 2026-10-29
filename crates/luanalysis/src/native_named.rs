@@ -512,21 +512,21 @@ impl NativeNamed {
         }
         statements.sort_by_key(|statement| (statement.span.start, statement.span.end));
         for statement in statements {
-            let annotation = match &statement.kind {
+            let types: Vec<&TypeExpr> = match &statement.kind {
                 StmtKind::Local { annotation, .. } | StmtKind::Assign { annotation, .. } => {
-                    annotation.as_ref()
+                    annotation.iter().flat_map(|annotation| &annotation.types).collect()
                 }
-                _ => None,
+                StmtKind::NumericFor { name_type, .. } => name_type.iter().collect(),
+                StmtKind::GenericFor { name_types, .. } => name_types.iter().flatten().collect(),
+                _ => Vec::new(),
             };
-            if let Some(annotation) = annotation {
-                for ty in &annotation.types {
-                    roots.push(Root {
-                        ty: ty.clone(),
-                        context: enclosing_function(statement.span, functions),
-                        documentation_contexts: self.documentation_contexts_at(ty.span),
-                        origin: AnonymousHeadOrigin::RuntimeAnnotation(statement.span),
-                    });
-                }
+            for ty in types {
+                roots.push(Root {
+                    ty: ty.clone(),
+                    context: enclosing_function(statement.span, functions),
+                    documentation_contexts: self.documentation_contexts_at(ty.span),
+                    origin: AnonymousHeadOrigin::RuntimeAnnotation(statement.span),
+                });
             }
         }
         let mut source_functions: Vec<_> = source.functions.values().copied().collect();

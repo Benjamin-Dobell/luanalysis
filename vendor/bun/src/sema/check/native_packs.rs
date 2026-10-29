@@ -586,8 +586,19 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// In a written Lua scalar return contract, void is absence, whereas nil is one value.
     /// This normalization happens before generic substitution and never rewrites actual values.
+    /// Without exact optionals, as EmmyLua Analyzer reads them, absence is nil: each final result
+    /// that admits nil may also be absent, so `return` satisfies `nil | T`.
     pub fn native_declared_result_pack(&mut self, pack: NativeResultPack) -> NativeResultPack {
-        let Some(alternatives) = self.native_pack_alternatives(pack) else { return pack };
+        let Some(mut alternatives) = self.native_pack_alternatives(pack) else { return pack };
+        if !self.native_exact_optionals {
+            for alternative in &mut alternatives {
+                for slot in alternative.fixed.iter_mut().rev() {
+                    if slot.optional { continue }
+                    if !self.some_type(slot.ty, |_, member| member == TypeId::UNDEFINED) { break }
+                    slot.optional = true;
+                }
+            }
+        }
         let mut rows = Vec::new();
         for alternative in alternatives {
             if alternative.fixed.len() == 1 && alternative.tail.is_none() {

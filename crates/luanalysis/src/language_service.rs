@@ -2551,7 +2551,7 @@ impl Outline<'_> {
                     self.statements(body, nested);
                     self.nested(condition, nested);
                 }
-                StmtKind::NumericFor { name, start, limit, step, body, body_span } => {
+                StmtKind::NumericFor { name, start, limit, step, body, body_span, .. } => {
                     self.nested(start, scope);
                     self.nested(limit, scope);
                     if let Some(step) = step { self.nested(step, scope); }
@@ -2559,7 +2559,7 @@ impl Outline<'_> {
                     self.bind(nested, name.text.clone(), None);
                     self.statements(body, nested);
                 }
-                StmtKind::GenericFor { names, values, body, body_span } => {
+                StmtKind::GenericFor { names, values, body, body_span, .. } => {
                     for value in values { self.nested(value, scope); }
                     let nested = self.scope(Some(scope), self.scopes[scope].owner, *body_span, false);
                     for name in names { self.bind(nested, name.text.clone(), None); }

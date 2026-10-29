@@ -781,8 +781,14 @@ impl<'a> Parser<'a> {
         if self.keyword("function") {
             return self.function_declaration(start, annotations);
         }
+        if self.keyword("for") {
+            let mut statement = self.control_statement(start);
+            if let Some(statement) = &mut statement { loop_variable_annotations(statement, &mut annotations); }
+            self.unattached_annotations(&annotations);
+            return statement;
+        }
         if matches!(&self.current().kind, TokenKind::Keyword(word)
-            if matches!(word.as_str(), "if" | "while" | "repeat" | "for" | "break" | "goto"))
+            if matches!(word.as_str(), "if" | "while" | "repeat" | "break" | "goto"))
         {
             self.unattached_annotations(&annotations);
             return self.control_statement(start);
@@ -2179,6 +2185,28 @@ fn function_type_annotation(annotation: &TypeAnnotation) -> bool {
 
 /// Count constructed native statement/expression depth without recursive walks.
 /// This keeps function bodies from multiplying independently bounded call chains.
+
+/// The documentation of a loop's variables, taken from `annotations`, as Luanalysis v1 and LuaLS
+/// read it: `---@param name T` types a `for ... in` loop's variable `name`, and `---@type T` a
+/// numeric loop's variable. LuaLS gives a `for ... in` loop's `---@type` no variable, so it stays.
+fn loop_variable_annotations(statement: &mut Stmt, annotations: &mut FunctionAnnotations) {
+    match &mut statement.kind {
+        StmtKind::GenericFor { names, name_types, .. } => {
+            for (name, ty) in names.iter().zip(name_types.iter_mut()) {
+                if let Some(index) = annotations.params.iter().position(|param| param.name.text == name.text) {
+                    *ty = Some(annotations.params.remove(index).ty);
+                }
+            }
+        }
+        StmtKind::NumericFor { name_type, .. } => {
+            if annotations.type_annotation.as_ref().is_some_and(|annotation| annotation.types.len() == 1 && annotation.packs.is_none()) {
+                *name_type = annotations.type_annotation.take().and_then(|annotation| annotation.types.into_iter().next());
+            }
+        }
+        _ => {}
+    }
+}
+
 fn statements_depth(body: &[Stmt]) -> usize {
     enum Node<'a> {
         Statement(&'a Stmt),

@@ -97,7 +97,7 @@ pub struct CheckOptions {
     pub no_unsafe_any: bool,
     /// Read EmmyLua Analyzer Rust's own annotation syntax (`ProjectCheckOptions::emmylua_syntax`).
     pub emmylua_syntax: bool,
-    /// Read every optional as `nil | T` (`ProjectCheckOptions::decay_optionals`).
+    /// Read every optional as `nil | T`, and absence as nil (`ProjectCheckOptions::decay_optionals`).
     pub decay_optionals: bool,
     /// Require nil to appear in assignment contracts. False selects v1's
     /// permissive nil assignments without erasing physical runtime nil types.
@@ -664,6 +664,7 @@ impl Checker<'_> {
                 }
                 StmtKind::NumericFor {
                     name,
+                    name_type,
                     start,
                     limit,
                     step,
@@ -686,12 +687,26 @@ impl Checker<'_> {
                         .bound
                         .binding_at(name.span.start)
                         .expect("bound Lua numeric loop variable");
-                    self.record_binding(name, binding, &Type::Number);
+                    match name_type {
+                        // A written type is the variable's contract, as a typed local's is. It
+                        // may refine the loop's number (`integer`), but must admit some number.
+                        Some(written) => {
+                            let constraint = self.annotation(written);
+                            if !self.engine.is_assignable(&constraint, &Type::Number) {
+                                self.compatible(&Type::Number, &constraint, name.span);
+                            }
+                            self.locals.insert(binding, Binding {
+                                initial: constraint.clone(), value: constraint.clone(), constraint: constraint.clone(), evolves_from_nil: false,
+                            });
+                            self.record_binding(name, binding, &constraint);
+                        }
+                        None => self.record_binding(name, binding, &Type::Number),
+                    }
                     self.statements(body);
                 }
-                StmtKind::GenericFor { names, body, .. } => {
+                StmtKind::GenericFor { names, name_types, body, .. } => {
                     if let (Some(native), Some(at)) = (self.native, self.flow_at) {
-                        for name in names {
+                        for (name, written) in names.iter().zip(name_types) {
                             let id = self
                                 .bound
                                 .binding_at(name.span.start)
@@ -700,6 +715,18 @@ impl Checker<'_> {
                                 .iterator_body_binding(id, at, self.engine)
                                 .expect("an original generic loop has a body binding recipe");
                             self.incomplete_flow |= incomplete;
+                            if let Some(written) = written {
+                                // A written type is the variable's contract, as a typed local's
+                                // is: each value the iterator gives it is checked against it.
+                                let constraint = self.annotation(written);
+                                self.compatible(&binding.value, &constraint, name.span);
+                                let value = self.engine.assignment_value(&constraint, &binding.value);
+                                self.locals.insert(id, Binding {
+                                    initial: constraint.clone(), constraint: constraint.clone(), value, evolves_from_nil: false,
+                                });
+                                self.record_binding(name, id, &constraint);
+                                continue;
+                            }
                             let constraint = binding.constraint.clone();
                             self.locals.insert(id, binding);
                             self.record_binding(name, id, &constraint);

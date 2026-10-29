@@ -502,9 +502,12 @@ impl NativeFlowSources {
                         if written.contains(&binding) {
                             mutable_iterators.insert(*iterator);
                         }
-                        result
-                            .iterator_projections
-                            .insert(binding, (*iterator, *index + 2));
+                        // A variable whose type is written keeps it, as a typed local does.
+                        if !result.program.iterator(*iterator).written.get(*index).copied().unwrap_or(false) {
+                            result
+                                .iterator_projections
+                                .insert(binding, (*iterator, *index + 2));
+                        }
                     }
                 }
                 if let flow::NodeKind::Write {

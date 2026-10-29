@@ -1,0 +1,92 @@
+diff --git a/src/sema/check/errors_call.rs b/src/sema/check/errors_call.rs
+index 67c7cf0..aa4434e 100644
+--- a/src/sema/check/errors_call.rs
++++ b/src/sema/check/errors_call.rs
+@@ -1078,6 +1078,7 @@ impl Checker<'_, '_> {
+             if !self.is_resolved_call_argument_applicable(actual, expected, relation)
+                 && !self.native_union_any_argument_applicable(sig, boundary, actual, expected, relation, true) {
+                 self.note_parameter_types_resolved(sig, &params, boundary);
++                let (actual, expected) = self.native_argument_sequence_mismatch(actual, expected, relation).unwrap_or((actual, expected));
+                 return Some((boundary, actual, expected));
+             }
+         }
+@@ -1085,6 +1086,32 @@ impl Checker<'_, '_> {
+         None
+     }
+ 
++    /// The first value of an expansion its parameter does not admit, as TypeScript reports a
++    /// spread tuple's elements as arguments of their own: `f(g())`, with `g` returning a string
++    /// and `f` taking a number, is a string that is not a number, not `[string]` that is not
++    /// `[number]`. None when the expansion has several rows, or fails only by its count.
++    fn native_argument_sequence_mismatch(&mut self, actual: TypeId, expected: TypeId, relation: Relation) -> Option<(TypeId, TypeId)> {
++        let actual_rows = self.native_pack_alternatives(NativeResultPack { ty: actual })?;
++        let [actual] = actual_rows.as_slice() else { return None };
++        if actual.tail.is_some() { return None }
++        let expected_rows = self.native_pack_alternatives(NativeResultPack { ty: expected })?;
++        let count = actual.fixed.len();
++        let expected = expected_rows.iter().find(|row| match row.tail {
++            Some(_) => row.fixed.len() <= count,
++            None => row.fixed.len() == count,
++        })?;
++        for (index, slot) in actual.fixed.iter().enumerate() {
++            let target = match expected.fixed.get(index) {
++                Some(target) => target.ty,
++                None => expected.tail?,
++            };
++            if !self.is_resolved_call_argument_applicable(slot.ty, target, relation) {
++                return Some((slot.ty, target));
++            }
++        }
++        None
++    }
++
+     /// `isSignatureApplicable`. Where something could not be determined the result is true, except
+     /// in the subtype pass.
+     pub(super) fn is_signature_applicable(
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+index 0f3908d..62dcf40 100644
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -586,8 +586,19 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     /// In a written Lua scalar return contract, void is absence, whereas nil is one value.
+     /// This normalization happens before generic substitution and never rewrites actual values.
++    /// Without exact optionals, as EmmyLua Analyzer reads them, absence is nil: each final result
++    /// that admits nil may also be absent, so `return` satisfies `nil | T`.
+     pub fn native_declared_result_pack(&mut self, pack: NativeResultPack) -> NativeResultPack {
+-        let Some(alternatives) = self.native_pack_alternatives(pack) else { return pack };
++        let Some(mut alternatives) = self.native_pack_alternatives(pack) else { return pack };
++        if !self.native_exact_optionals {
++            for alternative in &mut alternatives {
++                for slot in alternative.fixed.iter_mut().rev() {
++                    if slot.optional { continue }
++                    if !self.some_type(slot.ty, |_, member| member == TypeId::UNDEFINED) { break }
++                    slot.optional = true;
++                }
++            }
++        }
+         let mut rows = Vec::new();
+         for alternative in alternatives {
+             if alternative.fixed.len() == 1 && alternative.tail.is_none() {
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index 5712d07..fd65ea9 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -7176,13 +7176,15 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+         }
+         let mut count = count.unwrap_or_else(|| Self::min_args(params));
+-        // Trailing parameters that accept `void` are optional.
++        // Trailing parameters that accept `void` are optional. Without exact optionals, as
++        // EmmyLua Analyzer reads them, absence is nil, so those that accept nil are too.
++        let absence_is_nil = !self.native_exact_optionals;
+         while count > 0 {
+             let ty = match params.get(count - 1) {
+                 Some(param) if !param.rest => self.get_type_of_parameter(param),
+                 _ => self.param_type_at(params, count - 1).unwrap_or(TypeId::ANY),
+             };
+-            if !self.some_type(ty, |_, m| m == TypeId::VOID) {
++            if !self.some_type(ty, |_, m| m == TypeId::VOID || (absence_is_nil && m == TypeId::UNDEFINED)) {
+                 break;
+             }
+             count -= 1;

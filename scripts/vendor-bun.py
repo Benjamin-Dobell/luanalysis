@@ -866,6 +866,15 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/relate.rs",
 ])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-decayed-absence.patch",
+    "reason": "Without exact optionals, as EmmyLua Analyzer reads them, let a final result or parameter that admits nil be absent, so that `return` satisfies `nil | T` and `f()` calls `(x: nil | T)`; and report a final argument expansion's first value that its parameter does not admit, as TypeScript reports a spread tuple's elements, rather than the expansion's list.",
+} for path in [
+    "src/sema/check/errors_call.rs",
+    "src/sema/check/native_packs.rs",
+    "src/sema/check/relate.rs",
+])
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
