@@ -9,7 +9,7 @@ use luanalysis_engine::{
     NativeFunctionCheckState, NativeIntrinsicKind, NativeTypeMemberKey, TypeMemberActivation, TypeQueries,
 };
 use luanalysis_syntax::{
-    Expr, ExprKind, Function, NamedRecordKind, NamedTypeDeclarationKind, TableFieldKind, TypeExpr,
+    Expr, ExprKind, NamedRecordKind, NamedTypeDeclarationKind, TableFieldKind, TypeExpr,
     TypeExprKind,
 };
 use crate::collections::HashMap;
@@ -33,7 +33,7 @@ pub(super) struct NativeMetatables {
 impl NativeMetatables {
     pub(super) fn new(
         expressions: &NativeExpressions,
-        functions: &[Function],
+        functions: &[luanalysis_syntax::SharedFunction],
         bound: &BoundFile,
         named: &NativeNamed,
     ) -> Self {

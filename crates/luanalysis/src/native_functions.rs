@@ -113,7 +113,7 @@ pub(super) struct NativeRegistry {
     legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
     file: std::sync::Arc<File>,
     bound: std::sync::Arc<BoundFile>,
-    functions: std::sync::Arc<Vec<Function>>,
+    functions: std::sync::Arc<Vec<luanalysis_syntax::SharedFunction>>,
     function_names: std::sync::Arc<Vec<Option<Name>>>,
     declaration_functions: std::sync::Arc<HashSet<u32>>,
     function_spans: std::sync::Arc<HashMap<(usize, usize), u32>>,
@@ -193,7 +193,7 @@ pub(super) struct NativeRegistry {
 #[derive(Clone)]
 pub(crate) struct SourceRecipes {
     snapshot: u64,
-    functions: std::sync::Arc<Vec<Function>>,
+    functions: std::sync::Arc<Vec<luanalysis_syntax::SharedFunction>>,
     function_names: std::sync::Arc<Vec<Option<Name>>>,
     declaration_functions: std::sync::Arc<HashSet<u32>>,
     function_spans: std::sync::Arc<HashMap<(usize, usize), u32>>,
@@ -230,6 +230,7 @@ impl SourceRecipes {
     fn new(file: &std::sync::Arc<File>, bound: &BoundFile, identity: project_provider::SourceRecipeIdentity) -> Self {
         let snapshot = identity.source;
         let mut index = RegistryIndex {
+            tree: file,
             bound,
             assertions: file.expression_assertions.iter().filter(|assertion| assertion.kind == luanalysis_syntax::ExpressionAssertionKind::Type)
                 .map(|assertion| ((assertion.expression.start, assertion.expression.end), &assertion.annotation)).collect(),
@@ -928,7 +929,7 @@ impl NativeRegistry {
     pub(crate) fn functions_with_method_classes(&self) -> impl Iterator<Item = (&Function, Option<crate::native_named::NativeNamedKey>)> + '_ {
         self.functions.iter().enumerate().map(|(index, function)| {
             let key = NativeFunctionKey { snapshot: self.snapshot, index: index as u32 };
-            (function, self.methods.get(key).and_then(|method| method.class_owner))
+            (&**function, self.methods.get(key).and_then(|method| method.class_owner))
         })
     }
     pub(super) fn function(&self, key: NativeFunctionKey) -> &Function {
@@ -3485,7 +3486,7 @@ fn source_statements<'a>(statements: &'a [Stmt], all: &mut Vec<&'a Stmt>) {
 
 fn type_scope_recipes(
     snapshot: u64,
-    functions: &[Function],
+    functions: &[luanalysis_syntax::SharedFunction],
     bound: &BoundFile,
 ) -> Vec<TypeScopeRecipe> {
     let scope_by_span: HashMap<_, _> = bound
@@ -3544,9 +3545,11 @@ fn type_scope_recipes(
 }
 
 struct RegistryIndex<'a> {
+    /// The file whose functions are indexed, which they are shared from.
+    tree: &'a std::sync::Arc<File>,
     bound: &'a BoundFile,
     assertions: HashMap<(usize, usize), &'a luanalysis_syntax::TypeAnnotation>,
-    functions: Vec<Function>,
+    functions: Vec<luanalysis_syntax::SharedFunction>,
     function_names: Vec<Option<Name>>,
     declaration_functions: HashSet<u32>,
     function_spans: HashMap<(usize, usize), u32>,
@@ -3758,7 +3761,8 @@ impl RegistryIndex<'_> {
         }
         let index =
             u32::try_from(self.functions.len()).expect("native Lua function index fits in u32");
-        self.functions.push(function.clone());
+        // SAFETY: the index walks `tree`'s own statements, so `function` is in it.
+        self.functions.push(unsafe { luanalysis_syntax::SharedFunction::new(self.tree, function) });
         self.function_names.push(name.cloned());
         self.function_spans.insert(span, index);
         for (parameter_index, parameter) in function.params.iter().enumerate() {

@@ -185,7 +185,9 @@ pub enum NodeKind {
         graph: u32,
     },
     Write {
-        address: CapturedAddress,
+        /// Boxed: an address is several times the size of every other node's data, and a node
+        /// is as large as its largest kind.
+        address: Box<CapturedAddress>,
         value: ValueDemand,
         store_order: u32,
         declaration: bool,
@@ -366,7 +368,13 @@ pub(crate) fn build_with_snapshot(tree: &std::sync::Arc<File>, bound: &BoundFile
             }
         }
         graph.shared = uses.into_iter().map(|count| count > 1).collect();
+        // A program is kept for as long as its source is unchanged: none of its growth room.
+        graph.nodes.shrink_to_fit();
     }
+    builder.program.graphs.shrink_to_fit();
+    builder.program.expressions.shrink_to_fit();
+    builder.program.evaluations.shrink_to_fit();
+    builder.program.iterators.shrink_to_fit();
     builder.program
 }
 struct Context {
@@ -828,7 +836,7 @@ impl Builder<'_> {
                     self.append(
                         context,
                         NodeKind::Write {
-                            address,
+                            address: Box::new(address),
                             value,
                             store_order: index as u32,
                             declaration: true,
@@ -855,7 +863,7 @@ impl Builder<'_> {
                     self.append(
                         context,
                         NodeKind::Write {
-                            address: addresses[index].clone(),
+                            address: Box::new(addresses[index].clone()),
                             value,
                             store_order: order as u32,
                             declaration: false,
@@ -872,7 +880,7 @@ impl Builder<'_> {
                 self.append(
                     context,
                     NodeKind::Write {
-                        address,
+                        address: Box::new(address),
                         value: ValueDemand::Function(graph),
                         store_order: 0,
                         declaration: true,
@@ -890,7 +898,7 @@ impl Builder<'_> {
                 self.append(
                     context,
                     NodeKind::Write {
-                        address,
+                        address: Box::new(address),
                         value: ValueDemand::Function(graph),
                         store_order: 0,
                         declaration: false,
@@ -1191,7 +1199,7 @@ impl Builder<'_> {
         self.append(
             context,
             NodeKind::Write {
-                address,
+                address: Box::new(address),
                 value: ValueDemand::NumericIteration,
                 store_order: 0,
                 declaration: true,
@@ -1289,7 +1297,7 @@ impl Builder<'_> {
             self.append(
                 context,
                 NodeKind::Write {
-                    address,
+                    address: Box::new(address),
                     value,
                     store_order: index as u32,
                     declaration: true,

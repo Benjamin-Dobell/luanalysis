@@ -159,16 +159,20 @@ pub(super) struct NativeFlowRecipes {
     /// which made a large file's setup quadratic in its functions and keys.
     shared_references: Vec<flow::Reference>,
     shared_reference_indices: HashMap<flow::Reference, u32>,
+    /// Each evaluation's value first, at the evaluation's index, then the others.
     values: Vec<ValueRecipe>,
-    evaluation_values: HashMap<flow::EvaluationId, u32>,
     iterator_values: HashMap<flow::IteratorId, u32>,
     write_values: HashMap<flow::FlowId, u32>,
     declaration_writes: HashMap<BindingId, flow::FlowId>,
     binding_owners: HashMap<BindingId, u32>,
-    expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
+    /// Each evaluation by its graph and its expression's span, by index in this program: an entry
+    /// for every evaluation, so compact.
+    expression_evaluations: HashMap<(u32, u32, u32), u32>,
     /// The first evaluation of each predicate expression by its completed
     /// flow position, replacing a scan of every evaluation per predicate node.
-    predicate_evaluations: HashMap<(flow::SourceExpressionId, flow::FlowId), flow::EvaluationId>,
+    /// Each evaluation by its expression and the node that completes it (expression index, graph,
+    /// node index), by index in this program.
+    predicate_evaluations: HashMap<(u32, u32, u32), u32>,
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
     runtime_type_operations: HashMap<flow::EvaluationId, flow::EvaluationId>,
     runtime_type_intrinsic_enabled: bool,
@@ -323,7 +327,6 @@ impl NativeFlowSources {
             functions: HashMap::default(),
             graph_functions: vec![None; program.graphs.len()],
             values: Vec::new(),
-            evaluation_values: HashMap::default(),
             iterator_values: HashMap::default(),
             write_values: HashMap::default(),
             declaration_writes: HashMap::default(),
@@ -372,17 +375,13 @@ impl NativeFlowSources {
                 }
             }
             result.expression_evaluations.insert(
-                (
-                    evaluation.input.graph,
-                    expression.span.start,
-                    expression.span.end,
-                ),
-                evaluation.id,
+                (evaluation.input.graph, span_offset(expression.span.start), span_offset(expression.span.end)),
+                evaluation.id.index,
             );
-            result.predicate_evaluations.entry((evaluation.expression, evaluation.completed)).or_insert(evaluation.id);
-            let index = result.values.len() as u32;
+            result.predicate_evaluations.entry((evaluation.expression.index, evaluation.completed.graph, evaluation.completed.index))
+                .or_insert(evaluation.id.index);
+            assert_eq!(result.values.len(), evaluation.id.index as usize, "an evaluation's value is at its index");
             result.values.push(ValueRecipe::Evaluation(evaluation.id));
-            result.evaluation_values.insert(evaluation.id, index);
             if let Some(reference) = result.program.references.get(&evaluation.expression) {
                 let region = evaluation.input.graph as usize;
                 intern_reference(
@@ -428,7 +427,7 @@ impl NativeFlowSources {
                     );
                     let index = match value {
                         flow::ValueDemand::Evaluation(evaluation) => {
-                            result.evaluation_values[evaluation]
+                            evaluation.index
                         }
                         other => {
                             let recipe = match other {
@@ -962,8 +961,8 @@ impl NativeFlowSources {
         graph: NativeGraphKey,
     ) -> Option<&flow::Evaluation> {
         self.expression_evaluations
-            .get(&(graph.region, expression.span.start, expression.span.end))
-            .map(|id| self.program.evaluation(*id))
+            .get(&(graph.region, span_offset(expression.span.start), span_offset(expression.span.end)))
+            .map(|&index| self.program.evaluation(flow::EvaluationId { snapshot: self.program.snapshot, index }))
     }
 
     pub(super) fn expression_reference(
@@ -1082,10 +1081,18 @@ impl NativeFlowSources {
         Some(NativeReferenceKey { graph, reference: index })
     }
 
+    /// The evaluation of `expression` that `completed` completes.
+    fn completed_evaluation(&self, expression: flow::SourceExpressionId, completed: flow::FlowId) -> Option<flow::EvaluationId> {
+        if expression.snapshot != self.program.snapshot || completed.snapshot != self.program.snapshot { return None; }
+        let index = *self.predicate_evaluations.get(&(expression.index, completed.graph, completed.index))?;
+        Some(flow::EvaluationId { snapshot: self.program.snapshot, index })
+    }
+
     pub(super) fn evaluation_value(&self, evaluation: flow::EvaluationId) -> NativeValueKey {
+        assert_eq!(evaluation.snapshot, self.program.snapshot, "foreign source evaluation snapshot");
         NativeValueKey {
             snapshot: self.program.snapshot,
-            index: self.evaluation_values[&evaluation],
+            index: evaluation.index,
         }
     }
 
@@ -1250,7 +1257,7 @@ impl NativeFlowSources {
         expression: flow::SourceExpressionId,
         before: flow::FlowId,
     ) -> NativePredicate {
-        let Some(evaluation) = self.predicate_evaluations.get(&(expression, before)).map(|&id| self.program.evaluation(id)) else {
+        let Some(evaluation) = self.completed_evaluation(expression, before).map(|id| self.program.evaluation(id)) else {
             return NativePredicate::Unsupported(
                 "predicate evaluation is missing its frozen input",
             );
@@ -1975,7 +1982,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let node = self.sources.source_node(at)?;
         let evaluation = match &node.kind {
             flow::NodeKind::Predicate { predicate: flow::Predicate::Expression(expression), .. } => {
-                *self.sources.predicate_evaluations.get(&(*expression, *node.antecedents.first()?))?
+                self.sources.completed_evaluation(*expression, *node.antecedents.first()?)?
             }
             // Only the native assertion-effect transfer reaches this hook for
             // a call node. Its first physical argument owns the condition.
@@ -2523,4 +2530,9 @@ fn original_environment_until(file: &luanalysis_syntax::File, bound: &super::bin
             StmtKind::Assign { targets, .. } if targets.iter().any(|target| target.span == *span)))
             .map(|statement| statement.span.start)
     }).collect::<Option<Vec<_>>>()?.into_iter().min()
+}
+
+/// A source offset in the compact keys of a program's recipes; Lua sources are under 4 GiB.
+fn span_offset(offset: usize) -> u32 {
+    u32::try_from(offset).expect("a source offset fits u32")
 }

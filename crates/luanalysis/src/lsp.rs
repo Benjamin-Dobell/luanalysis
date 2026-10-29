@@ -498,6 +498,8 @@ struct Server {
     describe_requested: bool,
     /// Hovers over a checked document that wait for its types.
     deferred_hovers: Vec<(Json, Json)>,
+    /// Documents opened before the first check, whose warm-up waits for it.
+    pending_warm: Vec<PathBuf>,
     /// The checked paths and options before the client's settings, and what the settings make of
     /// them and of the editor's features.
     base: Option<(CheckInputs, ProjectCheckOptions)>,
@@ -549,6 +551,7 @@ impl Server {
             snapshot_described: false,
             describe_requested: false,
             deferred_hovers: Vec::new(),
+            pending_warm: Vec::new(),
             base: None,
             settings: Json::Null,
             preferences: Preferences::default(),
@@ -1099,6 +1102,7 @@ impl Server {
         }
         self.published = published;
         self.snapshot = Some(snapshot);
+        for path in std::mem::take(&mut self.pending_warm) { self.warm(path); }
         // A description asked for before this check was for the snapshot it replaced.
         self.snapshot_described = false;
         self.describe_requested = false;
@@ -1682,6 +1686,12 @@ impl Server {
     /// Has the query thread load the project with the editor's buffers and prepare its sources
     /// for `path`'s queries, which then need not wait for that.
     fn warm(&mut self, path: PathBuf) {
+        // Before the first check, a warm-up would build every source's recipes beside it: it waits
+        // for the check, whose recipes it then reuses.
+        if self.snapshot.is_none() {
+            if !self.pending_warm.contains(&path) { self.pending_warm.push(path); }
+            return;
+        }
         let Some(document) = self.documents.get(&path) else { return };
         let text = document.text.clone();
         let overlays: HashMap<PathBuf, String> = self.documents.iter()

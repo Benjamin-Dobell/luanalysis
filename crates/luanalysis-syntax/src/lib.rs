@@ -520,6 +520,53 @@ impl std::fmt::Debug for SharedExpr {
     }
 }
 
+/// A function of a parsed file that is shared, not copied, as [`SharedExpr`] shares an expression:
+/// a copy of a function copies its whole body, and each function nested in it with it.
+#[derive(Clone)]
+pub struct SharedFunction {
+    tree: std::sync::Arc<File>,
+    function: std::ptr::NonNull<Function>,
+}
+
+// SAFETY: as for `SharedExpr`: a `SharedFunction` only reads its function, in a tree that is never
+// mutated while an `Arc` shares it, and the tree is `Send` and `Sync`.
+unsafe impl Send for SharedFunction where File: Send + Sync {}
+// SAFETY: as for `Send`: shared access only reads.
+unsafe impl Sync for SharedFunction where File: Send + Sync {}
+
+impl SharedFunction {
+    /// The function `function` of `tree`.
+    ///
+    /// # Safety
+    ///
+    /// `function` must be a function of `tree`'s own syntax, reached from `&**tree`, not a copy
+    /// of one or a function of another tree.
+    pub unsafe fn new(tree: &std::sync::Arc<File>, function: &Function) -> Self {
+        Self { tree: std::sync::Arc::clone(tree), function: std::ptr::NonNull::from(function) }
+    }
+
+    /// The file the function is in.
+    pub fn tree(&self) -> &std::sync::Arc<File> {
+        &self.tree
+    }
+}
+
+impl std::ops::Deref for SharedFunction {
+    type Target = Function;
+
+    fn deref(&self) -> &Function {
+        // SAFETY: `new`'s contract: the function is in `tree`, which this handle keeps alive and
+        // which nothing mutates while shared.
+        unsafe { self.function.as_ref() }
+    }
+}
+
+impl std::fmt::Debug for SharedFunction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (**self).fmt(formatter)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Nil,

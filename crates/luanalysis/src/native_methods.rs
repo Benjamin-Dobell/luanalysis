@@ -112,7 +112,7 @@ impl NativeMethods {
     pub(super) fn new(
         snapshot: u64,
         file: &File,
-        functions: &[Function],
+        functions: &[luanalysis_syntax::SharedFunction],
         spans: &HashMap<(usize, usize), u32>,
         bound: &BoundFile,
         named: &NativeNamed,

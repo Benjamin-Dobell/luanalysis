@@ -12,7 +12,7 @@ use luanalysis_engine::{
 };
 use luanalysis_engine::{NativeTypeParameterKey, Parameter, Type, TypeQueries, ValuePack};
 use luanalysis_syntax::{
-    DocFunctionDeclarationId, DocFunctionOwner, File, Function, FunctionType, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
+    DocFunctionDeclarationId, DocFunctionOwner, File, FunctionType, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
     TypeExprKind, TypeFieldKey,
 };
 use crate::collections::{HashMap, HashSet};
@@ -1118,7 +1118,7 @@ struct FunctionNesting {
 }
 
 impl FunctionNesting {
-    fn new(functions: &[Function]) -> Self {
+    fn new(functions: &[luanalysis_syntax::SharedFunction]) -> Self {
         let mut order: Vec<usize> = (0..functions.len()).collect();
         order.sort_by_key(|&index| (functions[index].span.start, std::cmp::Reverse(functions[index].span.end)));
         let mut parents = vec![None; functions.len()];
@@ -1137,7 +1137,7 @@ impl FunctionNesting {
     }
 
     /// The innermost function whose body contains `span`.
-    fn innermost(&self, functions: &[Function], span: Span) -> Option<usize> {
+    fn innermost(&self, functions: &[luanalysis_syntax::SharedFunction], span: Span) -> Option<usize> {
         let before = self.by_body.partition_point(|&index| functions[index].body_span.start <= span.start);
         let mut candidate = before.checked_sub(1).map(|position| self.by_body[position]);
         while let Some(index) = candidate {
@@ -1153,7 +1153,7 @@ impl NativeSignatures {
     pub(super) fn new(
         snapshot: u64,
         file: &File,
-        functions: &[Function],
+        functions: &[luanalysis_syntax::SharedFunction],
         named: &NativeNamed,
     ) -> Self {
         let mut result = Self {
@@ -1646,7 +1646,7 @@ impl NativeSignatures {
 
     pub(super) fn implementation_scopes(
         &self,
-        functions: &[Function],
+        functions: &[luanalysis_syntax::SharedFunction],
     ) -> Vec<(NativeFunctionKey, NativeSignatureKey)> {
         functions
             .iter()
