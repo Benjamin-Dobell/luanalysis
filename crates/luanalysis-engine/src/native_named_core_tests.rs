@@ -765,7 +765,7 @@ fn anonymous_alias_owner_augmentations_attach_after_canonical_head_resolution() 
 }
 
 #[test]
-fn module_visibility_and_duplicate_definitions_remain_explicit_errors() {
+fn modules_and_duplicate_definitions_remain_explicit_errors_and_a_private_member_is_a_member() {
     Engine::new().with_native_provider(
         || {
             let mut class = Declaration::record(0, vec![]);
@@ -804,10 +804,11 @@ fn module_visibility_and_duplicate_definitions_remain_explicit_errors() {
                 ))
             );
             assert!(q.validate_named_declaration(declaration(2)).is_ok());
-            assert_eq!(
-                q.validate_named_declaration(declaration(4)),
-                Err(NamedTypeError::UnsupportedVisibility(member(0)))
-            );
+            // Its visibility restricts where the host lets it be accessed.
+            assert!(q.validate_named_declaration(declaration(4)).is_ok());
+            let private = q.named_type_reference(declaration(4), &[]).unwrap();
+            assert_eq!(q.property_type(&private, "secret"), Some(Type::Number));
+            assert_eq!(q.member_visibility(&private, "secret"), vec![(TypeMemberVisibility::Private, declaration(4), member(0))]);
             assert_eq!(
                 q.validate_named_declaration(declaration(5)),
                 Err(NamedTypeError::Table {

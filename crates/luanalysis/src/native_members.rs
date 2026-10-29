@@ -138,7 +138,7 @@ impl NativeMembers {
 }
 
 use crate::native_functions::NativeRegistry;
-use luanalysis_engine::{TableFieldOrigin, TableKey, TableType, Type, TypeMemberHeader, TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries, NativeTypeParameterKey};
+use luanalysis_engine::{TableFieldOrigin, TableKey, TableType, Type, TypeMemberHeader, TypeMemberKeyRecipe, TypeMemberOwner, TypeQueries, NativeTypeParameterKey};
 use luanalysis_syntax::{ExprKind, TableFieldKind};
 use crate::collections::HashSet;
 
@@ -246,8 +246,16 @@ impl NativeRegistry {
                 OriginalMemberKey::Fixed(key) => TypeMemberKeyRecipe::Fixed(key.clone()),
                 OriginalMemberKey::Computed(_) => TypeMemberKeyRecipe::Indexer { sparse: true },
             },
-            visibility: TypeMemberVisibility::Public, optional: false, readonly: false,
+            // `---@private` above `function T.f()` or `T.x = v` makes the member it stores private.
+            visibility: member_visibility(self.written_member_visibility(input.span)),
+            optional: false, readonly: false,
         })
+    }
+    /// The visibility that a tag above the statement storing the member at `target` gives it.
+    pub(crate) fn written_member_visibility(&self, target: luanalysis_syntax::Span) -> Option<luanalysis_syntax::FieldVisibility> {
+        self.syntax().member_visibilities.iter()
+            .find(|written| written.target.start <= target.start && target.end <= written.target.end)
+            .map(|written| written.visibility.kind)
     }
     /// Whether a member's value has a written type: an annotation, a cast, or a function whose
     /// signature is annotated (`---@param`, `---@return`, a `---@type` on its assignment).
@@ -469,5 +477,16 @@ impl NativeRegistry {
         }
         scopes.sort_by_key(|(context, owner)| (format!("{context:?}"), owner.index));
         scopes.dedup(); scopes
+    }
+}
+
+/// A written visibility, as a member header has it. No visibility is public.
+pub(crate) fn member_visibility(visibility: Option<luanalysis_syntax::FieldVisibility>) -> luanalysis_engine::TypeMemberVisibility {
+    use luanalysis_engine::TypeMemberVisibility;
+    match visibility {
+        None | Some(luanalysis_syntax::FieldVisibility::Public) => TypeMemberVisibility::Public,
+        Some(luanalysis_syntax::FieldVisibility::Protected) => TypeMemberVisibility::Protected,
+        Some(luanalysis_syntax::FieldVisibility::Private) => TypeMemberVisibility::Private,
+        Some(luanalysis_syntax::FieldVisibility::Package) => TypeMemberVisibility::Package,
     }
 }

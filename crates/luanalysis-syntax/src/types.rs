@@ -13,6 +13,8 @@ pub(crate) struct ParsedDocumentation {
     pub exclusions: Vec<TypeAnnotation>,
     /// LuaLS `--[[@as T]]`: the type of the expression just before the comment.
     pub as_casts: Vec<TypeAnnotation>,
+    /// `--[[@<A, B>]]`: the type arguments of the call whose arguments follow the comment.
+    pub call_type_arguments: Option<TypeAnnotation>,
     /// LuaLS `---@cast name T`, `---@cast name -?` and `---@cast name -T`.
     pub casts: Vec<CastAnnotation>,
     /// The prose lines before the first tag.
@@ -125,15 +127,27 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                 .unwrap_or(tag.len());
             let tag_name = &tag[..tag_len];
-            // LuaLS annotations that state nothing this checker uses: editor and diagnostic
-            // directives, visibility, and operators and casts not yet modelled. Deprecation is
-            // documentation: the editor marks what it deprecates.
+            // EmmyLua Analyzer's `--[[@<A, B>]]`, a call's type arguments, has no tag name.
+            let type_arguments = tag_name.is_empty() && tag.starts_with('<') && comment.kind == crate::CommentKind::Long;
+            // LuaLS annotations that state nothing else this checker uses: editor and diagnostic
+            // directives, and visibility, which documents the member a function is stored as.
+            // Deprecation is documentation: the editor marks what it deprecates.
             if tag_name == "deprecated" {
                 let mut text = tag[tag_len..].to_owned();
                 for continuation in lines[index + 1..].iter().take_while(|line| !is_tag_line(line)) {
                     text.push_str(&continuation_text(continuation));
                 }
                 result.deprecated = Some(description_text(&text));
+            }
+            let visibility = match tag_name {
+                "public" => Some(FieldVisibility::Public),
+                "protected" => Some(FieldVisibility::Protected),
+                "private" => Some(FieldVisibility::Private),
+                "package" => Some(FieldVisibility::Package),
+                _ => None,
+            };
+            if let Some(kind) = visibility {
+                result.functions.visibility = Some(FieldVisibilityAnnotation { kind, span: Span::new(tag_offset, tag_offset + 1 + tag_len) });
             }
             if matches!(
                 tag_name,
@@ -165,7 +179,7 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                     | "enum"
                     | "as"
                     | "cast"
-            ) || (tag_name == "return_overload" && !options.emmylua)
+            ) && !type_arguments || (tag_name == "return_overload" && !options.emmylua)
             {
                 diagnostics.push(Diagnostic {
                     origin: crate::DiagnosticOrigin::Annotation,
@@ -442,6 +456,18 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                         let (types, packs) = parser.annotation_type_list();
                         result.as_casts.push(TypeAnnotation { span: annotation_span, types, packs });
                     }
+                    "" if type_arguments => {
+                        parser.expect("<");
+                        let mut types = Vec::new();
+                        loop {
+                            parser.comma_ends_type += 1;
+                            types.push(parser.union());
+                            parser.comma_ends_type -= 1;
+                            if parser.take(",").is_none() { break; }
+                        }
+                        parser.expect(">");
+                        result.call_type_arguments = Some(TypeAnnotation { span: annotation_span, types, packs: None });
+                    }
                     "cast" => {
                         // `---@cast x -A, -B, +C`: the removed types are excluded together; `+T`
                         // and `+?` widen, which needs the variable's type, so they cast nothing.
@@ -667,6 +693,7 @@ pub(crate) fn merge_annotations(
     target.overloads.extend(incoming.overloads);
     target.return_overloads.extend(incoming.return_overloads);
     if incoming.readonly.is_some() { target.readonly = incoming.readonly; }
+    if incoming.visibility.is_some() { target.visibility = incoming.visibility; }
     for generic in incoming.generics {
         if target
             .generics
@@ -1205,8 +1232,11 @@ impl TypeParser {
                 // one `ty`, rather than `complex_ty`; unions must be wrapped
                 // in parentheses. A function constraint's bare return also
                 // cannot consume the comma between generic declarations.
+                // A conditional type is one too, as in TypeScript's `T extends U extends string ?
+                // A : B`: `T extends U extends string and A or B`.
                 self.comma_ends_type += 1;
                 let ty = self.primary();
+                let ty = if self.word_at(self.pos, "extends") { self.conditional(ty) } else { ty };
                 self.comma_ends_type -= 1;
                 Some(ty)
             } else {

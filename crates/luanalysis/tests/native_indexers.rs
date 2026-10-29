@@ -381,7 +381,12 @@ fn duplicate_constructor_keys_do_not_invent_source_order_last_write_precision() 
         );
         // A conservative native collision union preserves the portable Lua
         // contract, which gives no last-wins precision for either source order.
-        type_error(&source, "item[1]");
+        // The repeated key itself is TypeScript's TS1117.
+        let report = check(&source);
+        let codes: Vec<_> = report.diagnostics.iter().map(|error| error.code).collect();
+        assert_eq!(codes, ["TS1117", "TS2322"], "{:#?}", report.diagnostics);
+        let error = &report.diagnostics[1];
+        assert_eq!(&source[error.span.start..error.span.end], "item[1]");
     }
 }
 

@@ -251,17 +251,19 @@ fn duplicate_constructor_candidates_form_a_union_in_both_source_orders() {
     for constructor in ["{x = 1, x = \"text\"}", "{x = \"text\", x = 1}"] {
         let source = format!("local item = {constructor}\n---@type string\nlocal value = item.x");
         let report = check(&source);
-        assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-        assert_eq!(report.diagnostics[0].code, "TS2322");
+        // The repeated key is TypeScript's TS1117; the field keeps either value.
+        let codes: Vec<_> = report.diagnostics.iter().map(|error| error.code).collect();
+        assert_eq!(codes, ["TS1117", "TS2322"], "{:#?}", report.diagnostics);
         assert_eq!(
-            &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+            &source[report.diagnostics[1].span.start..report.diagnostics[1].span.end],
             "item.x"
         );
         let actual = report.type_at(source.find("item.x").unwrap() + "item.".len()).unwrap();
         let alternatives: std::collections::BTreeSet<_> = actual.split(" | ").collect();
         assert_eq!(alternatives, ["1", "\"text\""].into_iter().collect());
         let corrected = source.replace("---@type string", "---@type number|string");
-        assert!(check(&corrected).diagnostics.is_empty());
+        let codes: Vec<_> = check(&corrected).diagnostics.iter().map(|error| error.code).collect();
+        assert_eq!(codes, ["TS1117"]);
     }
 }
 

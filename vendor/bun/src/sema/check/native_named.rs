@@ -136,6 +136,8 @@ pub enum NativeTypeMemberVisibility {
     Public,
     Protected,
     Private,
+    /// LuaLS's `package`: visible in the file that declares it.
+    Package,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -1030,8 +1032,9 @@ impl<'p, 's> Checker<'p, 's> {
     fn native_named_member_origin(&mut self, member: NativeTypeMemberId) -> Result<(NativeObjectReference, NativeTypeMemberHeader), NativeNamedTypeError> {
         let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
         if !provider.contains_type_member(member) { return Err(NativeNamedTypeError::InvalidMember(member)) }
+        // A member's visibility restricts where it is accessed, not what it is: the host checks
+        // each access (`native_member_visibility`).
         let header = provider.type_member_header(self, member);
-        if header.visibility != NativeTypeMemberVisibility::Public { return Err(NativeNamedTypeError::UnsupportedVisibility(member)) }
         let mut owner = match &header.owner {
             NativeTypeMemberOwner::Declared(owner) => {
                 let head = self.native_declared_head(*owner)?;
@@ -1279,8 +1282,11 @@ impl<'p, 's> Checker<'p, 's> {
                 let valid = match *self.data(base) {
                     TypeData::NativeObject(reference) => self.native_named_provider(reference.declaration).is_ok_and(|p| {
                         let header = p.type_declaration_header(self, reference.declaration);
+                        // A `table<K, V>` head is a record of one indexer, as `{ [K]: V }` is, so
+                        // it is a base as TypeScript's `Record<K, V>` is.
                         matches!(header.kind, NativeTypeDeclarationKind::Shape | NativeTypeDeclarationKind::Class)
-                            && header.object_form == Some(NativeObjectDeclarationForm::Record)
+                            && matches!(header.object_form, Some(NativeObjectDeclarationForm::Record
+                                | NativeObjectDeclarationForm::Table { type_argument_count: 2 }))
                     }),
                     _ => false,
                 };
@@ -1397,6 +1403,38 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
         origins
+    }
+
+    /// The visibility of each member named `name` that member lookup applies to `ty`, with the
+    /// declaration that owns it and the member itself: of a named object, a class's definition
+    /// table, a runtime table's schema, or a type parameter's constraint, for each constituent of
+    /// a union.
+    pub fn native_member_visibility(&mut self, ty: TypeId, name: &[u8]) -> Vec<(NativeTypeMemberVisibility, NativeTypeDeclarationId, NativeTypeMemberId)> {
+        let ty = self.base_constraint_of(ty).unwrap_or(ty);
+        let parts = if self.is_union(ty) || self.is_intersection(ty) { self.parts(ty).to_vec() } else { vec![ty] };
+        let mut found = Vec::new();
+        for part in parts {
+            let object = match *self.data(part) {
+                TypeData::NativeObject(_) => part,
+                TypeData::NativeDefinition(reference) => self.intern(TypeData::NativeObject(reference.class)),
+                _ => match self.native_runtime_table_schema(part) { Some(schema) => schema, None => continue },
+            };
+            let Some(&member) = self.native_object_member_origins(object, name).first() else { continue };
+            let Some(provider) = self.native_type_declaration_provider.filter(|provider| provider.contains_type_member(member)) else { continue };
+            let header = provider.type_member_header(self, member);
+            let owner = match header.owner {
+                NativeTypeMemberOwner::Declared(owner) => owner,
+                NativeTypeMemberOwner::Reference { candidates, .. } if candidates.len() == 1 => candidates[0],
+                // A store into a runtime table is a member of the table it builds.
+                NativeTypeMemberOwner::RuntimeStore(_) => match *self.data(object) {
+                    TypeData::NativeObject(reference) => reference.declaration,
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            if !found.contains(&(header.visibility, owner, member)) { found.push((header.visibility, owner, member)); }
+        }
+        found
     }
 
     /// Written value context needs only this key's declared recipes. Resolving

@@ -90,6 +90,8 @@ pub enum TypeMemberVisibility {
     Public,
     Protected,
     Private,
+    /// LuaLS's `package`: visible in the file that declares it.
+    Package,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeMemberKeyRecipe {
@@ -330,6 +332,7 @@ impl<P: NativeTypeProvider> ProviderAdapter<'_, P> {
                 TypeMemberVisibility::Public => NativeTypeMemberVisibility::Public,
                 TypeMemberVisibility::Protected => NativeTypeMemberVisibility::Protected,
                 TypeMemberVisibility::Private => NativeTypeMemberVisibility::Private,
+                TypeMemberVisibility::Package => NativeTypeMemberVisibility::Package,
             },
             optional: header.optional,
             readonly: header.readonly,

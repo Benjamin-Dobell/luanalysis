@@ -981,6 +981,8 @@ pub trait TypeQueries {
     /// Whether strict runtime effects were requested (`--strict-standard-effects`).
     fn strict_runtime_effects(&mut self) -> bool { false }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError>;
+    /// The global binding of the string library, whose table a string's metatable indexes.
+    fn primitive_string_binding(&mut self) -> Option<NativeGlobalBindingKey>;
     fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError>;
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError>;
     fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError>;
@@ -1004,6 +1006,9 @@ pub trait TypeQueries {
     /// The declared members named `name` that member lookup applies to `ty`, a named object:
     /// its own, then its bases', with overloads. Not another owner's same-spelled member.
     fn named_object_member_origins(&mut self, _: &Type, _: &str) -> Vec<NativeTypeMemberKey> { Vec::new() }
+    /// The visibility of each member named `name` that member lookup applies to `ty`, with the
+    /// declaration that owns it and the member, for each constituent that has one.
+    fn member_visibility(&mut self, _: &Type, _: &str) -> Vec<(TypeMemberVisibility, NativeTypeDeclarationKey, NativeTypeMemberKey)> { Vec::new() }
     /// TypeScript's comparable relation, in either direction, without widening: whether `==` can
     /// equate the two (`isTypeEqualityComparableTo`).
     fn types_comparable(&mut self, _: &Type, _: &Type) -> bool { true }
@@ -1348,6 +1353,9 @@ pub trait TypeQueries {
     /// is, and deferred while either is generic. Each of `infer` has its constraint, if any.
     /// `outer`: the type parameters that written branches mention.
     fn conditional_type(&mut self, check: &Type, extends: &Type, infer: &[(NativeTypeParameterKey, Option<Type>)], branches: &ConditionalBranches, outer: &[NativeTypeParameterKey]) -> Type;
+    /// TypeScript's substitution type: `base` where it is known to satisfy `constraint`, as a
+    /// conditional type's check type is in its true branch.
+    fn substitution_type(&mut self, base: &Type, constraint: &Type) -> Type;
     /// The mapped type `{ [P in K as N]: T }`: a property for each key of `K`, named by `N` and
     /// of type `T` with `P` the key, homomorphic in `X` (keeping its optional and read-only
     /// properties, and mapping an array to an array) where `K` is written `keyof X`, and
@@ -1599,6 +1607,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         }
     }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
+    fn primitive_string_binding(&mut self) -> Option<NativeGlobalBindingKey> { self.primitive_string_binding_native() }
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> { self.global_environment_type_native(environment) }
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey> { self.global_environment_origin_native(environment) }
     fn begin_environment_read(&mut self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeEnvironmentRead> {
@@ -1621,6 +1630,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool { self.assertion_overlap_native(source, target) }
     fn type_members(&mut self, ty: &Type) -> Vec<(String, Type)> { self.type_members_native(ty) }
     fn named_object_member_origins(&mut self, ty: &Type, name: &str) -> Vec<NativeTypeMemberKey> { self.named_object_member_origins_native(ty, name) }
+    fn member_visibility(&mut self, ty: &Type, name: &str) -> Vec<(TypeMemberVisibility, NativeTypeDeclarationKey, NativeTypeMemberKey)> { self.member_visibility_native(ty, name) }
     fn types_comparable(&mut self, left: &Type, right: &Type) -> bool { self.types_comparable_native(left, right) }
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }
@@ -2312,6 +2322,12 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         };
         let outer: Vec<_> = mapped.outer.iter().map(|&key| import_type(self.checker, self.handles, &Type::NativeTypeParameter(key))).collect();
         let ty = self.checker.native_mapped_type(param, constraint, keyof, (code(mapped.readonly), code(mapped.optional)), pieces, &outer);
+        export_type(self.checker, self.handles, ty)
+    }
+    fn substitution_type(&mut self, base: &Type, constraint: &Type) -> Type {
+        let base = import_type(self.checker, self.handles, base);
+        let constraint = import_type(self.checker, self.handles, constraint);
+        let ty = self.checker.native_substitution_type(base, constraint);
         export_type(self.checker, self.handles, ty)
     }
     fn conditional_type(&mut self, check: &Type, extends: &Type, infer: &[(NativeTypeParameterKey, Option<Type>)], branches: &ConditionalBranches, outer: &[NativeTypeParameterKey]) -> Type {

@@ -331,9 +331,10 @@ impl Checker<'_> {
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
+        let type_arguments = self.call_type_arguments(span);
         let result =
             self.engine
-                .call_native_arguments_scalar_in_frame(&callee, call, &arguments, &[], expected,
+                .call_native_arguments_scalar_in_frame(&callee, call, &arguments, &type_arguments, expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.report_unplaced_limit(limits, span);
         let checked = result.errors.is_empty();
@@ -357,9 +358,10 @@ impl Checker<'_> {
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
+        let type_arguments = self.call_type_arguments(span);
         let result = self
             .engine
-            .call_native_arguments_in_frame(&callee, call, &arguments, &[], expected,
+            .call_native_arguments_in_frame(&callee, call, &arguments, &type_arguments, expected,
                 luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.report_unplaced_limit(limits, span);
         let checked = result.errors.is_empty();
@@ -381,6 +383,7 @@ impl Checker<'_> {
         args: &[Expr],
     ) -> (Type, Vec<PackArgument>, Vec<Span>) {
         let receiver_type = self.expression(receiver);
+        self.member_accessibility(&receiver_type, name);
         let member_contract = self.runtime_member_contract(receiver,receiver_type.clone());
         let callee = if matches!(receiver_type, Type::Any) {
             let key = TableKey::Literal(LuaKey::String(name.text.as_bytes().to_vec()));

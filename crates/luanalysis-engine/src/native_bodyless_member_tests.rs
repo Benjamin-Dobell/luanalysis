@@ -397,7 +397,9 @@ fn incompatible_optional_and_readonly_metadata_do_not_merge() {
 }
 
 #[test]
-fn nonpublic_pure_members_keep_their_original_visibility_error() {
+fn pure_members_of_another_visibility_do_not_merge() {
+    // A visibility is a member's metadata, as optional and readonly are: TypeScript's overloads
+    // must agree on theirs.
     use TypeMemberVisibility::{Private, Protected, Public};
     for visibilities in [
         [Private, Public],
@@ -415,25 +417,8 @@ fn nonpublic_pure_members_keep_their_original_visibility_error() {
                 }
                 provider
             },
-            |provider, queries| {
-                let original = provider
-                    .members
-                    .iter()
-                    .find(|member| member.header.visibility != Public)
-                    .unwrap()
-                    .key;
-                let class = queries.named_declared_type(declaration(0)).unwrap();
-                assert!(queries.property_type(&class, "choose").is_none());
-                assert_eq!(
-                    queries.validate_named_declaration(declaration(0)),
-                    Err(NamedTypeError::UnsupportedVisibility(original))
-                );
-                assert!(
-                    provider
-                        .errors
-                        .borrow()
-                        .contains(&NamedTypeError::UnsupportedVisibility(original))
-                );
+            |_, queries| {
+                duplicate(queries.validate_named_declaration(declaration(0)));
             },
         );
     }

@@ -542,9 +542,9 @@ impl NativeRegistry {
                     },
                 },
                 key: key_recipe(&source.field.key),
-                // A field's visibility is for editors, as in Luanalysis for IntelliJ, where it
-                // chooses completions: whatever it is, the field is a member of its class.
-                visibility: TypeMemberVisibility::Public,
+                // Whatever its visibility, the field is a member of its class; the visibility
+                // restricts where it is accessed.
+                visibility: crate::native_members::member_visibility(source.field.visibility.map(|visibility| visibility.kind)),
                 // `name? T` may be absent whatever T is: `any | nil` is `any`.
                 optional: source.field.optional,
                 readonly: source.field.readonly.is_some(),

@@ -19,6 +19,21 @@ impl SessionQueries<'_, '_, '_> {
             .collect()
     }
 
+    pub(super) fn member_visibility_native(&mut self, ty: &Type, name: &str) -> Vec<(crate::TypeMemberVisibility, crate::NativeTypeDeclarationKey, crate::NativeTypeMemberKey)> {
+        use bun_sema::check::native_named::NativeTypeMemberVisibility;
+        let ty = import_type(self.checker, self.handles, ty);
+        self.checker.native_member_visibility(ty, name.as_bytes()).into_iter().map(|(visibility, owner, member)| (
+            match visibility {
+                NativeTypeMemberVisibility::Public => crate::TypeMemberVisibility::Public,
+                NativeTypeMemberVisibility::Protected => crate::TypeMemberVisibility::Protected,
+                NativeTypeMemberVisibility::Private => crate::TypeMemberVisibility::Private,
+                NativeTypeMemberVisibility::Package => crate::TypeMemberVisibility::Package,
+            },
+            crate::NativeTypeDeclarationKey { snapshot: owner.snapshot, index: owner.index },
+            crate::NativeTypeMemberKey { snapshot: member.snapshot, index: member.index },
+        )).collect()
+    }
+
     pub(super) fn types_comparable_native(&mut self, left: &Type, right: &Type) -> bool {
         let left = import_type(self.checker, self.handles, left);
         let right = import_type(self.checker, self.handles, right);

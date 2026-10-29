@@ -317,6 +317,9 @@ impl SessionQueries<'_, '_, '_> {
         let value = self.checker.native_global_environment_type(core_environment(key)).map_err(error)?;
         Ok(self.handles.retain(value))
     }
+    pub(super) fn primitive_string_binding_native(&mut self) -> Option<NativeGlobalBindingKey> {
+        self.checker.native_primitive_string_binding().map(binding)
+    }
     pub(super) fn global_binding_type_native(
         &mut self,
         key: NativeGlobalBindingKey,

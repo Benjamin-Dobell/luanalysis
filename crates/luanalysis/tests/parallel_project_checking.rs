@@ -517,7 +517,8 @@ fn methods_keep_receiver_mappers_and_unrelated_classes_keep_nominal_origins() {
     fixture.file("main.lua", main);
     clean(&fixture.minimal(&entries, &declarations));
 
-    // A private member is a member, as in Luanalysis for IntelliJ, in a parallel check too.
+    // A private member is a member, as in Luanalysis for IntelliJ, in a parallel check too: read
+    // outside its class it is TypeScript's TS2341, and nothing else.
     fixture.file(
         "private.def.lua",
         "---@class Secret\n---@field private value number\n\n---@class Descendant:Secret\n",
@@ -525,7 +526,10 @@ fn methods_keep_receiver_mappers_and_unrelated_classes_keep_nominal_origins() {
     fixture.file("descendant.lua", "---@param item Descendant\n---@return number\nlocal function read(item) return item.value end\n");
     let private_entries = ["main.lua", "dot.lua", "other.lua", "fourth.lua", "descendant.lua"];
     let private_declarations = ["base.def.lua", "derived.def.lua", "private.def.lua"];
-    clean(&fixture.minimal(&private_entries, &private_declarations));
+    let private = fixture.minimal(&private_entries, &private_declarations);
+    error_at(&private, "descendant.lua", "TS2341", "value");
+    assert_eq!(private.files.iter().map(|checked| checked.report.diagnostics.len()).sum::<usize>(), 1, "{:#?}",
+        private.files.iter().flat_map(|checked| &checked.report.diagnostics).collect::<Vec<_>>());
 }
 
 #[test]

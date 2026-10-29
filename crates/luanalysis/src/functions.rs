@@ -178,9 +178,10 @@ impl Checker<'_> {
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
+        let type_arguments = self.call_type_arguments(span);
         let result =
             self.engine
-                .call_native_arguments_in_frame(&callee_type, call, &arguments, &[], expected,
+                .call_native_arguments_in_frame(&callee_type, call, &arguments, &type_arguments, expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.report_unplaced_limit(limits, span);
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
@@ -669,9 +670,10 @@ impl Checker<'_> {
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
+        let type_arguments = self.call_type_arguments(span);
         let result =
             self.engine
-                .call_native_arguments_scalar_in_frame(&callee_type, call, &arguments, &[], expected,
+                .call_native_arguments_scalar_in_frame(&callee_type, call, &arguments, &type_arguments, expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.report_unplaced_limit(limits, span);
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
@@ -751,6 +753,12 @@ impl Checker<'_> {
         self.engine.runtime_table_value(declaration, &ty).unwrap_or(ty)
     }
 
+    /// The call's written type arguments, `f--[[@<T>]](x)`, as TypeScript's `f<T>(x)`.
+    pub(super) fn call_type_arguments(&mut self, span: Span) -> Vec<Type> {
+        let Some(written) = self.native.and_then(|native| written_type_arguments(native, span)) else { return Vec::new() };
+        written.annotation.types.iter().map(|ty| self.annotation(ty)).collect()
+    }
+
     pub(super) fn call_result(
         &mut self,
         result: CallResult,
@@ -788,10 +796,13 @@ impl Checker<'_> {
                 }
                 CallError::TypeArgumentArity { actual, minimum, maximum } => {
                     let expected = if maximum == minimum { minimum.to_string() } else { format!("{minimum}-{maximum}") };
-                    self.error("TS2558", callee_span, format!("Expected {expected} type arguments, but got {actual}."));
+                    let origin = self.native.and_then(|native| written_type_arguments(native, span)).map_or(callee_span, |written| written.annotation.span);
+                    self.error("TS2558", origin, format!("Expected {expected} type arguments, but got {actual}."));
                 }
-                CallError::TypeArgument { source, target, .. } => {
-                    self.error_types("TS2344", callee_span, "Type '{}' does not satisfy the constraint '{}'.", &[&source, &target]);
+                CallError::TypeArgument { index, source, target } => {
+                    let origin = self.native.and_then(|native| written_type_arguments(native, span))
+                        .and_then(|written| written.annotation.types.get(index)).map_or(callee_span, |ty| ty.span);
+                    self.error_types("TS2344", origin, "Type '{}' does not satisfy the constraint '{}'.", &[&source, &target]);
                 }
                 unsupported => self.error("LUA2018", callee_span, format!("native call form {unsupported:?} requires a later call-checking integration")),
             }
@@ -813,4 +824,8 @@ fn arity_range(minimum: usize, maximum: Option<usize>) -> String {
 /// passes nil: that makes them optional to callers, not nil in the body.
 pub(crate) fn untyped_parameters(function: &Function) -> bool {
     function.annotations.params.is_empty() && function.annotations.type_annotation.is_none()
+}
+
+fn written_type_arguments(native: &crate::NativeRegistry, span: Span) -> Option<&luanalysis_syntax::CallTypeArguments> {
+    native.syntax().call_type_arguments.iter().find(|written| written.call == span)
 }

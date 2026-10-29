@@ -562,6 +562,8 @@ impl super::NativeRegistry {
     }
     pub(crate) fn applied_method_self_type(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<Type> {
         let method = self.methods.get(key)?;
+        // A string library method's `self` is a string, not an instance of the library's class.
+        if self.receives_strings(&method.receiver, queries) { return None }
         if let Some(application) = method.owner_application.as_ref() {
             let owner = self.original_owner_application(application, queries);
             return queries.contextual_owner_self_type(&owner.reference);
@@ -572,6 +574,38 @@ impl super::NativeRegistry {
             != Some(self.canonical_declaration(luanalysis_engine::NativeTypeDeclarationKey { snapshot: expected.snapshot, index: expected.index }))
         { return None; }
         queries.contextual_owner_self_type(&owner.reference)
+    }
+    /// The classes whose methods enclose `span`: each function that contains it and is stored
+    /// on a class or on one of its instances, at any depth.
+    pub(crate) fn enclosing_method_classes(&self, span: luanalysis_syntax::Span) -> Vec<luanalysis_engine::NativeTypeDeclarationKey> {
+        let mut classes = Vec::new();
+        for (index, function) in self.functions.iter().enumerate() {
+            if !(function.span.start <= span.start && span.end <= function.span.end) { continue }
+            let key = NativeFunctionKey { snapshot: self.snapshot, index: index as u32 };
+            let Some(method) = self.methods.get(key) else { continue };
+            let class = method.class_owner.or(method.declaration_owner).or_else(|| self.external_method_owner(method));
+            if let Some(class) = class {
+                classes.push(luanalysis_engine::NativeTypeDeclarationKey { snapshot: class.snapshot, index: class.index });
+            }
+        }
+        classes
+    }
+    /// Whether `member` is declared in this file.
+    pub(crate) fn declares_member(&self, member: luanalysis_engine::NativeTypeMemberKey) -> bool {
+        member.snapshot == self.snapshot
+    }
+    /// Whether the function is a method of the string library, so its `self` is a string.
+    pub(crate) fn is_string_method(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> bool {
+        self.methods.get(key).is_some_and(|method| self.receives_strings(&method.receiver, queries))
+    }
+    /// Whether `receiver` is the string library, whose functions strings are called with through
+    /// their metatable: `function string:startswith(prefix)` takes a string as `self`, as the
+    /// library's own functions take one, so `("abc"):startswith("a")` passes it one.
+    fn receives_strings(&self, receiver: &Expr, queries: &mut dyn TypeQueries) -> bool {
+        let ExprKind::Name(name) = &receiver.kind else { return false };
+        self.bound.binding_at(name.span.start).is_none()
+            && !crate::native_functions::globals::nonstandard_environment(&self.bound, name.span.start)
+            && self.global_binding(&name.text).is_some_and(|binding| queries.primitive_string_binding() == Some(binding))
     }
     pub(crate) fn has_polymorphic_method_owner(&self, key: NativeFunctionKey) -> bool {
         self.method_owner(key).is_some() || self.methods.get(key).is_some_and(|method| method.contextual_owner.is_some() || self.external_method_owner(method).is_some())
@@ -585,6 +619,17 @@ impl super::NativeRegistry {
         method.class_owner.or_else(|| (self.source_role() == luanalysis_project::SourceRole::Declaration)
             .then_some(method.declaration_owner).flatten())
     }
+    /// Whether `self` in an annotation at `span` has a member to name: the annotation documents
+    /// a function stored in a table (`function T:f()`, `T.f = function`, `{ f = function }`) or is
+    /// within one, as TypeScript's `this` type is only within a class or interface member.
+    pub(crate) fn annotation_has_member_self(&self, context: Option<crate::native_named::NativeTypeContext>, span: luanalysis_syntax::Span) -> bool {
+        let member = |key: NativeFunctionKey| self.methods.get(key).is_some() || self.expressions().table_function_owner(key).is_some();
+        if context.and_then(|context| self.metatable_annotation_function(context)).is_some_and(member) { return true }
+        self.functions.iter().enumerate().any(|(index, function)| {
+            function.span.start <= span.start && span.end <= function.span.end
+                && member(NativeFunctionKey { snapshot: self.snapshot, index: index as u32 })
+        })
+    }
     pub(crate) fn implicit_receiver(&self, function: &Function) -> Option<BindingId> {
         self.bound.implicit_receiver(function.span)
     }
@@ -592,6 +637,7 @@ impl super::NativeRegistry {
     pub(crate) fn default_receiver_type(&self, function: &Function, queries: &mut dyn TypeQueries) -> Option<Type> {
         let key = self.key_for(function);
         let method = self.methods.get(key)?;
+        if self.receives_strings(&method.receiver, queries) { return Some(Type::String); }
         if let Some(receiver) = self.applied_method_self_type(key, queries) { return Some(receiver); }
         if method.contextual_owner.is_some() {
             match self.contextual_self_type(key, queries) {

@@ -62,6 +62,41 @@ impl super::Checker<'_> {
         self.engine.conditional_type(&check_type, &extends_type, &infer, &branches, &outer)
     }
 
+    /// TypeScript's `getConditionalFlowTypeOfType`: within the true branch of `T extends U and X
+    /// or Y`, `T` is known to be a `U` (each enclosing conditional of `T` adds its extends type),
+    /// so `T extends string and OnlyStr<T> or never` satisfies `OnlyStr`'s constraint.
+    pub(super) fn conditional_flow_type(&mut self, ty: &TypeExpr, resolved: Type) -> Type {
+        let (Type::NativeTypeParameter(parameter), TypeExprKind::Named(name), Some(native)) = (&resolved, &ty.kind, self.native) else {
+            return resolved;
+        };
+        let parameter = *parameter;
+        let mut constraints = Vec::new();
+        for source in native.types.annotations() {
+            let luanalysis_syntax::AnnotationDeclaration::Conditional(conditional) = &source.syntax else { continue };
+            if !(conditional.yes.span.start <= ty.span.start && ty.span.end <= conditional.yes.span.end) { continue }
+            let mut check = &conditional.check_type;
+            while let TypeExprKind::Parenthesized(inner) = &check.kind { check = inner }
+            if !matches!(&check.kind, TypeExprKind::Named(checked) if checked == name) { continue }
+            // The written types are lowered again only to compare and constrain: what they report
+            // was reported where the conditional type is.
+            let mut scratch = native.checker(&mut *self.engine);
+            scratch.type_context = self.type_context;
+            scratch.named_type_context = self.named_type_context;
+            scratch.signature_type_context = self.signature_type_context;
+            if scratch.annotation(check) == Type::NativeTypeParameter(parameter) {
+                constraints.push(scratch.annotation(&conditional.extends_type));
+            }
+        }
+        match constraints.len() {
+            0 => resolved,
+            1 => self.engine.substitution_type(&resolved, &constraints[0]),
+            _ => {
+                let constraint = Type::Intersection(constraints);
+                self.engine.substitution_type(&resolved, &constraint)
+            }
+        }
+    }
+
     /// TypeScript's mapped type, `{ [P in K as N]?: T }`. Its template and `as` clause see `P`
     /// and are lowered when first read, as TypeScript reads them, so that one may refer to the
     /// alias whose body this is. Written `keyof X`, its keys make it homomorphic in `X`.

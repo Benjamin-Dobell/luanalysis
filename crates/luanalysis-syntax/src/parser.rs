@@ -47,6 +47,8 @@ pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl 
         documentation_references: parser.documentation_references,
         return_annotations: parser.return_annotations,
         readonly_locals: parser.readonly_locals,
+        call_type_arguments: parser.call_type_arguments,
+        member_visibilities: parser.member_visibilities,
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
@@ -72,6 +74,10 @@ struct Parser<'a> {
     documentation_references: Vec<crate::DocumentationReference>,
     return_annotations: Vec<crate::ReturnAnnotation>,
     readonly_locals: Vec<Span>,
+    call_type_arguments: Vec<crate::CallTypeArguments>,
+    member_visibilities: Vec<crate::MemberVisibility>,
+    /// `--[[@<T>]]` read just before a call's arguments, which the call takes.
+    pending_call_type_arguments: Option<TypeAnnotation>,
     options: ParseOptions,
     documentation_group: Option<DocumentationGroup>,
     depth: usize,
@@ -157,6 +163,9 @@ impl<'a> Parser<'a> {
             documentation_references: Vec::new(),
             return_annotations: Vec::new(),
             readonly_locals: Vec::new(),
+            call_type_arguments: Vec::new(),
+            member_visibilities: Vec::new(),
+            pending_call_type_arguments: None,
             options,
             documentation_group: None,
             depth: 0,
@@ -254,7 +263,12 @@ impl<'a> Parser<'a> {
             if let Some(group) = &group {
                 self.finish_documentation_functions(group);
             }
-            if let Some(stmt) = self.statement() {
+            let visibility = self.pending_annotations.visibility.take();
+            let stmt = self.statement();
+            if let (Some(visibility), Some(stmt)) = (visibility, &stmt) {
+                self.record_member_visibility(stmt, visibility);
+            }
+            if let Some(stmt) = stmt {
                 if let Some(group) = group {
                     self.attach_type_group(group, &stmt);
                 }
@@ -274,6 +288,17 @@ impl<'a> Parser<'a> {
         statements
     }
 
+    /// A visibility tag above a statement that stores members: each one's.
+    fn record_member_visibility(&mut self, statement: &Stmt, visibility: crate::FieldVisibilityAnnotation) {
+        let targets: Vec<Span> = match &statement.kind {
+            StmtKind::FunctionDeclaration { target, .. } => vec![target.span],
+            StmtKind::Assign { targets, .. } => targets.iter()
+                .filter(|target| matches!(target.kind, ExprKind::Field { .. } | ExprKind::Index { .. }))
+                .map(|target| target.span).collect(),
+            _ => Vec::new(),
+        };
+        self.member_visibilities.extend(targets.into_iter().map(|target| crate::MemberVisibility { target, visibility }));
+    }
     fn finish_documentation_functions(&mut self, group: &DocumentationGroup) {
         let owners = group
             .declarations
@@ -578,7 +603,7 @@ impl<'a> Parser<'a> {
                         self.pending_annotations.returns.as_ref().is_some_and(|returns| returns.span.start >= group.span.start)
                     });
                     // A `---@readonly` that no local takes says nothing, as EmmyLua Analyzer reads it.
-                    if !types::annotation_spans(&annotations).is_empty() || annotations.readonly.is_some() {
+                    if !types::annotation_spans(&annotations).is_empty() || annotations.readonly.is_some() || annotations.visibility.is_some() {
                         let line_start = self.source[..comment.span.start]
                             .rfind(['\r', '\n'])
                             .map_or(0, |index| index + 1);
@@ -672,6 +697,36 @@ impl<'a> Parser<'a> {
     }
     // Documentation between the parts of a call chain, which LuaLS binds to a
     // callback in the call that follows it.
+    /// EmmyLua Analyzer's `f--[[@<A, B>]](x)`, TypeScript's `f<A, B>(x)`: the type arguments of
+    /// the call whose arguments come next.
+    fn call_type_argument_comment(&mut self, comment: &Comment) {
+        let (documentation, diagnostics) = types::annotations(comment, self.options);
+        let Some(annotation) = documentation.call_type_arguments else { return };
+        self.diagnostics.extend(diagnostics);
+        if self.significant_call_arguments() {
+            self.pending_call_type_arguments = Some(annotation);
+        } else {
+            self.diagnostic_at(crate::DiagnosticOrigin::Annotation, annotation.span, "type arguments must come just before a call's arguments");
+        }
+    }
+    /// The trivia between a method's name and its arguments, which may give the call's type
+    /// arguments.
+    fn method_call_trivia(&mut self) {
+        loop {
+            match self.current().kind.clone() {
+                TokenKind::Comment(comment) if comment.kind == CommentKind::Long => {
+                    self.pos += 1;
+                    self.call_type_argument_comment(&comment);
+                }
+                TokenKind::Newline | TokenKind::Comment(_) => {
+                    let start = self.pos;
+                    self.inner_trivia();
+                    if self.pos == start { break }
+                }
+                _ => break,
+            }
+        }
+    }
     fn suffix_documentation(&mut self) -> FunctionAnnotations {
         let mut annotations = FunctionAnnotations::default();
         let mut group = None;
@@ -683,6 +738,9 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     self.pos += 1;
+                    if comment.kind == CommentKind::Long {
+                        self.call_type_argument_comment(&comment);
+                    }
                     if comment.kind == CommentKind::Documentation {
                         let contiguous = self.documentation_run(&mut group, comment.span, &annotations);
                         let documentation = self.expression_documentation_comment(&comment);
@@ -1628,7 +1686,8 @@ impl<'a> Parser<'a> {
                     self.error("Lua ':' access requires a method call argument list");
                     break;
                 }
-                self.inner_trivia();
+                self.method_call_trivia();
+                let type_arguments = self.pending_call_type_arguments.take();
                 let (mut args, args_span, args_depth) = self.call_arguments();
                 self.attach_function_annotations(&mut args, documentation);
                 let span = expr.span.join(args_span);
@@ -1651,11 +1710,15 @@ impl<'a> Parser<'a> {
                         },
                         span,
                     };
+                    if let Some(annotation) = type_arguments {
+                        self.call_type_arguments.push(crate::CallTypeArguments { annotation, call: span });
+                    }
                     built_depth = built_depth.max(args_depth) + 1;
                 }
                 continue;
             }
             if self.symbol("(") || self.symbol("{") || matches!(self.current().kind, TokenKind::String(_)) {
+                let type_arguments = self.pending_call_type_arguments.take();
                 let (mut args, args_span, args_depth) = self.call_arguments();
                 self.attach_function_annotations(&mut args, documentation);
                 let span = expr.span.join(args_span);
@@ -1677,6 +1740,9 @@ impl<'a> Parser<'a> {
                         },
                         span,
                     };
+                    if let Some(annotation) = type_arguments {
+                        self.call_type_arguments.push(crate::CallTypeArguments { annotation, call: span });
+                    }
                     built_depth = built_depth.max(args_depth) + 1;
                 }
                 continue;

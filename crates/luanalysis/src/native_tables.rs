@@ -98,6 +98,7 @@ impl Checker<'_> {
             ..TableType::default()
         };
         let mut origins = Vec::with_capacity(fields.len());
+        self.duplicate_constructor_keys(fields);
         for (position, field) in fields.iter().enumerate() {
             let (key, origin) = match &field.kind {
                 TableFieldKind::Named(name) => (
@@ -203,6 +204,71 @@ impl Checker<'_> {
             origins.push((key, origin));
         }
         self.finish_native_table(table, &origins, span, expected)
+    }
+
+    /// TypeScript's TS1117 for a key a constructor writes twice: Lua leaves the order of the
+    /// assignments undefined, so the field has either value. Only written literal keys count, as
+    /// TypeScript counts literal property names, and `[1.0]` is the key `1`, as Lua converts it.
+    /// A final call or `...` stores however many values it has, possibly none, as a spread does.
+    fn duplicate_constructor_keys(&mut self, fields: &[TableField]) {
+        let mut seen: Vec<LuaKey> = Vec::with_capacity(fields.len());
+        for (position, field) in fields.iter().enumerate() {
+            let (key, origin) = match &field.kind {
+                TableFieldKind::Named(name) => (LuaKey::String(name.text.as_bytes().to_vec()), name.span),
+                TableFieldKind::Sequence { .. } if position + 1 == fields.len()
+                    && matches!(field.value.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg) => continue,
+                TableFieldKind::Sequence { index } => match sequence_key(*index) {
+                    TableKey::Literal(key) => (key, field.value.span),
+                    TableKey::Type(_) => unreachable!("a sequence key is literal"),
+                },
+                TableFieldKind::Keyed(key) => match literal_key(key) {
+                    Some(literal) => (literal, key.span),
+                    None => continue,
+                },
+            };
+            let key = match key {
+                LuaKey::Number(value) if value.fract() == 0.0 && value >= -(2f64.powi(63)) && value < 2f64.powi(63) => {
+                    LuaKey::Integer(value as i64)
+                }
+                key => key,
+            };
+            if seen.contains(&key) {
+                self.error("TS1117", origin, "A table constructor cannot have multiple fields with the same key.");
+            } else {
+                seen.push(key);
+            }
+        }
+    }
+
+    /// TypeScript's member accessibility (TS2341, TS2445) for `name` read, written or called on
+    /// `receiver`. A Lua class's body is its methods, the functions stored on it or on its
+    /// instances (at any depth within them), and the file that declares the member, whose
+    /// top-level statements build the class: a `private` member is accessible there, a
+    /// `protected` one also in a subclass's methods, and LuaLS's `package` one in its file only.
+    pub(super) fn member_accessibility(&mut self, receiver: &Type, name: &luanalysis_syntax::Name) {
+        use luanalysis_engine::TypeMemberVisibility;
+        let Some(native) = self.native else { return };
+        for (visibility, owner, member) in self.engine.member_visibility(receiver, &name.text) {
+            if visibility == TypeMemberVisibility::Public || native.declares_member(member) { continue }
+            // A table that is no class has no methods: its own file is its body.
+            let class = self.engine.named_declared_type(owner).ok().filter(|class| self.engine.runtime_table_schema(class).is_none());
+            if visibility != TypeMemberVisibility::Package && let Some(class) = &class {
+                let protected = visibility == TypeMemberVisibility::Protected;
+                let enclosing = native.enclosing_method_classes(name.span);
+                if enclosing.iter().any(|&method_class| method_class == owner || protected
+                    && self.engine.named_declared_type(method_class).is_ok_and(|method_class| self.engine.is_assignable(&method_class, class)))
+                { continue }
+                let (code, template) = if protected {
+                    ("TS2445", format!("Property '{}' is protected and only accessible within class '{{}}' and its subclasses.", name.text))
+                } else {
+                    ("TS2341", format!("Property '{}' is private and only accessible within class '{{}}'.", name.text))
+                };
+                self.error_types(code, name.span, template, &[class]);
+                continue;
+            }
+            let kind = match visibility { TypeMemberVisibility::Package => "package-private", TypeMemberVisibility::Protected => "protected", _ => "private" };
+            self.error("TS2341", name.span, format!("Property '{}' is {kind} and only accessible within its file.", name.text));
+        }
     }
 
     /// Evaluate the original key before its value, including calls/captures,

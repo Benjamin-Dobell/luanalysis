@@ -9,7 +9,7 @@ use crate::native_runtime_tables::RuntimeTableStoreKey;
 use luanalysis_engine::{
     NativeExpressionKey, NativeFlowKey, NativeTypeDeclarationKey, NativeTypeMemberKey,
     ObjectDeclarationForm, Type, TypeDeclarationHeader, TypeDeclarationKind, TypeMemberHeader,
-    TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries,
+    TypeMemberKeyRecipe, TypeMemberOwner, TypeQueries,
 };
 use luanalysis_syntax::{Expr, ExprKind, Span, TableFieldKind};
 use luanalysis_engine::LuaKey;
@@ -328,7 +328,7 @@ impl NativeRegistry {
                 RuntimeTableStoreKey::Fixed(key) => TypeMemberKeyRecipe::Fixed(key.clone()),
                 RuntimeTableStoreKey::Computed(_) => TypeMemberKeyRecipe::Indexer { sparse: true },
             },
-            visibility: TypeMemberVisibility::Public,
+            visibility: crate::native_members::member_visibility(self.written_member_visibility(source.span)),
             optional: false,
             readonly: false,
         })

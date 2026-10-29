@@ -125,9 +125,12 @@ local string_value = outer.inner.read(outer.inner)
 
 #[test]
 fn a_global_class_named_self_is_not_a_contextual_owner() {
+    // Outside any member, `self` names nothing, as TypeScript's `this` type (TS2526).
     let source = "---@class self\n---@field sentinel number\n\n---@type self\nlocal value\nlocal invalid = value.sentinel\n";
     let report = check(source);
-    assert!(report.diagnostics.iter().any(|error| error.code == "TS2339" && error.message.contains("unknown")), "{:#?}", report.diagnostics);
+    let codes: Vec<_> = report.diagnostics.iter().map(|error| error.code).collect();
+    assert_eq!(codes, ["TS2526"], "{:#?}", report.diagnostics);
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "self");
 }
 
 #[test]

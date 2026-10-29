@@ -325,7 +325,6 @@ fn invalid_base_categories_and_unknown_names_have_original_base_spans() {
         "unknown",
         "number|string",
         "number[]",
-        "table<string,number>",
     ] {
         let source = format!("---@class Invalid:{base}\n");
         rejects_at(&source, "TS2312", base);

@@ -655,6 +655,12 @@ impl<'p, 's> Checker<'p, 's> {
         }
     }
 
+    /// `getSubstitutionType` for a type that a native host lowers: `base` where it is known to
+    /// satisfy `constraint`, as a conditional type's true branch knows its check type.
+    pub fn native_substitution_type(&mut self, base: TypeId, constraint: TypeId) -> TypeId {
+        self.substitution_type(base, constraint)
+    }
+
     /// `getSubstitutionType`
     pub(super) fn substitution_type(&mut self, base: TypeId, constraint: TypeId) -> TypeId {
         if self.is_any(constraint)

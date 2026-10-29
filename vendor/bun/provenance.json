@@ -3086,6 +3086,24 @@
       "patch": "vendor/patches/bun-sema-native-exact-optionals.patch",
       "reason": "Let an optional Lua parameter be absent without taking nil it does not declare: a frontend marks its absence with `missing`, which reads as nil, and the native argument checks strip it, checking an expansion against the rows of present values; a checker flag restores EmmyLua's reading, where absence is nil.",
       "patch_sha256": "6e0465db830a2bbda6a97a96c05f8fcc74447f71ff53cc13fbf571018c7be13d"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-emmylua-comparison-gaps.patch",
+      "reason": "Let a native `table<K, V>` head be a base, as a record of its one indexer is; expose the string library's global binding, so that a method a host declares on that table takes a string as `self`; expose TypeScript's substitution types, which a native conditional type's true branch gives its check type; and let a member be private, protected or package, reporting the visibility and owner of the member an access resolves to, which the host checks.",
+      "patch_sha256": "a8cabe7f3f4ee1ec971b33af3efb05aba65f298f18dab8448b18a21e34eb2e99"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-emmylua-comparison-gaps.patch",
+      "reason": "Let a native `table<K, V>` head be a base, as a record of its one indexer is; expose the string library's global binding, so that a method a host declares on that table takes a string as `self`; expose TypeScript's substitution types, which a native conditional type's true branch gives its check type; and let a member be private, protected or package, reporting the visibility and owner of the member an access resolves to, which the host checks.",
+      "patch_sha256": "a8cabe7f3f4ee1ec971b33af3efb05aba65f298f18dab8448b18a21e34eb2e99"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-emmylua-comparison-gaps.patch",
+      "reason": "Let a native `table<K, V>` head be a base, as a record of its one indexer is; expose the string library's global binding, so that a method a host declares on that table takes a string as `self`; expose TypeScript's substitution types, which a native conditional type's true branch gives its check type; and let a member be private, protected or package, reporting the visibility and owner of the member an access resolves to, which the host checks.",
+      "patch_sha256": "a8cabe7f3f4ee1ec971b33af3efb05aba65f298f18dab8448b18a21e34eb2e99"
     }
   ],
   "source_additions": {
@@ -3114,7 +3132,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "c5011ebfefd110ca321d24d64c89d7ba21ed136edaffa615d4e7b5a5c79c430e",
+      "extracted_sha256": "f483ced07b4197120d44918d701452f389fede8cac8973eb207c1e5d49ff741b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -3126,7 +3144,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "16fc7dcdfb9003ac79c1777b0db65781e175b55eb3854c81701df43d5a44a5b9",
+      "extracted_sha256": "8b02dc5545747fccaeb255a989f2cf881ab782ce2ee4192ab7dccecc4ee64b0b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -4200,7 +4218,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "e37ed3921eb6b52e45b910d0e5c4523280abd9bc78ec331a74b3f0506a9b871e"
+      "extracted_sha256": "6ed40b07a43ba35611523e195bbbc96bfed3bbf3563cc1056850af6563461a2d"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",

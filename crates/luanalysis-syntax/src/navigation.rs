@@ -81,6 +81,9 @@ pub struct NilLaterUnion {
 pub struct ConditionalDeclaration {
     pub span: Span,
     pub extends: Span,
+    /// The check type and the extends type, which the true branch knows the check type satisfies.
+    pub check_type: TypeExpr,
+    pub extends_type: TypeExpr,
     pub yes: TypeExpr,
     pub no: TypeExpr,
     /// `TypeExpr::infer_declarations` of its extends type, which that type and `yes` see.
@@ -156,9 +159,11 @@ pub fn annotation_types(file: &File) -> Vec<AnnotationDeclaration> {
             let Visited::Annotation(ty) = visited else { return };
             if found.iter().any(|known| known.span() == ty.span) { return }
             match &ty.kind {
-                TypeExprKind::Conditional { extends, yes, no, .. } => found.push(AnnotationDeclaration::Conditional(ConditionalDeclaration {
+                TypeExprKind::Conditional { check, extends, yes, no } => found.push(AnnotationDeclaration::Conditional(ConditionalDeclaration {
                     span: ty.span,
                     extends: extends.span,
+                    check_type: (**check).clone(),
+                    extends_type: (**extends).clone(),
                     yes: (**yes).clone(),
                     no: (**no).clone(),
                     infer: extends.infer_declarations(),

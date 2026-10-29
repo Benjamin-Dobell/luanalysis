@@ -487,11 +487,15 @@ impl NativeRegistry {
         &self,
         source: &GlobalDeclarationSource,
     ) -> Option<NativeTypeDeclarationKey> {
+        // A class or shape names the table the statement assigns. An alias, as `---@enum X`
+        // above `X = { ... }` is (`typeof X[keyof typeof X]`), is a type of its own, as above a
+        // local; taking it as the global's type would make the global its own type.
         let mut attached = self
             .named
             .declarations()
             .iter()
-            .filter(|named| named.syntax.attachment == Some(source.statement));
+            .filter(|named| named.syntax.attachment == Some(source.statement)
+                && !matches!(named.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Alias { .. }));
         let declaration = attached.next()?;
         if attached.next().is_some() || !declaration.syntax.generics.is_empty() {
             return None;
@@ -993,7 +997,7 @@ fn environment_member(target: &Expr, bound: &BoundFile) -> Option<Name> {
     (root.text == "_G" && bound.binding_at(root.span.start).is_none() && !nonstandard_environment(bound, root.span.start)).then_some(name)
 }
 
-fn nonstandard_environment(bound: &BoundFile, offset: usize) -> bool {
+pub(crate) fn nonstandard_environment(bound: &BoundFile, offset: usize) -> bool {
     if bound.occurrences.iter().any(|occurrence| {
         occurrence.name == "_ENV"
             && occurrence.kind == OccurrenceKind::Write

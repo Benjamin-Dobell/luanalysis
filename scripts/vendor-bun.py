@@ -835,6 +835,15 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/mod.rs",
     "src/sema/check/native_nil.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-emmylua-comparison-gaps.patch",
+    "reason": "Let a native `table<K, V>` head be a base, as a record of its one indexer is; expose the string library's global binding, so that a method a host declares on that table takes a string as `self`; expose TypeScript's substitution types, which a native conditional type's true branch gives its check type; and let a member be private, protected or package, reporting the visibility and owner of the member an access resolves to, which the host checks.",
+} for path in [
+    "src/sema/check/native_globals.rs",
+    "src/sema/check/native_named.rs",
+    "src/sema/check/shape.rs",
+])
 
 
 def git(source, *args):

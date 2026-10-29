@@ -1929,13 +1929,16 @@ impl NativeRegistry {
             ),
         );
         if let Some(expected) = &declared_return {
-            let accepts_empty = checker
-                .return_pack
-                .as_ref()
-                .is_some_and(|pack| checker.engine.pack_assignable(&ValuePack::empty(), pack));
+            // A written result list decides as a whole, so `---@return any, number` needs its
+            // values as `function(): [any, number]` does; only a lone `any`, `nil` or `void`
+            // result, which the contract already admits as empty, allows the end.
+            let accepts_empty = match checker.return_pack.as_ref() {
+                Some(pack) => checker.engine.pack_assignable(&ValuePack::empty(), pack),
+                None => checker.engine.allows_implicit_return(expected),
+            };
             // In a LuaLS `---@meta` file, a function with an empty body only declares its signature.
             let declared_only = function.body.is_empty() && self.file.meta().is_some();
-            if !terminated && !checker.engine.allows_implicit_return(expected) && !accepts_empty && !declared_only {
+            if !terminated && !accepts_empty && !declared_only {
                 let origin = self
                     .declared_pack_recipe(key)
                     .map_or(function.span, |recipe| recipe.span);

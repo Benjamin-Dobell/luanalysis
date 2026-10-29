@@ -99,6 +99,12 @@ pub struct File {
     /// The names of locals that EmmyLua Analyzer's `---@readonly` declares: their tables'
     /// fields are not assigned.
     pub readonly_locals: Vec<Span>,
+    /// Explicit type arguments of calls, `f--[[@<T>]](x)` (EmmyLua Analyzer's spelling of
+    /// TypeScript's `f<T>(x)`), by the span of the call they apply to.
+    pub call_type_arguments: Vec<CallTypeArguments>,
+    /// LuaLS's `---@private`, `---@protected`, `---@package` and `---@public` above a statement
+    /// that stores a member, `function T.f()` or `T.x = v`: that member's visibility.
+    pub member_visibilities: Vec<MemberVisibility>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
@@ -152,6 +158,20 @@ pub struct ExpressionAssertion {
     pub annotation: TypeAnnotation,
     pub expression: Span,
     pub span: Span,
+}
+
+/// A visibility tag above a statement, for the member its target stores.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MemberVisibility {
+    pub target: Span,
+    pub visibility: FieldVisibilityAnnotation,
+}
+
+/// `--[[@<A, B>]]` between a callee and its arguments: the call's type arguments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CallTypeArguments {
+    pub annotation: TypeAnnotation,
+    pub call: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -530,6 +550,9 @@ pub struct FunctionAnnotations {
     pub return_overloads: Vec<TypeAnnotation>,
     /// EmmyLua Analyzer's `---@readonly` on a local: its table's fields are not assigned.
     pub readonly: Option<Span>,
+    /// LuaLS's `---@private`, `---@protected`, `---@package` or `---@public`, which the statement
+    /// it documents gives the member it stores (`File::member_visibilities`).
+    pub visibility: Option<FieldVisibilityAnnotation>,
 }
 
 impl FunctionAnnotations {

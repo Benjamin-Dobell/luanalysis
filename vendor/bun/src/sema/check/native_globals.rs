@@ -272,6 +272,15 @@ impl<'p, 's> Checker<'p, 's> {
         matches!(self.data(namespace), crate::types::TypeData::NativeTable(_) | crate::types::TypeData::NativeObject(_)).then_some(namespace)
     }
 
+    /// The global binding whose table a string's metatable indexes, the string library: a method
+    /// declared on that table is called on strings.
+    pub fn native_primitive_string_binding(&self) -> Option<NativeGlobalBindingId> {
+        let provider = self.native_globals_provider?;
+        let environment = provider.primitive_member_environment()?;
+        provider.primitive_member_binding(environment, NativePrimitiveMemberKind::String)
+            .filter(|binding| binding.environment == environment)
+    }
+
     pub fn set_native_globals_provider(&mut self, provider: &'p dyn NativeGlobalsProvider) {
         assert!(self.native_globals_provider.is_none(), "native globals provider already installed");
         self.native_globals_provider = Some(provider);

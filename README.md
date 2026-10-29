@@ -145,6 +145,34 @@ local function walk(dog)
 end
 ```
 
+A member may be `private` or `protected`, as in TypeScript, and LuaLS's `package` is visible in its
+own file. A class's body is its methods, the functions stored on it, and the file that declares
+the member, whose statements build the class. A `protected` member is also visible in a
+subclass's methods.
+
+```lua
+-- account.lua
+---@class Account
+---@field private balance number
+---@field protected owner string
+local Account = {}
+
+---@private
+function Account.audit() end
+
+return Account
+```
+
+```lua
+-- bank.lua
+local Account = require("account")
+
+---@param account Account
+local function steal(account)
+    return account.balance -- error: 'balance' is private and only accessible within class 'Account'
+end
+```
+
 ### Generics
 
 Functions, classes, shapes and aliases take type parameters, which may be constrained, and
@@ -207,6 +235,9 @@ A constrained parameter's default follows its constraint, `---@generic T: Constr
 As TypeScript checks them, parameters with defaults follow those without, a default refers only
 to earlier parameters of its list, and it satisfies its constraint. A union default is
 parenthesized, as a union constraint is: `---@generic T = (string | nil)`.
+
+A call may give its type arguments, as TypeScript's `id<string>(x)` does, in EmmyLua Analyzer's
+comment just before its arguments: `id--[[@<string>]](x)`, `box:put--[[@<number>]](1)`.
 
 ### Indexed fields
 
@@ -992,6 +1023,9 @@ it is incorrect.
 
 Some checks deliberately differ from Luanalysis for IntelliJ's. Stricter, as TypeScript's are:
 
+- A `private`, `protected` or `package` member is accessed only where it is visible. Luanalysis
+  for IntelliJ used a member's visibility only to choose completions. See
+  [Shapes and classes](#shapes-and-classes).
 - A type parameter inferred from several unrelated arguments is not their union, except for
   table literals and literals of one primitive type. `both(1, "x")` is an error, where
   Luanalysis for IntelliJ inferred `1 | "x"`. See [Generics](#generics).
@@ -1000,6 +1034,8 @@ Some checks deliberately differ from Luanalysis for IntelliJ's. Stricter, as Typ
 
 More permissive:
 
+- A `table<K, V>` may be a base type, as TypeScript's `Record<K, V>` may: `---@class Strings:
+  table<integer, string>`. Luanalysis for IntelliJ reported it as inheriting a primitive type.
 - Assigning `nil` to an element of a `T[]` deletes it, as Lua deletes a dictionary's entry.
 - A dictionary type is a view of the keys it names, as TypeScript's
   `Partial<Record<"a", V>>` is: a `table<string, V>` is a `table<"a", V>`.

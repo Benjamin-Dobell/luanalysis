@@ -772,6 +772,7 @@ impl Checker<'_> {
         self.annotation_depth = depth + 1;
         let limits = self.engine.unplaced_limits();
         let resolved = self.annotation_node(ty);
+        let resolved = self.conditional_flow_type(ty, resolved);
         self.report_unplaced_limit(limits, ty.span);
         self.annotation_depth = depth;
         if depth == 0 {
@@ -815,6 +816,10 @@ impl Checker<'_> {
                         };
                         if contextual_self
                             && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
+                            && native.is_string_method(function, self.engine)
+                        { return Type::String; }
+                        if contextual_self
+                            && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
                             && let Some(receiver) = native.applied_method_self_type(function, self.engine)
                         { return receiver; }
                         if contextual_self
@@ -844,8 +849,20 @@ impl Checker<'_> {
                         }
                     }
                     // self is contextual syntax in v1. The standard library's
-                    // documentation placeholder is never a global type owner.
-                    if name == "self" { return Type::Unknown; }
+                    // documentation placeholder is never a global type owner. Outside any
+                    // member it names nothing, which TypeScript reports for `this` (TS2526).
+                    if name == "self" {
+                        if let Some(native) = self.native {
+                            let context = self.signature_type_context.map(native_named::NativeTypeContext::Signature)
+                                .or_else(|| self.named_type_context.map(native_named::NativeTypeContext::NamedType))
+                                .or_else(|| self.type_context.map(native_named::NativeTypeContext::Function));
+                            if !native.annotation_has_member_self(context, ty.span) {
+                                self.error("TS2526", ty.span, "A 'self' type is available only in a member of a class or table.");
+                                return self.engine.error_type();
+                            }
+                        }
+                        return Type::Unknown;
+                    }
                     if let Some(resolved)=self.native_named_reference(name,&[],ty){return resolved;}
                     self.error(
                         "TS2304",
@@ -1082,6 +1099,7 @@ impl Checker<'_> {
                 let environment = receiver.environment;
                 let receiver = self.runtime_member_contract(base,receiver.ty);
                 let ty = self.native_named_property_read(&receiver, name, base.span);
+                self.member_accessibility(&receiver, name);
                 // A reported access keeps its error type, rather than the flow's `any`.
                 if self.keeps_error_type(&receiver, &ty) { ty } else { self.native_member_flow_type(expr, ty, environment) }
             }
@@ -1334,6 +1352,9 @@ impl Checker<'_> {
                         _ => unreachable!(),
                     };
                     let receiver = self.expression(base);
+                    if let ExprKind::Field { name, .. } = &target.kind {
+                        self.member_accessibility(&receiver, name);
+                    }
                     if self.readonly_local(base) {
                         let field = match &target.kind {
                             ExprKind::Field { name, .. } => Some(name.text.clone()),

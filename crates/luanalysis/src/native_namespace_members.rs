@@ -4,7 +4,7 @@ use super::{GlobalDeclarationSource, NativeRegistry};
 use crate::Diagnostic;
 use luanalysis_engine::{
     LuaKey, NativeTypeDeclarationKey, NativeTypeMemberKey, Type, TypeMemberHeader,
-    TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries, TableField, TableType,
+    TypeMemberKeyRecipe, TypeMemberOwner, TypeQueries, TableField, TableType,
 };
 use luanalysis_project::SourceRole;
 use luanalysis_syntax::{Expr, ExprKind, Name, Span};
@@ -169,7 +169,7 @@ impl NativeRegistry {
         Some(TypeMemberHeader {
             owner: TypeMemberOwner::Declared(self.namespace_owner(source).ok()?),
             key: TypeMemberKeyRecipe::Fixed(LuaKey::String(source.name.text.as_bytes().to_vec())),
-            visibility: TypeMemberVisibility::Public,
+            visibility: crate::native_members::member_visibility(self.written_member_visibility(source.name.span)),
             optional: false,
             readonly: false,
         })
