@@ -832,6 +832,8 @@ impl<'p, 's> Checker<'p, 's> {
                 };
                 is_declared_const && !self.is_renamed_type_param(ty)
             }
+            // A native type parameter is `const` as its provider declares it.
+            TypeData::NativeTypeParam { .. } => self.native_type_parameter_is_const(ty),
             TypeData::Union(parts) | TypeData::Intersection(parts) => {
                 parts.iter().any(|&p| self.is_const_type_variable(p, depth))
             }

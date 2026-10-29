@@ -204,8 +204,8 @@ fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str,
                 visit_generics(generics, visit);
                 match kind {
                     crate::NamedTypeDeclarationKind::Alias { target } => visit_type(target, visit),
-                    crate::NamedTypeDeclarationKind::Record { base, fields, .. } => {
-                        if let Some(base) = base { visit_type(base, visit); }
+                    crate::NamedTypeDeclarationKind::Record { bases, fields, .. } => {
+                        for base in bases { visit_type(base, visit); }
                         for field in fields { visit_field(&field.key, &field.ty, visit); }
                     }
                 }
@@ -223,7 +223,7 @@ fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str,
         }
     }
     for annotation in parsed.exclusions.iter().chain(&parsed.as_casts) { visit_annotation(annotation, visit); }
-    for cast in &parsed.casts { visit_annotation(&cast.annotation, visit); }
+    for (_, annotation) in parsed.casts.iter().flat_map(|cast| &cast.casts) { visit_annotation(annotation, visit); }
 }
 
 fn visit_annotations(annotations: &FunctionAnnotations, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {

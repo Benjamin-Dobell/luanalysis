@@ -1783,6 +1783,12 @@ impl<'p, 's> Checker<'p, 's> {
         })
     }
 
+    pub(super) fn native_type_parameter_is_const(&self, parameter: TypeId) -> bool {
+        self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
+            self.native_type_parameter_provider_for(declaration).type_parameter_is_const(declaration)
+        })
+    }
+
     pub(super) fn native_type_parameter_is_result_pack(&self, parameter: TypeId) -> bool {
         self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
             self.native_type_parameter_provider_for(declaration).type_parameter_is_result_pack(declaration)

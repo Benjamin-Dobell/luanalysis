@@ -3160,6 +3160,24 @@
       "patch_sha256": "e78702456e00fa2682eddb4d5de2a7ab2ed588555c4d135346820e32f1dd6fae"
     },
     {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-const-type-parameters.patch",
+      "reason": "Let a native type parameter be `const`, as its provider declares it (EmmyLua Analyzer's `---@generic const T`, TypeScript's `<const T>`), so that literal arguments keep their literal types as a declared const type parameter's do.",
+      "patch_sha256": "729d485c3da5a20cceba2c740c2797fd92e3481be76161cf27419d3fd89aa565"
+    },
+    {
+      "path": "src/sema/check/expr.rs",
+      "patch": "vendor/patches/bun-sema-native-const-type-parameters.patch",
+      "reason": "Let a native type parameter be `const`, as its provider declares it (EmmyLua Analyzer's `---@generic const T`, TypeScript's `<const T>`), so that literal arguments keep their literal types as a declared const type parameter's do.",
+      "patch_sha256": "729d485c3da5a20cceba2c740c2797fd92e3481be76161cf27419d3fd89aa565"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-const-type-parameters.patch",
+      "reason": "Let a native type parameter be `const`, as its provider declares it (EmmyLua Analyzer's `---@generic const T`, TypeScript's `<const T>`), so that literal arguments keep their literal types as a declared const type parameter's do.",
+      "patch_sha256": "729d485c3da5a20cceba2c740c2797fd92e3481be76161cf27419d3fd89aa565"
+    },
+    {
       "path": "src/sema/check/errors_call.rs",
       "patch": "vendor/patches/bun-sema-decayed-absence.patch",
       "reason": "Without exact optionals, as EmmyLua Analyzer reads them, let a final result or parameter that admits nil be absent, so that `return` satisfies `nil | T` and `f()` calls `(x: nil | T)`; and report a final argument expansion's first value that its parameter does not admit, as TypeScript reports a spread tuple's elements, rather than the expansion's list.",
@@ -3965,7 +3983,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "727c060b17b5b1138a962424fb825b131d39886667cd4d9f138b9579187013cd"
+      "extracted_sha256": "92a5bc00e95f807646002144c358ad97e648885676b532652982d4b19250151f"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -4160,7 +4178,7 @@
     "src/sema/check/expr.rs": {
       "upstream": "src/sema/check/expr.rs",
       "sha256": "b7bd24b3e1af1beddbe9cf4f1b95f69b31b22340562cba93954c0ed3b6c8a70b",
-      "extracted_sha256": "c14302fc08bdc702b088ec10aec8b1b4e927a5ef21b4ef61f6c3bb463d0588ad"
+      "extracted_sha256": "f6b154e3790c4ba81d09ea8d2c93182b14956ac4e34dc36a2793bd00b408a761"
     },
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
@@ -4210,7 +4228,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "344f41a2b87066eb669831da1a2cbab2b91399d0adf8ced67159ad1f9da53447"
+      "extracted_sha256": "9d7f43bb86b75142e1222b3f251374a5af84d7dfc7ec4d0c70dea82cd78eb226"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

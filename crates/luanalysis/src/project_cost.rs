@@ -38,8 +38,8 @@ pub(crate) fn checking_cost(file: &File, bound: &BoundFile, type_node_cost: usiz
         types.generics(&declaration.generics);
         match &declaration.kind {
             NamedTypeDeclarationKind::Alias { target } => types.ty(target),
-            NamedTypeDeclarationKind::Record { base, fields, .. } => {
-                if let Some(base) = base {
+            NamedTypeDeclarationKind::Record { bases, fields, .. } => {
+                for base in bases {
                     types.ty(base);
                 }
                 for field in fields {

@@ -49,6 +49,7 @@ fn one_allocator_separates_same_index_function_and_named_generic_owners() {
                 name: parameter.name,
                 constraint: None,
                 default: None,
+                constant: false,
             }],
         }],
         scopes(&named),
@@ -160,6 +161,7 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
                     name: parameter.name.clone(),
                     constraint: parameter.constraint.clone(),
                     default: parameter.default.clone(),
+                    constant: parameter.constant,
                 })
                 .collect(),
         }],

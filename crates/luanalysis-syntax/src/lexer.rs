@@ -34,6 +34,14 @@ pub(crate) fn lex_with_checkpoint(source: &str, checkpoint: &dyn Fn()) -> Lexed 
     lex_with_mode(source, false, checkpoint)
 }
 
+/// [`lex_with_checkpoint`], reading LuaJIT's numeric literals (`1LL`, `1ULL`, `0b101`, `3i`) as
+/// EmmyLua Analyzer does when `luajit_numbers`.
+pub(crate) fn lex_with_options(source: &str, luajit_numbers: bool, checkpoint: &dyn Fn()) -> Lexed {
+    let mut lexer = Lexer { source, checkpoint, annotations: false, luajit_numbers, pos: 0, tokens: Vec::new(), diagnostics: Vec::new() };
+    lexer.run();
+    Lexed { tokens: lexer.tokens, diagnostics: lexer.diagnostics }
+}
+
 pub(crate) fn lex_annotation(source: &str) -> Lexed {
     lex_with_mode(source, true, &|| {})
 }
@@ -43,6 +51,7 @@ fn lex_with_mode(source: &str, annotations: bool, checkpoint: &dyn Fn()) -> Lexe
         source,
         checkpoint,
         annotations,
+        luajit_numbers: false,
         pos: 0,
         tokens: Vec::new(),
         diagnostics: Vec::new(),
@@ -58,6 +67,8 @@ struct Lexer<'a> {
     source: &'a str,
     checkpoint: &'a dyn Fn(),
     annotations: bool,
+    /// LuaJIT's numeric literals ([`lex_with_options`]).
+    luajit_numbers: bool,
     pos: usize,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
@@ -425,6 +436,28 @@ impl Lexer<'_> {
         if hex {
             self.pos += 2;
         }
+        // LuaJIT's binary integers, `0b101`.
+        let binary = !hex && (self.at("0b") || self.at("0B"))
+            && self.source[self.pos + 2..].starts_with(['0', '1']);
+        if binary {
+            self.pos += 2;
+            let digits = self.source[self.pos..].bytes().take_while(|byte| matches!(byte, b'0' | b'1')).count();
+            let value = u64::from_str_radix(&self.source[self.pos..self.pos + digits], 2).ok();
+            self.pos += digits;
+            self.luajit_suffix(true);
+            let ends = self.pos >= self.source.len() || !identifier_continue(self.char());
+            match value {
+                Some(value) if ends && self.luajit_numbers => {
+                    self.push(start, TokenKind::Number(value.to_string()));
+                    return;
+                }
+                _ => {
+                    self.error(start, Self::luajit_literal(&self.source[start..self.pos]));
+                    self.push(start, TokenKind::Number(self.source[start..self.pos].to_owned()));
+                    return;
+                }
+            }
+        }
         let mut digits = self.digits(hex);
         if self.at(".") && !self.at("..") {
             self.pos += 1;
@@ -450,6 +483,18 @@ impl Lexer<'_> {
             while self.pos < self.source.len()
                 && (self.char() == '.' || identifier_continue(self.char())) { self.advance(); }
         }
+        // LuaJIT's `1LL`, `1ULL` and `3i`: the number without its suffix.
+        let integer = !self.source[start..self.pos].contains(['.', 'e', 'E', 'p', 'P']) || (hex && !self.source[start..self.pos].contains(['.', 'p', 'P']));
+        let numeral = self.pos;
+        if valid && self.luajit_suffix(integer).is_some() {
+            if self.luajit_numbers {
+                self.push(start, TokenKind::Number(self.source[start..numeral].to_owned()));
+            } else {
+                self.error(start, Self::luajit_literal(&self.source[start..self.pos]));
+                self.push(start, TokenKind::Number(self.source[start..self.pos].to_owned()));
+            }
+            return;
+        }
         if self.pos < self.source.len() && identifier_continue(self.char()) {
             valid = false;
             while self.pos < self.source.len() && identifier_continue(self.char()) {
@@ -465,6 +510,17 @@ impl Lexer<'_> {
         );
     }
 
+    /// LuaJIT's suffix after a numeral: `LL` or `ULL` (any case) after an integer, or `i` (a
+    /// complex number's imaginary part, a number here). Consumed only when it is one.
+    fn luajit_suffix(&mut self, integer: bool) -> Option<usize> {
+        let length = self.source[self.pos..].bytes().take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_').count();
+        let suffix = self.source[self.pos..self.pos + length].to_ascii_lowercase();
+        let known = suffix == "i" || (integer && matches!(suffix.as_str(), "ll" | "ull" | "u" | "ul" | "l"));
+        known.then(|| { self.pos += length; length })
+    }
+    fn luajit_literal(text: &str) -> String {
+        format!("LuaJIT's numeric literal `{text}` is EmmyLua Analyzer syntax (--emmylua-syntax)")
+    }
     fn digits(&mut self, hex: bool) -> usize {
         let start = self.pos;
         while self.pos < self.source.len()
@@ -565,6 +621,7 @@ mod checkpoint_tests {
             source: &source,
             checkpoint: &checkpoint,
             annotations: false,
+            luajit_numbers: false,
             pos: 0,
             tokens: Vec::new(),
             diagnostics: Vec::new(),

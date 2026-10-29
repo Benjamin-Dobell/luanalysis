@@ -127,6 +127,9 @@ pub(crate) fn named_error_description(
         DefinitionOwner { actual, .. } => ("Type '{}' does not match the original class definition owner.".into(), vec![actual.clone()]),
         DefinitionInitializer { actual, .. } => ("Class definition requires a table, found '{}'.".into(), vec![actual.clone()]),
         DefinitionField { error, .. } | Table { error, .. } => crate::native_tables::table_error_description(error),
+        // EmmyLua Analyzer reads a class without fields whose super is a primitive as a name for it.
+        InvalidBase { base, .. } if matches!(base, Type::Number | Type::String | Type::Boolean | Type::NumberLiteral(_) | Type::StringLiteral(_) | Type::BooleanLiteral(_)) =>
+            ("Type '{}' must resolve to a class or shape record schema before it can be a base type. A class without fields that extends a primitive is EmmyLua Analyzer syntax (--emmylua-syntax).".into(), vec![base.clone()]),
         InvalidBase { base, .. } => ("Type '{}' must resolve to a class or shape record schema before it can be a base type.".into(), vec![base.clone()]),
         IncompatibleOverride { actual, expected, .. } => ("Declared member type '{}' is not assignable to the inherited member type '{}'.".into(), vec![actual.clone(), expected.clone()]),
         IncompatibleBase { actual, expected, .. } => ("Inherited member or call signatures '{}' and '{}' conflict.".into(), vec![actual.clone(), expected.clone()]),

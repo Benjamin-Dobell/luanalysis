@@ -127,7 +127,7 @@ fn emmylua_syntax_is_read_only_when_asked() {
     let errors = errors(&plain);
     for expected in [
         "main.lua:1:22: error[LUA1001]",
-        "main.lua:5:4: error[LUA1001]: unsupported Luanalysis annotation @return_overload",
+        "main.lua:5:4: error[LUA1001]: @return_overload is EmmyLua Analyzer syntax (--emmylua-syntax)",
         "main.lua:10:19: error[LUA1001]: `T?` here is EmmyLua Analyzer syntax",
         "main.lua:12:23: error[LUA1001]: `T?` here is EmmyLua Analyzer syntax",
     ] {

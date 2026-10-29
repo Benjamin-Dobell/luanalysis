@@ -3607,10 +3607,10 @@ fn types_related(
     for other in &project.files {
         let Some(syntax) = registry.source(other.id).map(|source| source.syntax()) else { continue };
         for declaration in &syntax.type_declarations {
-            let luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor, base, .. } = &declaration.kind else { continue };
+            let luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor, bases: written, .. } = &declaration.kind else { continue };
             let kind = if *flavor == luanalysis_syntax::NamedRecordKind::Shape { SymbolKind::Interface } else { SymbolKind::Class };
             let mut bases = Vec::new();
-            let mut pending: Vec<&luanalysis_syntax::TypeExpr> = base.iter().collect();
+            let mut pending: Vec<&luanalysis_syntax::TypeExpr> = written.iter().collect();
             while let Some(ty) = pending.pop() {
                 match &ty.kind {
                     luanalysis_syntax::TypeExprKind::Named(name) => bases.push(name.clone()),

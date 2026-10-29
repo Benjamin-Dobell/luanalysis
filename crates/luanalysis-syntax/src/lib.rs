@@ -21,6 +21,12 @@ mod diagnostic_origin_tests;
 
 pub use lexer::{Lexed, Token, TokenKind, identifier_continue, identifier_start, is_identifier, lex};
 pub use parser::{parse, parse_with_checkpoint, parse_with_options};
+/// Whether a backtick's text could name a generic that captures a type by name (`\`T\``).
+pub(crate) fn is_capture_name(text: &str) -> bool {
+    text.split('.').all(is_identifier)
+}
+
+pub use types::{DECLARED_TYPES, DECLARED_TYPE_NAMES, emmylua_builtin_type};
 pub use documentation::{Documentation, documentation_above, documentation_at};
 pub use navigation::{AnnotationDeclaration, ConditionalDeclaration, InferDeclaration, MappedDeclaration, NilLaterUnion, TypeName, TypeNameKind, annotation_types, nil_later_unions, referenced_type_names, type_names, type_query_roots};
 
@@ -105,11 +111,68 @@ pub struct File {
     /// LuaLS's `---@private`, `---@protected`, `---@package` and `---@public` above a statement
     /// that stores a member, `function T.f()` or `T.x = v`: that member's visibility.
     pub member_visibilities: Vec<MemberVisibility>,
+    /// LuaLS's and EmmyLua Analyzer's `---@diagnostic disable-next-line: codes` and its kin
+    /// (`ParseOptions::emmylua`): the source whose diagnostics they disable.
+    pub diagnostic_suppressions: Vec<DiagnosticSuppression>,
+    /// EmmyLua Analyzer's `---@cast obj.value +T`: from the cast to the end of its block, a
+    /// store to that field path may also be a `T`.
+    pub field_widenings: Vec<FieldWidening>,
+    /// `---@namespace N`, as EmmyLua Analyzer writes it: the file's named types are declared as
+    /// `N.Name`, and a type name it writes is `N.Name` where one is declared.
+    pub namespace: Option<String>,
+    /// EmmyLua Analyzer's `---@using N`: a type name the file writes may also be `N.Name`.
+    pub usings: Vec<String>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
     /// How the file's annotations were read, as its comments are read again.
     pub options: ParseOptions,
+}
+
+/// [`File::diagnostic_suppressions`]: no diagnostic beginning in `span` is reported, or, when
+/// `codes` lists some, none of theirs. A code is Luanalysis's (`TS2322`) or the LuaLS and
+/// EmmyLua Analyzer name of the check it corresponds to (`assign-type-mismatch`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiagnosticSuppression {
+    pub span: Span,
+    pub codes: Vec<String>,
+}
+
+impl File {
+    /// Whether a `---@diagnostic` directive disables the diagnostic `code` that begins at `at`.
+    pub fn suppresses(&self, code: &str, at: usize) -> bool {
+        self.diagnostic_suppressions.iter().any(|suppression| {
+            (suppression.span.start..suppression.span.end).contains(&at)
+                && (suppression.codes.is_empty() || suppression.codes.iter().any(|name| name == code || diagnostic_codes(name).contains(&code)))
+        })
+    }
+}
+
+/// The Luanalysis codes of a LuaLS or EmmyLua Analyzer diagnostic name.
+fn diagnostic_codes(name: &str) -> &'static [&'static str] {
+    match name {
+        "undefined-global" | "undefined-doc-name" | "type-not-found" => &["TS2304"],
+        "undefined-field" | "inject-field" => &["TS2339", "TS2551", "TS7053"],
+        "assign-type-mismatch" | "cast-local-type" | "return-type-mismatch" | "missing-return-value" | "redundant-return-value" => &["TS2322"],
+        "param-type-mismatch" | "param-type-not-match" => &["TS2345", "TS2769"],
+        "missing-parameter" | "redundant-parameter" => &["TS2554", "TS2555", "TS2556"],
+        "missing-return" => &["TS2355", "TS2366"],
+        "need-check-nil" => &["TS18047", "TS18048", "TS2531", "TS2532", "TS2533"],
+        "duplicate-index" => &["TS1117"],
+        "access-invisible" | "invisible" => &["TS2341", "TS2445"],
+        "call-non-callable" => &["TS2349"],
+        "generic-constraint-mismatch" => &["TS2344", "TS2345"],
+        "syntax-error" | "doc-syntax-error" | "luadoc-miss-type-name" => &["LUA1001"],
+        _ => &[],
+    }
+}
+
+/// [`File::field_widenings`]: a store to `path` within `scope` may also be a `ty`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldWidening {
+    pub path: Vec<String>,
+    pub ty: TypeAnnotation,
+    pub scope: Span,
 }
 
 /// Which annotation syntax is read.
@@ -151,6 +214,8 @@ impl File {
 pub enum ExpressionAssertionKind {
     Type,
     Not,
+    /// EmmyLua Analyzer's `---@cast x +T`: the type with `T` added.
+    Add,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -199,7 +264,8 @@ pub enum NamedTypeDeclarationKind {
     },
     Record {
         flavor: NamedRecordKind,
-        base: Option<TypeExpr>,
+        /// `---@class A: B, C`: the record's supers, as LuaLS and EmmyLua Analyzer list them.
+        bases: Vec<TypeExpr>,
         fields: Vec<FieldDeclaration>,
     },
 }
@@ -560,6 +626,20 @@ pub struct FunctionAnnotations {
     /// LuaLS's `---@private`, `---@protected`, `---@package` or `---@public`, which the statement
     /// it documents gives the member it stores (`File::member_visibilities`).
     pub visibility: Option<FieldVisibilityAnnotation>,
+    /// EmmyLua Analyzer's `---@return_cast x T`: the predicate its first result is.
+    pub return_cast: Option<Box<TypeExpr>>,
+    /// LuaLS's and EmmyLua Analyzer's `---@module "name"`: the local it documents is that module.
+    pub module: Option<Box<ModuleAnnotation>>,
+}
+
+/// [`FunctionAnnotations::module`]: the module's name, as `require` takes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleAnnotation {
+    pub name: String,
+    /// The `@module` tag.
+    pub tag_span: Span,
+    /// The name's string.
+    pub span: Span,
 }
 
 impl FunctionAnnotations {
@@ -596,6 +676,9 @@ impl VarargAnnotation {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenericParameter {
     pub name: Name,
+    /// EmmyLua Analyzer's `---@generic const T`, TypeScript's `<const T>`: literal arguments
+    /// keep their literal types.
+    pub constant: bool,
     pub constraint: Option<TypeExpr>,
     /// `T = Default`: the type an omitted or uninferred argument takes.
     pub default: Option<TypeExpr>,
@@ -755,6 +838,38 @@ impl TypeExpr {
                 .chain(function.params.iter().filter_map(|param| param.ty.as_ref()))
                 .chain(function.vararg.iter().map(|vararg| &vararg.ty))
                 .chain(&function.returns)
+                .collect(),
+            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_)
+            | TypeExprKind::TypePredicate { ty: None, .. } | TypeExprKind::Infer { constraint: None, .. } | TypeExprKind::TypeQuery(_)
+            | TypeExprKind::Error => Vec::new(),
+        }
+    }
+
+    /// [`TypeExpr::children`], to change them.
+    pub fn children_mut(&mut self) -> Vec<&mut TypeExpr> {
+        match &mut self.kind {
+            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. }
+            | TypeExprKind::TypePredicate { ty: Some(element), .. } | TypeExprKind::KeyOf(element)
+            | TypeExprKind::Infer { constraint: Some(element), .. } => vec![element],
+            TypeExprKind::IndexedAccess { object, index } => vec![object, index],
+            TypeExprKind::Conditional { check, extends, yes, no } => vec![check, extends, yes, no],
+            TypeExprKind::Mapped(mapped) => [&mut mapped.constraint].into_iter().chain(&mut mapped.name).chain([&mut mapped.ty]).collect(),
+            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. }
+            | TypeExprKind::TemplateLiteral { types, .. } => types.iter_mut().collect(),
+            TypeExprKind::Record(fields) => fields
+                .iter_mut()
+                .flat_map(|field| match &mut field.key {
+                    TypeFieldKey::Indexed(key) => vec![&mut **key, &mut field.ty],
+                    _ => vec![&mut field.ty],
+                })
+                .collect(),
+            TypeExprKind::Function(function) => function
+                .generics
+                .iter_mut()
+                .flat_map(|parameter| parameter.constraint.iter_mut().chain(&mut parameter.default))
+                .chain(function.params.iter_mut().filter_map(|param| param.ty.as_mut()))
+                .chain(function.vararg.iter_mut().map(|vararg| &mut vararg.ty))
+                .chain(&mut function.returns)
                 .collect(),
             TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_)
             | TypeExprKind::TypePredicate { ty: None, .. } | TypeExprKind::Infer { constraint: None, .. } | TypeExprKind::TypeQuery(_)

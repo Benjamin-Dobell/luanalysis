@@ -446,6 +446,8 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
             // Explicit display demands can complete a previously unqueried signature.
             report.append(registry.take_report());
             report.render_diagnostics(engine);
+            let syntax = registry.syntax();
+            report.diagnostics.retain(|diagnostic| !syntax.suppresses(diagnostic.code, diagnostic.span.start));
             report.diagnostics.sort_by(|a, b| {
                 (a.span.start, a.span.end, a.code, &a.message).cmp(&(
                     b.span.start,
@@ -892,10 +894,17 @@ impl Checker<'_> {
                         return Type::Unknown;
                     }
                     if let Some(resolved)=self.native_named_reference(name,&[],ty){return resolved;}
+                    if name == luanalysis_syntax::DECLARED_TYPES {
+                        let fields = self.declared_types().into_iter()
+                            .map(|(name, ty)| luanalysis_engine::TableField::new(luanalysis_engine::LuaKey::String(name.into_bytes()), ty))
+                            .collect();
+                        let table = luanalysis_engine::TableType { fields, indexers: Vec::new(), sequence_tails: Vec::new(), collision_candidates: false, fresh: false };
+                        return self.engine.table_type(&table).unwrap_or_else(|_| self.engine.error_type());
+                    }
                     self.error(
                         "TS2304",
                         ty.span,
-                        format!("Cannot find name '{name}'."),
+                        format!("Cannot find name '{name}'.{}", emmylua_builtin_hint(name)),
                     );
                     self.engine.error_type()
                 }
@@ -982,6 +991,13 @@ impl Checker<'_> {
                     };
                     return self.engine.no_infer_type(argument);
                 }
+                if base.text == luanalysis_syntax::DECLARED_TYPE_NAMES {
+                    let names: Vec<_> = self.declared_types().into_iter()
+                        .filter(|(_, ty)| arguments.first().is_none_or(|constraint| self.engine.is_assignable(ty, constraint)))
+                        .map(|(name, _)| Type::StringLiteral(name.into_bytes()))
+                        .collect();
+                    return if names.is_empty() { Type::Never } else { Type::Union(names) };
+                }
                 let parameter=self.native.map(|native| {
                     let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)
                         .or_else(||self.named_type_context.map(native_named::NativeTypeContext::NamedType))
@@ -992,7 +1008,9 @@ impl Checker<'_> {
                     Some(native_types::TypeNameResolution::Ambiguous(_))=>("TS2300",format!("Ambiguous generic parameter '{}'.",base.text)),
                     Some(native_types::TypeNameResolution::Parameter(_))=>("TS2315",format!("Type '{}' is not generic.",base.text)),
                     _ if matches!(base.text.as_str(),"any"|"unknown"|"never"|"nil"|"boolean"|"number"|"string"|"void")=>("TS2315",format!("Type '{}' is not generic.",base.text)),
-                    _=>("TS2304",format!("Cannot find name '{}'.",base.text)),
+                    // Elsewhere than a function's result, EmmyLua Analyzer's `TypeGuard<T>` is a boolean.
+                    _ if base.text == "TypeGuard" && self.native.is_some_and(|native| native.syntax().options.emmylua) => return Type::Boolean,
+                    _=>("TS2304",format!("Cannot find name '{}'.{}",base.text,emmylua_builtin_hint(&base.text))),
                 };
                 self.error(code,base.span,message);
                 self.engine.error_type()
@@ -1404,7 +1422,8 @@ impl Checker<'_> {
                         ExprKind::Index { index, .. } => (self.native_table_key(index), index.span),
                         _ => unreachable!(),
                     };
-                    if self.native_table_write(&receiver, &key, &value, target.span, key_span, origin) {
+                    let checked = self.field_widened_value(target, &value);
+                    if self.native_table_write(&receiver, &key, &checked, target.span, key_span, origin) {
                         if let Some(reference) = self.reference(target) {
                             let constraint = self.engine.table_value_context(&receiver, &key);
                             let assigned = constraint.as_ref().map_or_else(
@@ -2093,4 +2112,51 @@ pub fn location(source: &str, span: Span) -> (usize, usize) {
         }
     }
     (line, column)
+}
+
+/// A note for an unresolved name that is EmmyLua Analyzer's builtin type, which only
+/// `--emmylua-syntax` reads.
+fn emmylua_builtin_hint(name: &str) -> &'static str {
+    if luanalysis_syntax::emmylua_builtin_type(name) { " It is EmmyLua Analyzer's builtin type (--emmylua-syntax)." } else { "" }
+}
+
+impl Checker<'_> {
+    /// The types the project declares by name, for `---@param name \`T\`` captures: each name
+    /// that declares one type and needs no type arguments.
+    fn declared_types(&mut self) -> Vec<(String, Type)> {
+        let Some(native) = self.native else { return Vec::new() };
+        native.declared_types().into_iter()
+            .filter_map(|(name, key)| Some((name, self.engine.named_type_reference(key, &[]).ok()?)))
+            .collect()
+    }
+}
+
+impl Checker<'_> {
+    /// What a store to `target` must be of its field's type: `value` without what EmmyLua
+    /// Analyzer's `---@cast obj.value +T` before it, in its block, lets the field also hold.
+    fn field_widened_value(&mut self, target: &Expr, value: &Type) -> Type {
+        let Some(native) = self.native else { return value.clone() };
+        if native.syntax().field_widenings.is_empty() { return value.clone() }
+        let mut path = Vec::new();
+        let mut expression = target;
+        loop {
+            match &expression.kind {
+                ExprKind::Name(name) => { path.push(name.text.clone()); break }
+                ExprKind::Field { base, name } => { path.push(name.text.clone()); expression = base; }
+                _ => return value.clone(),
+            }
+        }
+        path.reverse();
+        let widenings: Vec<_> = native.syntax().field_widenings.iter()
+            .filter(|widening| widening.path == path && (widening.scope.start..widening.scope.end).contains(&target.span.start))
+            .map(|widening| widening.ty.clone())
+            .collect();
+        let mut value = value.clone();
+        for annotation in widenings {
+            let pack = native_packs::AnnotationPack::annotation(&annotation).lower(&mut |ty| self.annotation(ty));
+            let widened = self.engine.pack_slot(&pack, 0);
+            value = self.engine.exclude_type(&value, &widened);
+        }
+        value
+    }
 }

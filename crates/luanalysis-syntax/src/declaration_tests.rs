@@ -15,13 +15,13 @@ fn record(
 ) -> (NamedRecordKind, Option<&TypeExpr>, &[FieldDeclaration]) {
     let NamedTypeDeclarationKind::Record {
         flavor,
-        base,
+        bases,
         fields,
     } = &declaration.kind
     else {
         panic!("expected a named record declaration")
     };
-    (*flavor, base.as_ref(), fields)
+    (*flavor, bases.first(), fields)
 }
 
 #[test]

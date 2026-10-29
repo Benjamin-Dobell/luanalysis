@@ -291,10 +291,8 @@ pub fn translated_expectations(fixture: &Fixture) -> Vec<luanalysis_fixtures::Ex
             }) {
                 let target = if description.starts_with("Alias '") {
                     declaration.name.span
-                } else if let luanalysis_syntax::NamedTypeDeclarationKind::Record {
-                    base: Some(base),
-                    ..
-                } = &declaration.kind
+                } else if let luanalysis_syntax::NamedTypeDeclarationKind::Record { bases, .. } = &declaration.kind
+                    && let Some(base) = bases.first()
                 {
                     base.span
                 } else {

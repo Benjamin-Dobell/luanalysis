@@ -132,12 +132,8 @@ impl Checker<'_> {
             return ValuePack::variadic(Type::Any);
         };
         let function = native.function(key);
+        // The parser reports `...` outside a variadic function (LUA1001), once.
         if function.vararg.is_none() {
-            self.error(
-                "LUA1001",
-                origin,
-                "vararg expression has no variadic function scope",
-            );
             return ValuePack::never();
         }
         if let Some(captured) = self

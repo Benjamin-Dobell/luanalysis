@@ -786,6 +786,9 @@ pub trait NativeTypeProvider {
     fn type_parameter_is_result_pack(&self, _: NativeTypeParameterKey) -> bool { false }
     /// Whether varargs spread the parameter (`...: T...`), so it is a sequence.
     fn type_parameter_is_sequence(&self, _: NativeTypeParameterKey) -> bool { false }
+    /// Whether the parameter is `const` (`---@generic const T`): literal arguments keep their
+    /// literal types.
+    fn type_parameter_is_const(&self, _: NativeTypeParameterKey) -> bool { false }
     fn type_parameter_name(&self, _: NativeTypeParameterKey) -> String {
         String::new()
     }
@@ -3420,6 +3423,9 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     }
     fn type_parameter_is_sequence(&self, key: NativeTypeParamId) -> bool {
         self.provider.type_parameter_is_sequence(source_parameter_key(key))
+    }
+    fn type_parameter_is_const(&self, key: NativeTypeParamId) -> bool {
+        self.provider.type_parameter_is_const(source_parameter_key(key))
     }
     fn type_parameter_is_result_pack(&self, key: NativeTypeParamId) -> bool {
         self.provider.type_parameter_is_result_pack(source_parameter_key(key))

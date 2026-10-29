@@ -1348,8 +1348,8 @@ impl NativeSignatures {
                 NamedTypeDeclarationKind::Alias { target } => {
                     result.visit_type(owner, context, None, target)
                 }
-                NamedTypeDeclarationKind::Record { base, fields, .. } => {
-                    if let Some(base) = base {
+                NamedTypeDeclarationKind::Record { bases, fields, .. } => {
+                    for base in bases {
                         result.visit_type(owner, context, None, base)
                     }
                     for field in fields {

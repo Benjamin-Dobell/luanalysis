@@ -3332,6 +3332,10 @@ impl NativeTypeProvider for NativeRegistry {
         self.source_type_parameter_is_spread(key)
     }
 
+    fn type_parameter_is_const(&self, key: NativeTypeParameterKey) -> bool {
+        self.types.parameter(key).constant
+    }
+
     fn type_parameter_name(&self, key: NativeTypeParameterKey) -> String {
         self.types.parameter(key).name.text.clone()
     }
@@ -3531,6 +3535,7 @@ fn type_scope_recipes(
                         name: parameter.name.clone(),
                         constraint: parameter.constraint.clone(),
                         default: parameter.default.clone(),
+                        constant: parameter.constant,
                     })
                     .collect(),
             }

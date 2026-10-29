@@ -1,0 +1,43 @@
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+index 68ba3ea..a977087 100644
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -1783,6 +1783,12 @@ impl<'p, 's> Checker<'p, 's> {
+         })
+     }
+ 
++    pub(super) fn native_type_parameter_is_const(&self, parameter: TypeId) -> bool {
++        self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
++            self.native_type_parameter_provider_for(declaration).type_parameter_is_const(declaration)
++        })
++    }
++
+     pub(super) fn native_type_parameter_is_result_pack(&self, parameter: TypeId) -> bool {
+         self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
+             self.native_type_parameter_provider_for(declaration).type_parameter_is_result_pack(declaration)
+diff --git a/src/sema/check/expr.rs b/src/sema/check/expr.rs
+index 97b1db0..9725ef0 100644
+--- a/src/sema/check/expr.rs
++++ b/src/sema/check/expr.rs
+@@ -832,6 +832,8 @@ impl<'p, 's> Checker<'p, 's> {
+                 };
+                 is_declared_const && !self.is_renamed_type_param(ty)
+             }
++            // A native type parameter is `const` as its provider declares it.
++            TypeData::NativeTypeParam { .. } => self.native_type_parameter_is_const(ty),
+             TypeData::Union(parts) | TypeData::Intersection(parts) => {
+                 parts.iter().any(|&p| self.is_const_type_variable(p, depth))
+             }
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 69469fa..3d098e4 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -213,6 +213,8 @@ pub trait NativeFunctionProvider {
+     /// Whether varargs spread the parameter (`...: T...`): a sequence, which a tuple or `any`
+     /// given for it spreads into.
+     fn type_parameter_is_sequence(&self, _: NativeTypeParamId) -> bool { false }
++    /// Whether the parameter is declared `const` (TypeScript's `<const T>`).
++    fn type_parameter_is_const(&self, _: NativeTypeParamId) -> bool { false }
+     fn type_parameter_name(&self, _: &Checker<'_, '_>, _: NativeTypeParamId) -> Atom { Atom::NONE }
+     fn has_type_parameter_constraint(&self, _: NativeTypeParamId) -> bool { false }
+     fn type_parameter_constraint(&self, _: &mut Checker<'_, '_>, _: NativeTypeParamId) -> Option<TypeId> { None }

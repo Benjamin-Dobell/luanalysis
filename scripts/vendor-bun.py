@@ -865,6 +865,15 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/native_packs.rs",
     "src/sema/check/relate.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-native-const-type-parameters.patch",
+    "reason": "Let a native type parameter be `const`, as its provider declares it (EmmyLua Analyzer's `---@generic const T`, TypeScript's `<const T>`), so that literal arguments keep their literal types as a declared const type parameter's do.",
+} for path in [
+    "src/sema/check/decl.rs",
+    "src/sema/check/expr.rs",
+    "src/sema/check/mod.rs",
+])
 
 SOURCE_ADAPTATIONS.extend({
     "path": path,

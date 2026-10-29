@@ -159,6 +159,10 @@ impl ProjectNamedIndex {
     pub(crate) fn candidates(&self, name: &str) -> &[NativeTypeDeclarationKey] {
         self.names.get(name).map_or(&[], Vec::as_slice)
     }
+    /// Every declared name and its declarations.
+    pub(crate) fn names(&self) -> impl Iterator<Item = (&str, &[NativeTypeDeclarationKey])> {
+        self.names.iter().map(|(name, keys)| (name.as_str(), keys.as_slice()))
+    }
     /// The declaration that `key` is merged into, or `key` itself.
     pub(crate) fn canonical(&self, key: NativeTypeDeclarationKey) -> NativeTypeDeclarationKey {
         self.merged.get(&key).copied().unwrap_or(key)
@@ -829,6 +833,8 @@ impl ProjectRegistry {
                 report.report.append(pending);
                 report.report.render_diagnostics(queries);
             }
+            let syntax = file.source.syntax();
+            report.report.diagnostics.retain(|diagnostic| !syntax.suppresses(diagnostic.code, diagnostic.span.start));
             report.report.diagnostics.sort_by(|left, right| {
                 (left.span.start, left.span.end, left.code, &left.message).cmp(&(
                     right.span.start,
@@ -1259,6 +1265,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_outer_type_parameter_instances(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
         fn type_parameter_is_result_pack(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_is_sequence(key: NativeTypeParameterKey) -> bool;
+        fn type_parameter_is_const(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_name(key: NativeTypeParameterKey) -> String;
         fn has_type_parameter_constraint(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_constraint(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;

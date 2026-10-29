@@ -139,8 +139,10 @@ impl NativeRegistry {
             })
             .count()
             != 1
-            || self.named.sole_owner(&source.syntax.name.text).is_none()
         {
+            return Err("multiple named declaration owners (EmmyLua Analyzer attaches one and reads the others as standalone declarations: --emmylua-syntax)");
+        }
+        if self.named.sole_owner(&source.syntax.name.text).is_none() {
             return Err("multiple named declaration owners");
         }
         // A bare local declares an annotated value, as `---@type C; local c`

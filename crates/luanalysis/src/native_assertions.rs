@@ -65,12 +65,16 @@ impl Checker<'_> {
             // V1 @type is an authoritative static view, including unrelated
             // conversions. The operand above still checks calls and bodies.
             value.ty = target;
-        } else {
-            for assertion in &assertions {
-                let pack = self.assertion_pack(assertion);
-                let excluded = self.engine.pack_slot(&pack, 0);
-                value.ty = self.engine.exclude_type(&value.ty, &excluded);
-            }
+        }
+        // Without a replacing cast, `---@not T` and `---@cast x -T` remove `T`; either way
+        // EmmyLua Analyzer's `---@cast x +T` adds it.
+        for assertion in assertions.iter().filter(|assertion| assertion.kind == ExpressionAssertionKind::Add || cast.is_none()) {
+            let pack = self.assertion_pack(assertion);
+            let operand = self.engine.pack_slot(&pack, 0);
+            value.ty = match assertion.kind {
+                ExpressionAssertionKind::Add => self.engine.union_reduced(&[value.ty.clone(), operand]),
+                _ => self.engine.exclude_type(&value.ty, &operand),
+            };
         }
         self.active_assertions
             .remove(&(expression.span.start, expression.span.end));
@@ -92,7 +96,7 @@ impl Checker<'_> {
             let target = self.assertion_pack(assertion);
             value = target;
         } else {
-            for assertion in &assertions {
+            for assertion in assertions.iter().filter(|assertion| assertion.kind == ExpressionAssertionKind::Not) {
                 let excluded = self.assertion_pack(assertion);
                 let rows = self
                     .engine
@@ -109,6 +113,14 @@ impl Checker<'_> {
                 let tail = (!tails.is_empty()).then(|| self.engine.union_reduced(&tails));
                 value = self.engine.exclude_pack(&value, &fixed, tail.as_ref());
             }
+        }
+        // EmmyLua Analyzer's `+T` adds to the first value, the one a cast types.
+        for assertion in assertions.iter().filter(|assertion| assertion.kind == ExpressionAssertionKind::Add) {
+            let pack = self.assertion_pack(assertion);
+            let operand = self.engine.pack_slot(&pack, 0);
+            let first = self.engine.pack_slot(&value, 0);
+            let widened = self.engine.union_reduced(&[first, operand]);
+            value = ValuePack::Alternatives(vec![luanalysis_engine::PackAlternative { fixed: vec![luanalysis_engine::PackSlot::required(widened)], tail: None }]);
         }
         self.active_assertions
             .remove(&(expression.span.start, expression.span.end));

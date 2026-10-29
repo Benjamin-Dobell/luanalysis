@@ -38,7 +38,10 @@ pub(crate) fn validate(documentation: &ParsedDocumentation, diagnostics: &mut Ve
     let mut roots = Vec::new();
     let annotations = &documentation.functions;
     generics(&annotations.generics, &mut roots);
-    roots.extend(annotations.params.iter().map(|parameter| &parameter.ty));
+    // A parameter's lone `\`T\`` may capture a type by name, which only the statement's complete
+    // tags tell (`types::type_captures`).
+    roots.extend(annotations.params.iter().map(|parameter| &parameter.ty)
+        .filter(|ty| !matches!(&ty.kind, TypeExprKind::CompletionHint(text) if crate::is_capture_name(text))));
     if let Some(vararg) = &annotations.vararg {
         roots.push(&vararg.ty);
     }
@@ -62,11 +65,11 @@ pub(crate) fn validate(documentation: &ParsedDocumentation, diagnostics: &mut Ve
                 match kind {
                     NamedTypeDeclarationKind::Alias { target } => roots.push(target),
                     NamedTypeDeclarationKind::Record {
-                        base,
+                        bases,
                         fields: members,
                         ..
                     } => {
-                        roots.extend(base);
+                        roots.extend(bases);
                         for member in members {
                             if let TypeFieldKey::Indexed(key) = &member.key {
                                 roots.push(key);

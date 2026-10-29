@@ -278,10 +278,8 @@ impl NativeRegistry {
                 }
                 match &source.syntax.kind {
                     NamedTypeDeclarationKind::Alias { target } => pending.push((context, target)),
-                    NamedTypeDeclarationKind::Record { base, fields, .. } => {
-                        if let Some(base) = base {
-                            pending.push((context, base));
-                        }
+                    NamedTypeDeclarationKind::Record { bases, fields, .. } => {
+                        pending.extend(bases.iter().map(|base| (context, base)));
                         for field in fields {
                             pending.push((context, &field.ty));
                             if let TypeFieldKey::Indexed(key) = &field.key {
@@ -427,10 +425,10 @@ impl NativeRegistry {
                 }
                 NamedTypeDeclarationKind::Record {
                     flavor,
-                    base,
+                    bases,
                     fields,
                 } => {
-                    if let Some(base) = base {
+                    for base in bases {
                         self.annotation_parameter_dependencies(Some(context), base, &mut used);
                     }
                     for field in fields {
@@ -726,18 +724,15 @@ impl NativeRegistry {
         let Some(source) = self.named.declaration(named_key(key)) else {
             return Vec::new();
         };
-        let NamedTypeDeclarationKind::Record {
-            base: Some(base), ..
-        } = &source.syntax.kind
-        else {
+        let NamedTypeDeclarationKind::Record { bases, .. } = &source.syntax.kind else {
             return Vec::new();
         };
-        vec![self.named_annotation(
+        bases.iter().map(|base| self.named_annotation(
             Some(NativeTypeContext::NamedType(source.key)),
             &source.documentation_contexts,
             base,
             queries,
-        )]
+        )).collect()
     }
     pub(super) fn named_parameter_owner(
         &self,
@@ -761,6 +756,24 @@ impl NativeRegistry {
         self.named.anonymous_key_at(ty.span).map(anonymous)
     }
     pub(crate) fn named_candidates(&self, name: &str) -> Vec<NativeTypeDeclarationKey> {
+        // EmmyLua Analyzer's `---@namespace N` and `---@using M`: a name the file writes is
+        // `N.name` (or `M.name`) where one is declared.
+        for prefix in self.file.namespace.iter().chain(&self.file.usings) {
+            let candidates = self.declared_candidates(&format!("{prefix}.{name}"));
+            if !candidates.is_empty() { return candidates; }
+        }
+        self.declared_candidates(name)
+    }
+    /// Each name that declares one type, and that declaration, sorted by name.
+    pub(crate) fn declared_types(&self) -> Vec<(String, NativeTypeDeclarationKey)> {
+        let mut declared: Vec<_> = match &self.project_names {
+            Some(project) => project.names().filter_map(|(name, keys)| match keys { [key] => Some((name.to_owned(), *key)), _ => None }).collect(),
+            None => self.named.names().filter_map(|(name, keys)| match keys { [key] => Some((name.to_owned(), declaration(*key))), _ => None }).collect(),
+        };
+        declared.sort_by(|left, right| left.0.cmp(&right.0));
+        declared
+    }
+    fn declared_candidates(&self, name: &str) -> Vec<NativeTypeDeclarationKey> {
         if let Some(project) = &self.project_names {
             return project.candidates(name).to_vec();
         }
@@ -808,9 +821,7 @@ impl NativeRegistry {
         self.named
             .declaration(named_key(key))
             .and_then(|source| match &source.syntax.kind {
-                NamedTypeDeclarationKind::Record { base: Some(base), .. } if index == 0 => {
-                    Some(base.span)
-                }
+                NamedTypeDeclarationKind::Record { bases, .. } => bases.get(index).map(|base| base.span),
                 _ => None,
             })
             .unwrap_or_else(|| self.named_origin(key))

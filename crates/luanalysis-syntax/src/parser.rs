@@ -21,8 +21,8 @@ pub fn parse_with_checkpoint(source: &str, checkpoint: impl Fn()) -> File {
 
 /// [`parse_with_checkpoint`], reading the annotation syntax `options` selects.
 pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl Fn()) -> File {
-    let lexed = crate::lexer::lex_with_checkpoint(source, &checkpoint);
-    let comments = lexed
+    let lexed = crate::lexer::lex_with_options(source, options.emmylua, &checkpoint);
+    let comments: Vec<Comment> = lexed
         .tokens
         .iter()
         .filter_map(|token| {
@@ -36,6 +36,17 @@ pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl 
     let mut parser = Parser::new(source, lexed, &checkpoint, options);
     let statements = parser.statements(&[]);
     control::validate_labels(&statements, &mut parser.diagnostics, &checkpoint);
+    let (namespace, usings) = types::namespaces(&comments, options);
+    if let Some(namespace) = &namespace {
+        for declaration in &mut parser.type_declarations {
+            declaration.name.text = format!("{namespace}.{}", declaration.name.text);
+        }
+    }
+    let diagnostic_suppressions = if options.emmylua { diagnostic_suppressions(source, &comments) } else { Vec::new() };
+    for declaration in &mut parser.type_declarations {
+        if options.emmylua { types::emmylua_primitive_class(declaration); }
+        types::emmylua_field_overloads(declaration, options.emmylua, &mut parser.diagnostics);
+    }
     File {
         statements,
         expression_assertions: parser.expression_assertions,
@@ -49,6 +60,10 @@ pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl 
         readonly_locals: parser.readonly_locals,
         call_type_arguments: parser.call_type_arguments,
         member_visibilities: parser.member_visibilities,
+        field_widenings: parser.field_widenings,
+        diagnostic_suppressions,
+        namespace,
+        usings,
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
@@ -65,6 +80,9 @@ struct Parser<'a> {
     pending_annotations: FunctionAnnotations,
     /// `---@cast` annotations read before the next statement, which casts at its position.
     pending_casts: Vec<types::CastAnnotation>,
+    /// EmmyLua Analyzer's `---@cast` without a name, of the next statement's last value.
+    pending_value_casts: Vec<types::CastAnnotation>,
+    field_widenings: Vec<crate::FieldWidening>,
     type_declarations: Vec<NamedTypeDeclaration>,
     function_declarations: Vec<crate::DocFunctionDeclaration>,
     type_extensions: Vec<TypeExtension>,
@@ -121,6 +139,70 @@ fn enumeration_table(statement: &Stmt) -> Option<Vec<Name>> {
     Some(path)
 }
 
+/// LuaLS's and EmmyLua Analyzer's `---@diagnostic` directives: `disable-next-line` disables the
+/// line after the comment, `disable-line` the comment's own, and `disable` the rest of the file
+/// until an `enable` of the same codes. Each takes `: code, code`, or disables every code.
+fn diagnostic_suppressions(source: &str, comments: &[Comment]) -> Vec<crate::DiagnosticSuppression> {
+    let line_start = |at: usize| source[..at].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = |at: usize| source[at..].find('\n').map_or(source.len(), |index| at + index);
+    let mut suppressions = Vec::new();
+    let mut open: Vec<(usize, Vec<String>)> = Vec::new();
+    for comment in comments.iter().filter(|comment| comment.kind == CommentKind::Documentation) {
+        let Some(directive) = comment.text.trim_start_matches('-').trim_start().strip_prefix("@diagnostic") else { continue };
+        let (action, codes) = directive.split_once(':').unwrap_or((directive, ""));
+        let codes: Vec<String> = codes.split(',').map(str::trim).filter(|code| !code.is_empty()).map(str::to_owned).collect();
+        let span = match action.trim() {
+            "disable-next-line" => {
+                let next = (line_end(comment.span.end) + 1).min(source.len());
+                Span::new(next, line_end(next))
+            }
+            "disable-line" => Span::new(line_start(comment.span.start), line_end(comment.span.end)),
+            "disable" => { open.push((comment.span.end, codes)); continue }
+            "enable" => {
+                if let Some(index) = open.iter().rposition(|(_, disabled)| *disabled == codes) {
+                    let (start, codes) = open.remove(index);
+                    suppressions.push(crate::DiagnosticSuppression { span: Span::new(start, comment.span.start), codes });
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        suppressions.push(crate::DiagnosticSuppression { span, codes });
+    }
+    suppressions.extend(open.into_iter().map(|(start, codes)| crate::DiagnosticSuppression { span: Span::new(start, source.len()), codes }));
+    suppressions
+}
+
+/// A statement's last value: what EmmyLua Analyzer's cast without a name before it casts.
+fn last_value(statement: &Stmt) -> Option<&Expr> {
+    match &statement.kind {
+        StmtKind::Local { values, .. } | StmtKind::Assign { values, .. } | StmtKind::Return(values) => values.last(),
+        StmtKind::Call(expression) => Some(expression),
+        _ => None,
+    }
+}
+
+/// The variable a statement assigns first, as written: `X` of `local X = ...` or `M.X` of
+/// `M.X = ...`.
+fn assigned_path(statement: &Stmt) -> Option<String> {
+    let target = match &statement.kind {
+        StmtKind::Local { names, .. } => return names.first().map(|name| name.text.clone()),
+        StmtKind::Assign { targets, .. } => targets.first()?,
+        _ => return None,
+    };
+    let mut path = Vec::new();
+    let mut expression = target;
+    loop {
+        match &expression.kind {
+            ExprKind::Name(name) => { path.push(name.text.as_str()); break }
+            ExprKind::Field { base, name } => { path.push(name.text.as_str()); expression = base; }
+            _ => return None,
+        }
+    }
+    path.reverse();
+    Some(path.join("."))
+}
+
 fn documentation_gap_is_contiguous(gap: &str) -> bool {
     if !gap.chars().all(char::is_whitespace) {
         return false;
@@ -154,6 +236,8 @@ impl<'a> Parser<'a> {
             diagnostics: lexed.diagnostics,
             pending_annotations: FunctionAnnotations::default(),
             pending_casts: Vec::new(),
+            pending_value_casts: Vec::new(),
+            field_widenings: Vec::new(),
             type_declarations: Vec::new(),
             function_declarations: Vec::new(),
             type_extensions: Vec::new(),
@@ -234,6 +318,7 @@ impl<'a> Parser<'a> {
         let mut statements = Vec::new();
         let mut returned = false;
         let mut return_semicolon_used = false;
+        let widenings = self.field_widenings.len();
         loop {
             (self.checkpoint)();
             self.leading_trivia();
@@ -264,6 +349,7 @@ impl<'a> Parser<'a> {
                 self.finish_documentation_functions(group);
             }
             let visibility = self.pending_annotations.visibility.take();
+            let value_casts = std::mem::take(&mut self.pending_value_casts);
             let stmt = self.statement();
             if let (Some(visibility), Some(stmt)) = (visibility, &stmt) {
                 self.record_member_visibility(stmt, visibility);
@@ -272,6 +358,7 @@ impl<'a> Parser<'a> {
                 if let Some(group) = group {
                     self.attach_type_group(group, &stmt);
                 }
+                self.value_casts(value_casts, last_value(&stmt));
                 returned = matches!(stmt.kind, StmtKind::Return(_));
                 return_semicolon_used = false;
                 statements.push(stmt);
@@ -285,7 +372,20 @@ impl<'a> Parser<'a> {
         if let Some(group) = self.documentation_group.take() {
             self.finish_documentation_functions(&group);
         }
+        self.finish_block_casts(widenings);
         statements
+    }
+    /// At a block's end: a cast without a name before it has no value to cast, and a field's
+    /// widening from `widenings` on lasts to here. Kept out of the recursive statement parser's
+    /// frame.
+    #[inline(never)]
+    fn finish_block_casts(&mut self, widenings: usize) {
+        let casts = std::mem::take(&mut self.pending_value_casts);
+        self.value_casts(casts, None);
+        let end = self.current().span.start;
+        for widening in &mut self.field_widenings[widenings..] {
+            if widening.scope.end == usize::MAX { widening.scope.end = end; }
+        }
     }
 
     /// A visibility tag above a statement that stores members: each one's.
@@ -338,8 +438,22 @@ impl<'a> Parser<'a> {
         if !documentation_gap_is_contiguous(gap) {
             return;
         }
+        // EmmyLua Analyzer reads several records in one group as one attached to the statement,
+        // the one named as the variable it assigns or else the first, and the rest standalone.
+        let records: Vec<usize> = group.declarations.iter().copied()
+            .filter(|&index| matches!(self.type_declarations[index].kind, NamedTypeDeclarationKind::Record { .. }))
+            .collect();
+        let attached = (self.options.emmylua && records.len() > 1).then(|| {
+            let assigned = assigned_path(statement);
+            records.iter().copied().find(|&index| {
+                let name = &self.type_declarations[index].name.text;
+                assigned.as_ref().is_some_and(|path| name == path || name.ends_with(&format!(".{path}")))
+            }).unwrap_or(records[0])
+        });
         for index in group.declarations {
-            self.type_declarations[index].attachment = Some(statement.span);
+            if attached.is_none_or(|attached| attached == index || !records.contains(&index)) {
+                self.type_declarations[index].attachment = Some(statement.span);
+            }
         }
         for index in group.extensions {
             self.type_extensions[index].attachment = Some(statement.span);
@@ -778,14 +892,12 @@ impl<'a> Parser<'a> {
     fn statement(&mut self) -> Option<Stmt> {
         let start = self.current().span;
         let mut annotations = std::mem::take(&mut self.pending_annotations);
+        types::type_captures(&mut annotations, &mut self.diagnostics);
         if self.keyword("function") {
             return self.function_declaration(start, annotations);
         }
         if self.keyword("for") {
-            let mut statement = self.control_statement(start);
-            if let Some(statement) = &mut statement { loop_variable_annotations(statement, &mut annotations); }
-            self.unattached_annotations(&annotations);
-            return statement;
+            return self.annotated_for(start, &mut annotations);
         }
         if matches!(&self.current().kind, TokenKind::Keyword(word)
             if matches!(word.as_str(), "if" | "while" | "repeat" | "break" | "goto"))
@@ -912,10 +1024,12 @@ impl<'a> Parser<'a> {
             if annotations.readonly.take().is_some() {
                 self.readonly_locals.extend(names.iter().map(|name| name.span));
             }
+            // LuaLS's and EmmyLua Analyzer's `---@module "name"`: the local is that module, as if
+            // it were `require("name")`'s.
+            let mut end = values.last().map_or(names.last().unwrap().span, |value| value.span);
+            if let Some(module) = annotations.module.take() { self.module_value(module, &mut values); }
             self.attach_function_annotations(&mut values, annotations);
-            let end = values
-                .last()
-                .map_or(names.last().unwrap().span, |value| value.span);
+            if let Some(value) = values.last() && value.span.start > end.start { end = value.span; }
             return Some(Stmt {
                 kind: StmtKind::Local {
                     names,
@@ -925,6 +1039,9 @@ impl<'a> Parser<'a> {
                 },
                 span: start.join(end),
             });
+        }
+        if self.global_declaration_follows() {
+            return self.global_declaration(start, &mut annotations);
         }
         if matches!(&self.current().kind, TokenKind::Keyword(_)) {
             self.unattached_annotations(&annotations);
@@ -1118,6 +1235,7 @@ impl<'a> Parser<'a> {
             false,
             &mut self.diagnostics,
         );
+        if self.options.emmylua { types::emmylua_type_guards(&mut combined, function.params.first()); }
         function.annotations = combined;
         // Field/declaration docs and initializer docs describe the same
         // original function. Keep one declaration site and source order.
@@ -1225,6 +1343,8 @@ impl<'a> Parser<'a> {
             body.clear();
             built_depth = 2;
         }
+        let mut annotations = annotations;
+        if self.options.emmylua { types::emmylua_type_guards(&mut annotations, params.first()); }
         (
             Function {
                 params,
@@ -1236,6 +1356,69 @@ impl<'a> Parser<'a> {
             },
             built_depth,
         )
+    }
+    /// A `for` loop and the annotations of its variables. Kept out of the recursive statement
+    /// parser's frame.
+    #[inline(never)]
+    fn annotated_for(&mut self, start: Span, annotations: &mut FunctionAnnotations) -> Option<Stmt> {
+        let mut statement = self.control_statement(start);
+        if let Some(statement) = &mut statement { loop_variable_annotations(statement, annotations); }
+        self.unattached_annotations(annotations);
+        statement
+    }
+    /// Whether a statement is Lua 5.5's `global` declaration: `global` before a name, `function`,
+    /// an attribute or `*`, which no earlier Lua writes.
+    fn global_declaration_follows(&self) -> bool {
+        if !matches!(&self.current().kind, TokenKind::Identifier(word) if word == "global") { return false }
+        let mut next = self.pos + 1;
+        while matches!(self.tokens[next].kind, TokenKind::Newline | TokenKind::Comment(_)) { next += 1; }
+        match &self.tokens[next].kind {
+            TokenKind::Identifier(_) => true,
+            TokenKind::Keyword(word) => word == "function",
+            TokenKind::Symbol(symbol) => symbol == "<" || symbol == "*",
+            _ => false,
+        }
+    }
+    /// Lua 5.5's `global` declarations, as EmmyLua Analyzer reads them: `global function f`
+    /// is `function f`, `global a, b = x, y` the assignment `a, b = x, y`, and a declaration
+    /// without values (`global a`, `global <const> *`) declares nothing.
+    #[inline(never)]
+    fn global_declaration(&mut self, start: Span, annotations: &mut FunctionAnnotations) -> Option<Stmt> {
+        let annotations = std::mem::take(annotations);
+        // Without the flag it is reported, and read as with it so that nothing follows from it.
+        if !self.options.emmylua {
+            self.error("Lua 5.5's `global` declaration is EmmyLua Analyzer syntax (--emmylua-syntax)");
+        }
+        self.pos += 1;
+        self.inner_trivia();
+        if self.keyword("function") {
+            return self.function_declaration(start, annotations);
+        }
+        self.local_attribute();
+        let mut targets = Vec::new();
+        loop {
+            self.inner_trivia();
+            if self.symbol("*") {
+                self.pos += 1;
+            } else {
+                let name = self.name()?;
+                self.local_attribute();
+                targets.push(Expr { span: name.span, kind: ExprKind::Name(name) });
+            }
+            if !self.significant_symbol(",") { break }
+            self.inner_trivia();
+            self.pos += 1;
+        }
+        if !self.significant_symbol("=") {
+            self.unattached_annotations(&annotations);
+            return None;
+        }
+        self.inner_trivia();
+        self.pos += 1;
+        let mut values = self.expr_list();
+        self.attach_function_annotations(&mut values, annotations);
+        let end = values.last().map_or(start, |value| value.span);
+        Some(Stmt { kind: StmtKind::Assign { targets, values, annotation: None }, span: start.join(end) })
     }
     fn function_declaration(
         &mut self,
@@ -1324,7 +1507,37 @@ impl<'a> Parser<'a> {
     // Track the depth of the constructed tree as well as recursive parser calls.
     // Postfix access is parsed iteratively but still creates nested boxed nodes.
     fn expr_with_depth(&mut self) -> (Expr, usize) {
-        self.expr_binding_power(0)
+        let (expr, depth) = self.expr_binding_power(0);
+        self.trailing_as_cast(&expr);
+        (expr, depth)
+    }
+    /// EmmyLua Analyzer's trailing `expression ---@as T`, on the expression's line: the whole
+    /// expression is a `T`. Kept out of the recursive expression parser's frame.
+    #[inline(never)]
+    fn trailing_as_cast(&mut self, expr: &Expr) {
+        let TokenKind::Comment(comment) = &self.current().kind else { return };
+        if comment.kind != CommentKind::Documentation
+            || !comment.text.trim_start_matches('-').trim_start().starts_with("@as")
+            || self.source[expr.span.end..comment.span.start].contains(['\r', '\n'])
+        {
+            return;
+        }
+        let comment = comment.clone();
+        self.pos += 1;
+        if !self.options.emmylua {
+            self.diagnostic_at(crate::DiagnosticOrigin::Annotation, comment.span, "a trailing `---@as T` is EmmyLua Analyzer syntax (--emmylua-syntax)");
+            return;
+        }
+        let (documentation, diagnostics) = types::annotations(&comment, self.options);
+        self.diagnostics.extend(diagnostics);
+        for annotation in documentation.as_casts {
+            self.expression_assertions.push(crate::ExpressionAssertion {
+                kind: crate::ExpressionAssertionKind::Type,
+                annotation,
+                expression: expr.span,
+                span: expr.span.join(comment.span),
+            });
+        }
     }
     fn expr_binding_power(&mut self, min_precedence: u8) -> (Expr, usize) {
         let mut assertions = Vec::new();
@@ -1449,38 +1662,112 @@ impl<'a> Parser<'a> {
     /// LuaLS `---@cast x T` types `x` from here on, as `x = x` cast to `T` would. The value's
     /// name spans the `@cast` tag, so the two names are distinct expressions. Kept out of the
     /// recursive statement parser's frame.
+    ///
+    /// `+T` (lua-language-server's and EmmyLua Analyzer's) widens what the variable holds from
+    /// here on: it is read as a new local, `local x = x` cast so, to the end of the block.
+    /// EmmyLua Analyzer's cast of a field path is an assignment of the field, and its `+T`
+    /// widens what may be stored in it to the end of the block; its cast without a name casts
+    /// the next statement's last value.
     #[inline(never)]
     fn cast_statements(&mut self, statements: &mut Vec<Stmt>) {
         for cast in std::mem::take(&mut self.pending_casts) {
-            let target = Expr { kind: ExprKind::Name(cast.name.clone()), span: cast.name.span };
-            let value = Expr { kind: ExprKind::Name(Name { text: cast.name.text.clone(), span: cast.tag_span }), span: cast.tag_span };
-            self.expression_assertions.push(crate::ExpressionAssertion {
-                kind: cast.kind,
-                annotation: cast.annotation.clone(),
-                expression: cast.tag_span,
-                span: cast.tag_span,
-            });
-            statements.push(Stmt {
-                kind: StmtKind::Assign { targets: vec![target], values: vec![value], annotation: None },
-                span: cast.tag_span.join(cast.annotation.span),
-            });
+            let Some(name) = cast.name.clone() else {
+                self.pending_value_casts.push(cast);
+                continue;
+            };
+            let span = cast.casts.iter().fold(cast.tag_span, |span, (_, annotation)| span.join(annotation.span));
+            let widens = cast.casts.iter().any(|(kind, _)| *kind == crate::ExpressionAssertionKind::Add);
+            if !cast.path.is_empty() {
+                let path: Vec<String> = std::iter::once(&name).chain(&cast.path).map(|name| name.text.clone()).collect();
+                for (_, annotation) in cast.casts.iter().filter(|(kind, _)| *kind == crate::ExpressionAssertionKind::Add) {
+                    self.field_widenings.push(crate::FieldWidening { path: path.clone(), ty: annotation.clone(), scope: Span::new(cast.tag_span.start, usize::MAX) });
+                }
+                let narrowing: Vec<_> = cast.casts.iter().filter(|(kind, _)| *kind != crate::ExpressionAssertionKind::Add).cloned().collect();
+                if narrowing.is_empty() { continue; }
+                let field_path = |root: Name, span: Option<Span>| cast.path.iter().fold(
+                    Expr { kind: ExprKind::Name(root.clone()), span: span.unwrap_or(root.span) },
+                    |base, field| {
+                        let field = Name { text: field.text.clone(), span: span.unwrap_or(field.span) };
+                        let span = base.span.join(field.span);
+                        Expr { kind: ExprKind::Field { base: Box::new(base), name: field }, span }
+                    },
+                );
+                let target = field_path(name.clone(), None);
+                let value = field_path(Name { text: name.text.clone(), span: cast.tag_span }, Some(cast.tag_span));
+                for (kind, annotation) in narrowing {
+                    self.expression_assertions.push(crate::ExpressionAssertion { kind, annotation, expression: value.span, span: cast.tag_span });
+                }
+                statements.push(Stmt { kind: StmtKind::Assign { targets: vec![target], values: vec![value], annotation: None }, span });
+                continue;
+            }
+            let value = Expr { kind: ExprKind::Name(Name { text: name.text.clone(), span: cast.tag_span }), span: cast.tag_span };
+            for (kind, annotation) in &cast.casts {
+                self.expression_assertions.push(crate::ExpressionAssertion {
+                    kind: *kind,
+                    annotation: annotation.clone(),
+                    expression: cast.tag_span,
+                    span: cast.tag_span,
+                });
+            }
+            let kind = if widens {
+                StmtKind::Local { names: vec![name], attributes: vec![None], values: vec![value], annotation: None }
+            } else {
+                StmtKind::Assign { targets: vec![Expr { kind: ExprKind::Name(name.clone()), span: name.span }], values: vec![value], annotation: None }
+            };
+            statements.push(Stmt { kind, span });
         }
     }
-    /// LuaLS `expression --[[@as T]]` types the expression just before the comment. Kept out of
-    /// the recursive expression parser's frame.
+    /// `---@module "name"` above a local without a value: `require("name")` is its value. Kept
+    /// out of the recursive statement parser's frame.
     #[inline(never)]
-    fn postfix_as_cast(&mut self, expr: &Expr) {
+    fn module_value(&mut self, module: Box<crate::ModuleAnnotation>, values: &mut Vec<Expr>) {
+        if !values.is_empty() {
+            self.diagnostic_at(crate::DiagnosticOrigin::Annotation, module.span, "`---@module \"name\"` names the module of a local without a value");
+            return;
+        }
+        let callee = Expr { kind: ExprKind::Name(Name { text: "require".to_owned(), span: module.tag_span }), span: module.tag_span };
+        let argument = Expr { kind: ExprKind::String(module.name.into_bytes()), span: module.span };
+        values.push(Expr { kind: ExprKind::Call { callee: Box::new(callee), args: vec![argument] }, span: module.tag_span.join(module.span) });
+    }
+    /// EmmyLua Analyzer's `---@cast` without a name before a statement: of its last value. Kept
+    /// out of the recursive statement parser's frame.
+    #[inline(never)]
+    fn value_casts(&mut self, casts: Vec<types::CastAnnotation>, value: Option<&Expr>) {
+        for cast in casts {
+            let Some(value) = value else {
+                self.diagnostic_at(crate::DiagnosticOrigin::Annotation, cast.tag_span, "@cast without a name requires a value after it to cast");
+                continue;
+            };
+            for (kind, annotation) in cast.casts {
+                self.expression_assertions.push(crate::ExpressionAssertion { kind, annotation, expression: value.span, span: cast.tag_span.join(value.span) });
+            }
+        }
+    }
+    /// LuaLS `expression --[[@as T]]` types the expression just before the comment, and EmmyLua
+    /// Analyzer's `expression --[[@cast -?]]`, a cast without a name, casts it. Between an
+    /// expression and a suffix after it (`a:f() --[[@as T]]:g()`) either is EmmyLua Analyzer's
+    /// alone. Kept out of the recursive expression parser's frame.
+    #[inline(never)]
+    fn postfix_cast(&mut self, expr: &Expr, before_suffix: bool) {
         let TokenKind::Comment(comment) = &self.current().kind else { return };
-        if comment.kind != CommentKind::Long || !comment.text.trim_start_matches(['-', '[', '=']).trim_start().starts_with("@as") {
+        let tag = comment.text.trim_start_matches(['-', '[', '=']).trim_start();
+        let cast = tag.starts_with("@cast");
+        if comment.kind != CommentKind::Long || !(tag.starts_with("@as") || cast) {
             return;
         }
         let comment = comment.clone();
         self.pos += 1;
         let (documentation, diagnostics) = types::annotations(&comment, self.options);
         self.diagnostics.extend(diagnostics);
-        for annotation in documentation.as_casts {
+        if before_suffix && !self.options.emmylua {
+            self.diagnostic_at(crate::DiagnosticOrigin::Annotation, comment.span, "a cast between an expression and its suffix is EmmyLua Analyzer syntax (--emmylua-syntax)");
+            return;
+        }
+        let casts = documentation.as_casts.into_iter().map(|annotation| (crate::ExpressionAssertionKind::Type, annotation))
+            .chain(documentation.casts.into_iter().filter(|cast| cast.name.is_none()).flat_map(|cast| cast.casts));
+        for (kind, annotation) in casts {
             self.expression_assertions.push(crate::ExpressionAssertion {
-                kind: crate::ExpressionAssertionKind::Type,
+                kind,
                 annotation,
                 expression: expr.span,
                 span: expr.span.join(comment.span),
@@ -1490,7 +1777,7 @@ impl<'a> Parser<'a> {
     fn prefix_with_suffix(&mut self) -> (Expr, usize) {
         let (expr, built_depth, suffix_eligible) = self.prefix();
         let (expr, built_depth) = if suffix_eligible { self.suffixes(expr, built_depth) } else { (expr, built_depth) };
-        self.postfix_as_cast(&expr);
+        self.postfix_cast(&expr, false);
         (expr, built_depth)
     }
     /// An expression before its suffixes, and whether it may take them. Each form's temporaries
@@ -1651,6 +1938,7 @@ impl<'a> Parser<'a> {
             || self.significant_symbol("[")
             || self.significant_symbol(":")
         {
+            self.postfix_cast(&expr, true);
             let documentation = self.suffix_documentation();
             let postfix_start = self.current().span;
             if self.symbol("[") || self.symbol(".") {

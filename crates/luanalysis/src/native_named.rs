@@ -438,16 +438,16 @@ impl NativeNamed {
                     });
                 }
             }
-            let ty = match &declaration.syntax.kind {
-                NamedTypeDeclarationKind::Alias { target } => Some(target),
-                NamedTypeDeclarationKind::Record { base, .. } => base.as_ref(),
+            let types = match &declaration.syntax.kind {
+                NamedTypeDeclarationKind::Alias { target } => std::slice::from_ref(target),
+                NamedTypeDeclarationKind::Record { bases, .. } => bases.as_slice(),
             };
-            if let Some(ty) = ty {
+            for ty in types {
                 roots.push(Root {
                     ty: ty.clone(),
                     context,
                     documentation_contexts: declaration.documentation_contexts.clone(),
-                    origin,
+                    origin: origin.clone(),
                 });
             }
         }
@@ -721,6 +721,9 @@ impl NativeNamed {
 
     pub(super) fn candidates(&self, name: &str) -> &[NativeNamedKey] {
         self.names.get(name).map_or(&[], Vec::as_slice)
+    }
+    pub(super) fn names(&self) -> impl Iterator<Item = (&str, &[NativeNamedKey])> {
+        self.names.iter().map(|(name, keys)| (name.as_str(), keys.as_slice()))
     }
     /// The one declaration `name` names: its only one, or the first of several `---@class`
     /// declarations, which are one class, as LuaLS reads a class declared again.

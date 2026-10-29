@@ -15,12 +15,10 @@ fn inheritance_retains_the_entire_original_type_expression_for_semantic_validati
             "{source}\n{:#?}",
             file.diagnostics
         );
-        let NamedTypeDeclarationKind::Record {
-            base: Some(parsed), ..
-        } = &file.type_declarations[0].kind
-        else {
+        let NamedTypeDeclarationKind::Record { bases, .. } = &file.type_declarations[0].kind else {
             panic!("original base expression missing")
         };
+        let [parsed] = bases.as_slice() else { panic!("one base") };
         assert_eq!(&source[parsed.span.start..parsed.span.end], base);
         if base.contains('|') {
             assert!(matches!(parsed.kind, TypeExprKind::Union(_)));
@@ -33,12 +31,10 @@ fn named_generic_base_keeps_its_own_argument_and_full_expression_spans() {
     let source = "---@shape Derived<T>:Base<Box<T>>\n";
     let file = parse(source);
     assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
-    let NamedTypeDeclarationKind::Record {
-        base: Some(base), ..
-    } = &file.type_declarations[0].kind
-    else {
+    let NamedTypeDeclarationKind::Record { bases, .. } = &file.type_declarations[0].kind else {
         panic!("base")
     };
+    let [base] = bases.as_slice() else { panic!("one base") };
     let TypeExprKind::Generic { args, .. } = &base.kind else {
         panic!("generic base")
     };

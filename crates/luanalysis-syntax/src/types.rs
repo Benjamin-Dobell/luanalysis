@@ -23,6 +23,10 @@ pub(crate) struct ParsedDocumentation {
     pub descriptions: Vec<TagDescription>,
     /// `---@deprecated`, with what it says (the replacement to use), on its line or those after.
     pub deprecated: Option<String>,
+    /// EmmyLua Analyzer's `---@namespace N`.
+    pub namespace: Option<String>,
+    /// EmmyLua Analyzer's `---@using N`.
+    pub usings: Vec<String>,
 }
 
 /// What a tag says beside its type: `---@param path string the file` describes `path`.
@@ -34,12 +38,17 @@ pub(crate) struct TagDescription {
     pub text: String,
 }
 
-/// LuaLS `---@cast name T` (`kind` Type) or `---@cast name -T` (`kind` Not, `-?` removing
-/// nil): from here on, the variable's value is so typed.
+/// LuaLS `---@cast name T` (Type) or `---@cast name -T` (Not, `-?` removing nil): from here on,
+/// the variable's value is so typed. EmmyLua Analyzer's `+T` (Add) widens it.
 pub(crate) struct CastAnnotation {
-    pub name: Name,
-    pub kind: crate::ExpressionAssertionKind,
-    pub annotation: TypeAnnotation,
+    /// The variable cast. Without one (EmmyLua Analyzer), the cast is of the expression the
+    /// comment follows, or of the next statement's last value.
+    pub name: Option<Name>,
+    /// EmmyLua Analyzer's field path after the name, `obj.value`.
+    pub path: Vec<Name>,
+    /// Each cast in order: what replaces the type (Type), then what it loses (Not) and gains
+    /// (Add).
+    pub casts: Vec<(crate::ExpressionAssertionKind, TypeAnnotation)>,
     pub tag_span: Span,
 }
 
@@ -149,21 +158,37 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
             if let Some(kind) = visibility {
                 result.functions.visibility = Some(FieldVisibilityAnnotation { kind, span: Span::new(tag_offset, tag_offset + 1 + tag_len) });
             }
+            // EmmyLua Analyzer's attributes, `---@[deprecated, constructor("new")]`, which name
+            // what its language server does with a declaration (none of them types it).
+            let attribute = tag_name.is_empty() && tag.starts_with('[');
+            // LuaLS's and EmmyLua Analyzer's `---@module "name"`: the local after it is that module.
+            let module_name = tag_name == "module" && tag[tag_len..].trim_start().starts_with(['"', '\'']);
+            // EmmyLua Analyzer's language injection and schema tags, which say nothing of types.
+            let documentation_only = matches!(tag_name, "language" | "mapping" | "schema") || attribute;
             if matches!(
                 tag_name,
                 "async" | "nodiscard" | "deprecated" | "package" | "private" | "protected"
                     | "public" | "meta" | "diagnostic" | "format" | "version" | "source"
-            ) {
+            ) || (documentation_only && options.emmylua) {
                 line_offset += line.len();
                 continue;
             }
-            if !matches!(
+            // EmmyLua Analyzer's own tags, read with `--emmylua-syntax`.
+            let emmylua_tag = matches!(tag_name, "return_overload" | "interface" | "return_cast")
+                || documentation_only;
+            if emmylua_tag && !options.emmylua {
+                diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
+                    span: Span::new(tag_offset, tag_offset + 1 + tag_len),
+                    message: if attribute { "`---@[attribute]` is EmmyLua Analyzer syntax (--emmylua-syntax)".to_owned() }
+                        else { format!("@{tag_name} is EmmyLua Analyzer syntax (--emmylua-syntax)") },
+                });
+            } else if !emmylua_tag && !matches!(
                 tag_name,
                 "type"
                     | "not"
                     | "param"
                     | "return"
-                    | "return_overload"
                     | "readonly"
                     | "generic"
                     | "vararg"
@@ -179,7 +204,9 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                     | "enum"
                     | "as"
                     | "cast"
-            ) && !type_arguments || (tag_name == "return_overload" && !options.emmylua)
+                    | "namespace"
+                    | "using"
+            ) && !type_arguments
             {
                 diagnostics.push(Diagnostic {
                     origin: crate::DiagnosticOrigin::Annotation,
@@ -289,10 +316,33 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                             });
                         }
                     }
-                    "alias" | "shape" | "class" | "module" => {
+                    "module" if module_name => {
+                        if let TokenKind::String(name) = parser.current().kind.clone() {
+                            let span = parser.current().span;
+                            parser.pos += 1;
+                            group.module = Some(Box::new(crate::ModuleAnnotation { name: String::from_utf8_lossy(&name).into_owned(), tag_span: Span::new(tag_offset, tag_offset + 1 + tag_len), span }));
+                        }
+                    }
+                    "return_cast" => {
+                        // EmmyLua Analyzer's `---@return_cast x T [else U]`: the function's boolean
+                        // says whether `x` is a `T`, TypeScript's `x is T`. Its false branch is
+                        // `x` without `T`, which `else U` restates. A `+` or `-` before `T`, which
+                        // EmmyLua Analyzer ignores, is ignored.
+                        if let Some(parameter) = parser.name() {
+                            if parser.take("+").is_none() { parser.take("-"); }
+                            let ty = parser.union();
+                            if matches!(&parser.current().kind, TokenKind::Keyword(word) if word == "else") {
+                                parser.pos += 1;
+                                parser.union();
+                            }
+                            let span = parameter.span.join(ty.span);
+                            group.return_cast = Some(Box::new(TypeExpr { kind: TypeExprKind::TypePredicate { parameter, ty: Some(Box::new(ty)), asserts: None }, span }));
+                        }
+                    }
+                    "alias" | "shape" | "class" | "interface" | "module" => {
                         active_function = None;
                         // LuaLS's `---@class (exact) Name` and `(partial)` modifiers.
-                        if tag_name == "class" && parser.take("(").is_some() {
+                        if matches!(tag_name, "class" | "interface") && parser.take("(").is_some() {
                             parser.declaration_name("@class modifier");
                             parser.expect(")");
                         }
@@ -308,15 +358,22 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                                 };
                                 NamedTypeDeclarationKind::Alias { target }
                             } else {
-                                let base = parser.take(":").map(|_| parser.union());
+                                let mut bases = Vec::new();
+                                if parser.take(":").is_some() {
+                                    parser.comma_ends_type += 1;
+                                    bases.push(parser.union());
+                                    while parser.take(",").is_some() { bases.push(parser.union()); }
+                                    parser.comma_ends_type -= 1;
+                                }
                                 NamedTypeDeclarationKind::Record {
                                     flavor: match tag_name {
                                         "shape" => NamedRecordKind::Shape,
-                                        "class" => NamedRecordKind::Class,
+                                        // EmmyLua Analyzer's `@interface` is its `@class`.
+                                        "class" | "interface" => NamedRecordKind::Class,
                                         "module" => NamedRecordKind::Module,
                                         _ => unreachable!(),
                                     },
-                                    base,
+                                    bases,
                                     fields: Vec::new(),
                                 }
                             };
@@ -435,6 +492,8 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                         });
                     }
                     "readonly" => group.readonly = Some(Span::new(tag_offset, tag_offset + 1 + tag_len)),
+                    "namespace" => result.namespace = parser.declaration_name("@namespace").map(|name| name.text),
+                    "using" => result.usings.extend(parser.declaration_name("@using").map(|name| name.text)),
                     "return_overload" => {
                         let (types, packs) = parser.return_packs();
                         group.return_overloads.push(TypeAnnotation { span: annotation_span, types, packs });
@@ -472,43 +531,63 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                         result.call_type_arguments = Some(TypeAnnotation { span: annotation_span, types, packs: None });
                     }
                     "cast" => {
-                        // `---@cast x -A, -B, +C`: the removed types are excluded together; `+T`
-                        // and `+?` widen, which needs the variable's type, so they cast nothing.
+                        // `---@cast x -A, -B, +C`: the removed types are excluded together, and
+                        // the added ones (`+T`, `+?` adding nil) added together. EmmyLua Analyzer
+                        // also casts a field path, `obj.value`, and without a name the expression
+                        // the comment follows.
                         let tag_span = Span::new(tag_offset, tag_offset + 1 + tag_len);
-                        if let Some(name) = parser.name() {
-                            let mut removed = Vec::new();
-                            let mut replaced = Vec::new();
-                            loop {
-                                if parser.take("-").is_some() {
-                                    removed.push(match parser.take("?") {
-                                        Some(span) => TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span },
-                                        None => parser.union(),
-                                    });
-                                } else if parser.take("+").is_some() {
-                                    if parser.take("?").is_none() { parser.union(); }
-                                } else if parser.eof() || matches!(&parser.current().kind, TokenKind::Symbol(symbol) if symbol == "#") {
-                                    break;
-                                } else {
-                                    replaced.push(parser.union());
-                                }
-                                if parser.take(",").is_none() { break; }
+                        let name = matches!(parser.current().kind, TokenKind::Identifier(_)).then(|| parser.name()).flatten();
+                        let mut path = Vec::new();
+                        if let Some(name) = &name {
+                            let mut end = name.span.end;
+                            while parser.symbol(".") && parser.current().span.start == end
+                                && let Some(next) = parser.tokens.get(parser.pos + 1)
+                                && next.span.start == parser.current().span.end
+                                && let TokenKind::Identifier(text) | TokenKind::Keyword(text) = &next.kind
+                            {
+                                path.push(Name { text: text.clone(), span: next.span });
+                                end = next.span.end;
+                                parser.pos += 2;
                             }
+                        }
+                        let mut removed = Vec::new();
+                        let mut replaced = Vec::new();
+                        let mut added = Vec::new();
+                        loop {
+                            let nil = |span| TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span };
+                            if parser.take("-").is_some() {
+                                removed.push(match parser.take("?") { Some(span) => nil(span), None => parser.union() });
+                            } else if parser.take("+").is_some() {
+                                added.push(match parser.take("?") { Some(span) => nil(span), None => parser.union() });
+                            } else if parser.eof() || matches!(&parser.current().kind, TokenKind::Symbol(symbol) if symbol == "#") {
+                                break;
+                            } else {
+                                replaced.push(parser.union());
+                            }
+                            if parser.take(",").is_none() { break; }
+                        }
+                        // lua-language-server writes `+T` on a variable too, so only these need it.
+                        let emmylua_form = if name.is_none() { Some("@cast without a name") }
+                            else if !path.is_empty() { Some("@cast of a field path") }
+                            else { None };
+                        if let Some(form) = emmylua_form.filter(|_| !options.emmylua) {
+                            parser.diagnostics.push(Diagnostic {
+                                origin: crate::DiagnosticOrigin::Annotation,
+                                span: tag_span,
+                                message: format!("{form} is EmmyLua Analyzer syntax (--emmylua-syntax)"),
+                            });
+                        } else {
                             let union = |mut types: Vec<TypeExpr>| if types.len() == 1 { types.remove(0) } else {
-                                let span = types.iter().map(|ty| ty.span).reduce(Span::join).unwrap_or(name.span);
+                                let span = types.iter().map(|ty| ty.span).reduce(Span::join).unwrap_or(tag_span);
                                 TypeExpr { kind: TypeExprKind::Union(types), span }
                             };
-                            let cast = if !replaced.is_empty() {
-                                Some((crate::ExpressionAssertionKind::Type, union(replaced)))
-                            } else if !removed.is_empty() {
-                                Some((crate::ExpressionAssertionKind::Not, union(removed)))
-                            } else { None };
-                            if let Some((kind, ty)) = cast {
-                                result.casts.push(CastAnnotation {
-                                    name,
-                                    kind,
-                                    annotation: TypeAnnotation { span: annotation_span, types: vec![ty], packs: None },
-                                    tag_span,
-                                });
+                            let annotation = |ty| TypeAnnotation { span: annotation_span, types: vec![ty], packs: None };
+                            let mut casts = Vec::new();
+                            if !replaced.is_empty() { casts.push((crate::ExpressionAssertionKind::Type, annotation(union(replaced)))); }
+                            if !removed.is_empty() { casts.push((crate::ExpressionAssertionKind::Not, annotation(union(removed)))); }
+                            if !added.is_empty() { casts.push((crate::ExpressionAssertionKind::Add, annotation(union(added)))); }
+                            if !casts.is_empty() {
+                                result.casts.push(CastAnnotation { name, path, casts, tag_span });
                             }
                         }
                     }
@@ -556,6 +635,247 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
     }
     crate::completion_metadata::validate(&result, &mut diagnostics);
     (result, diagnostics)
+}
+
+/// EmmyLua Analyzer's builtin types (its std/builtin.lua) as the types they are:
+/// - `int`, `integer`;
+/// - `std.NotNull<T>`, `T` without nil (`T - ?`), and `std.Nullable<T>`, `T | nil`;
+/// - `std.RawGet<T, K>`, `T[K]`;
+/// - `type`, `std.type`, `collectgarbage_opt` and `metatable`, as LuaLS declares them;
+/// - `Language<T>`, a string in language `T`;
+/// - `namespace<N>`, a table;
+/// - `ConstructorParameters<T>`, `Parameters<T>`: a class's constructor is its call signature;
+/// - `std.Select<T, N>` and `std.Unpack<T, I, J>`, `any`: EmmyLua Analyzer types `select` and
+///   `unpack` calls by the callee's name, as the standard declarations here type them.
+///
+/// `TypeGuard<T>` is a predicate on a function's first parameter where it is the function's
+/// result ([`emmylua_type_guards`]); elsewhere it is a boolean.
+#[inline(never)]
+pub(crate) fn emmylua_builtin(ty: TypeExpr) -> TypeExpr {
+    let span = ty.span;
+    let named = |name: &str| TypeExpr { kind: TypeExprKind::Named(name.to_owned()), span };
+    let strings = |values: &[&str]| TypeExpr {
+        kind: TypeExprKind::Union(values.iter().map(|value| TypeExpr { kind: TypeExprKind::Literal(TypeLiteral::String(value.as_bytes().to_vec())), span }).collect()),
+        span,
+    };
+    match ty.kind {
+        TypeExprKind::Named(ref name) => match name.as_str() {
+            "int" => named("integer"),
+            "type" | "std.type" => strings(&["nil", "number", "string", "boolean", "table", "function", "thread", "userdata"]),
+            "collectgarbage_opt" | "std.collectgarbage_opt" => strings(&["collect", "stop", "restart", "count", "step", "isrunning", "incremental", "generational", "setpause", "setstepmul"]),
+            "metatable" | "std.metatable" => named("table"),
+            _ => ty,
+        },
+        TypeExprKind::Generic { ref base, ref args, .. } => match (base.text.as_str(), args.as_slice()) {
+            ("std.NotNull", [_]) => {
+                let TypeExprKind::Generic { base, mut args, args_span } = ty.kind else { unreachable!() };
+                args.push(TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: base.span });
+                TypeExpr { kind: TypeExprKind::Generic { base: Name { text: "Exclude".to_owned(), span: base.span }, args, args_span }, span }
+            }
+            ("std.Nullable", [inner]) => TypeExpr { kind: TypeExprKind::Union(vec![inner.clone(), TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: base.span }]), span },
+            ("std.RawGet", [object, index]) => TypeExpr { kind: TypeExprKind::IndexedAccess { object: Box::new(object.clone()), index: Box::new(index.clone()) }, span },
+            ("Language", [_]) => named("string"),
+            ("namespace", [_]) => named("table"),
+            // A class's constructor is its call signature, `new fun(...)` a function type.
+            ("ConstructorParameters", [_]) => {
+                let TypeExprKind::Generic { base, args, args_span } = ty.kind else { unreachable!() };
+                TypeExpr { kind: TypeExprKind::Generic { base: Name { text: "Parameters".to_owned(), span: base.span }, args, args_span }, span }
+            }
+            ("std.Select" | "std.Unpack", _) => named("any"),
+            _ => ty,
+        },
+        _ => ty,
+    }
+}
+
+/// EmmyLua Analyzer's `---@class Key: integer`, a class whose super is a primitive type and that
+/// has no fields and no table: a name for the primitive, assignable to and from it, as EmmyLua
+/// Analyzer relates such a class and its primitive both ways.
+pub(crate) fn emmylua_primitive_class(declaration: &mut crate::NamedTypeDeclaration) {
+    let NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, bases, fields } = &mut declaration.kind else { return };
+    let primitive = |ty: &TypeExpr| match &ty.kind {
+        TypeExprKind::Named(name) => matches!(name.as_str(), "number" | "integer" | "string" | "boolean"),
+        TypeExprKind::Literal(_) => true,
+        _ => false,
+    };
+    if declaration.attachment.is_some() || !fields.is_empty() || !bases.iter().any(primitive) { return }
+    let mut bases = std::mem::take(bases);
+    let target = if bases.len() == 1 { bases.remove(0) } else {
+        let span = bases.iter().map(|base| base.span).reduce(Span::join).unwrap_or(declaration.name.span);
+        TypeExpr { kind: TypeExprKind::Intersection(bases), span }
+    };
+    declaration.kind = NamedTypeDeclarationKind::Alias { target };
+}
+
+/// Whether `name` is one of EmmyLua Analyzer's builtin types, which `--emmylua-syntax` reads.
+pub fn emmylua_builtin_type(name: &str) -> bool {
+    matches!(name, "int" | "type" | "collectgarbage_opt" | "metatable" | "TypeGuard" | "Language" | "namespace" | "ConstructorParameters"
+        | "std.type" | "std.collectgarbage_opt" | "std.metatable" | "std.NotNull" | "std.Nullable" | "std.RawGet"
+        | "std.Select" | "std.Unpack")
+}
+
+/// A type as written, without where: its debug form without spans.
+fn unplaced(ty: &TypeExpr) -> String {
+    let written = format!("{ty:?}");
+    let mut text = String::with_capacity(written.len());
+    let mut rest = written.as_str();
+    while let Some(start) = rest.find("Span { start: ") {
+        text.push_str(&rest[..start]);
+        rest = &rest[start..];
+        rest = rest.find('}').map_or("", |end| &rest[end + 1..]);
+    }
+    text.push_str(rest);
+    text
+}
+
+/// EmmyLua Analyzer's repeated `---@field f fun(...)` lines, each a function: the field's
+/// overloads, the intersection of the function types, which a call resolves in order.
+/// Without `--emmylua-syntax` they are reported as that syntax.
+pub(crate) fn emmylua_field_overloads(declaration: &mut crate::NamedTypeDeclaration, emmylua: bool, diagnostics: &mut Vec<Diagnostic>) {
+    let NamedTypeDeclarationKind::Record { fields, .. } = &mut declaration.kind else { return };
+    let function = |field: &FieldDeclaration| matches!(field.ty.kind, TypeExprKind::Function(_));
+    let mut index = 0;
+    while index < fields.len() {
+        let TypeFieldKey::Named(name) = &fields[index].key else { index += 1; continue };
+        let name = name.text.clone();
+        let same: Vec<usize> = (index..fields.len())
+            .filter(|&other| matches!(&fields[other].key, TypeFieldKey::Named(other) if other.text == name))
+            .collect();
+        // A field repeated as it was is the field again, as Luanalysis always read it.
+        let repeated = same.iter().skip(1).all(|&other| unplaced(&fields[other].ty) == unplaced(&fields[index].ty));
+        if same.len() > 1 && !repeated && same.iter().all(|&other| function(&fields[other])) {
+            if !emmylua {
+                diagnostics.extend(same.iter().skip(1).map(|&other| Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
+                    span: fields[other].span,
+                    message: "a repeated `---@field` of a function, an overload, is EmmyLua Analyzer syntax (--emmylua-syntax)".to_owned(),
+                }));
+                index += 1;
+                continue;
+            }
+            let mut overloads = Vec::new();
+            for &other in same.iter().skip(1).rev() { overloads.push(fields.remove(other).ty); }
+            overloads.reverse();
+            let first = &mut fields[index];
+            let span = overloads.iter().fold(first.ty.span, |span, ty| span.join(ty.span));
+            let mut types = vec![first.ty.clone()];
+            types.extend(overloads);
+            first.ty = TypeExpr { kind: TypeExprKind::Intersection(types), span };
+        }
+        index += 1;
+    }
+}
+
+/// [`emmylua_type_guards`] of a function type's results. Out of line, as the recursive type
+/// parsers' helpers are.
+#[inline(never)]
+fn function_type_guards(signature: &mut FunctionType) {
+    let parameter = signature.params.first().map(|param| param.name.clone());
+    type_guard_results(signature.returns.iter_mut(), parameter);
+}
+
+/// EmmyLua Analyzer's `TypeGuard<T>` result: a predicate that `parameter`, the first parameter
+/// (written or, without `---@param`s, the function's), is `T`, as the first argument of a call is.
+///
+/// EmmyLua Analyzer's `---@return_cast x T` is the predicate its first result is.
+#[inline(never)]
+pub(crate) fn emmylua_type_guards(annotations: &mut FunctionAnnotations, parameter: Option<&Name>) {
+    if let Some(predicate) = annotations.return_cast.take().map(|predicate| *predicate) {
+        match &mut annotations.returns {
+            Some(returns) if !returns.types.is_empty() => returns.types[0] = predicate,
+            _ => annotations.returns = Some(TypeAnnotation { span: predicate.span, types: vec![predicate], packs: None }),
+        }
+    }
+    let parameter = annotations.params.first().map(|param| &param.name).or(parameter).cloned();
+    type_guard_results(annotations.returns.iter_mut().flat_map(|returns| &mut returns.types), parameter);
+}
+
+#[inline(never)]
+fn type_guard_results<'a>(results: impl Iterator<Item = &'a mut TypeExpr>, parameter: Option<Name>) {
+    let Some(parameter) = parameter else { return };
+    for ty in results {
+        if let TypeExprKind::Generic { base, args, .. } = &mut ty.kind
+            && base.text == "TypeGuard"
+            && let [guarded] = args.as_mut_slice()
+        {
+            let guarded = std::mem::replace(guarded, TypeExpr { kind: TypeExprKind::Error, span: ty.span });
+            ty.kind = TypeExprKind::TypePredicate { parameter: parameter.clone(), ty: Some(Box::new(guarded)), asserts: None };
+        }
+    }
+}
+
+/// The record of every declared type by its name, which [`type_captures`] index. No source names
+/// it: a backtick begins a completion hint.
+pub const DECLARED_TYPES: &str = "`declared types`";
+/// The names of the declared types, or of those assignable to its one type argument.
+pub const DECLARED_TYPE_NAMES: &str = "`declared type names`";
+
+/// LuaLS's and EmmyLua Analyzer's capture of a type by its name, `---@param name \`T\`` with
+/// `---@generic T`: the argument names the type that `T` is, as TypeScript's `createElement<K
+/// extends keyof Map>(tag: K): Map[K]` names an element's. The parameter is a string `T`, whose
+/// constraint is the names of the declared types (of those satisfying `T`'s written constraint);
+/// elsewhere in the signature `T` is the declared type of that name.
+///
+/// Each `---` line's tags are read alone, so a statement's are read so once they are complete; a
+/// lone `\`name\`` as a parameter's type that names no generic of them is a completion hint
+/// without the value type it requires.
+#[inline(never)]
+pub(crate) fn type_captures(annotations: &mut FunctionAnnotations, diagnostics: &mut Vec<Diagnostic>) {
+    let captured: Vec<String> = annotations.generics.iter()
+        .filter(|generic| annotations.params.iter().any(|param| matches!(&param.ty.kind, TypeExprKind::CompletionHint(text) if *text == generic.name.text)))
+        .map(|generic| generic.name.text.clone())
+        .collect();
+    for param in &annotations.params {
+        if let TypeExprKind::CompletionHint(text) = &param.ty.kind && crate::is_capture_name(text) && !captured.contains(text) {
+            diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
+                span: param.ty.span,
+                message: "completion hint requires an accompanying value type in its union".into(),
+            });
+        }
+    }
+    if captured.is_empty() { return }
+    fn named_type(ty: &mut TypeExpr, captured: &[String]) {
+        match &ty.kind {
+            TypeExprKind::Named(name) if captured.contains(name) => {
+                let index = ty.clone();
+                ty.kind = TypeExprKind::IndexedAccess {
+                    object: Box::new(TypeExpr { kind: TypeExprKind::Named(DECLARED_TYPES.to_owned()), span: ty.span }),
+                    index: Box::new(index),
+                };
+            }
+            _ => for child in ty.children_mut() { named_type(child, captured) },
+        }
+    }
+    for generic in annotations.generics.iter_mut().filter(|generic| captured.contains(&generic.name.text)) {
+        let span = generic.name.span;
+        let args = generic.constraint.take().into_iter().collect();
+        generic.constraint = Some(TypeExpr { kind: TypeExprKind::Generic { base: Name { text: DECLARED_TYPE_NAMES.to_owned(), span }, args, args_span: span }, span });
+    }
+    for param in &mut annotations.params {
+        match &param.ty.kind {
+            TypeExprKind::CompletionHint(text) if captured.contains(text) => param.ty.kind = TypeExprKind::Named(text.clone()),
+            _ => named_type(&mut param.ty, &captured),
+        }
+    }
+    if let Some(vararg) = &mut annotations.vararg { named_type(&mut vararg.ty, &captured); }
+    for returns in annotations.returns.iter_mut().chain(&mut annotations.return_overloads) {
+        for ty in &mut returns.types { named_type(ty, &captured); }
+    }
+}
+
+/// EmmyLua Analyzer's `---@namespace N` and `---@using M` in a file's comments: the namespace its
+/// named types are declared in (the last written, as EmmyLua Analyzer reads it), and those its
+/// type names are also read in.
+pub(crate) fn namespaces(comments: &[Comment], options: crate::ParseOptions) -> (Option<String>, Vec<String>) {
+    let mut namespace = None;
+    let mut usings = Vec::new();
+    for comment in comments.iter().filter(|comment| comment.text.contains("@namespace") || comment.text.contains("@using")) {
+        let (parsed, _) = annotations(comment, options);
+        namespace = parsed.namespace.or(namespace);
+        usings.extend(parsed.usings);
+    }
+    (namespace, usings)
 }
 
 /// EmmyLua Analyzer's `---@return_overload` rows are the function's result contract: a call
@@ -696,6 +1016,8 @@ pub(crate) fn merge_annotations(
     target.overloads.extend(incoming.overloads);
     target.return_overloads.extend(incoming.return_overloads);
     if incoming.readonly.is_some() { target.readonly = incoming.readonly; }
+    if incoming.return_cast.is_some() { target.return_cast = incoming.return_cast; }
+    if incoming.module.is_some() { target.module = incoming.module; }
     if incoming.visibility.is_some() { target.visibility = incoming.visibility; }
     for generic in incoming.generics {
         if target
@@ -809,6 +1131,8 @@ pub(crate) fn annotation_spans(group: &FunctionAnnotations) -> Vec<Span> {
                 .iter()
                 .map(|annotation| annotation.span),
         )
+        .chain(group.return_cast.iter().map(|predicate| predicate.span))
+        .chain(group.module.iter().map(|module| module.span))
         .collect()
 }
 
@@ -889,6 +1213,7 @@ impl TypeParser {
                 .map_or(name.span, |ty| name.span.join(ty.span));
             parameters.push(GenericParameter {
                 name,
+                constant: false,
                 constraint,
                 default,
                 span,
@@ -1218,6 +1543,13 @@ impl TypeParser {
     fn generic_parameters(&mut self) -> Vec<GenericParameter> {
         let mut parameters = Vec::new();
         loop {
+            // EmmyLua Analyzer's `const T`.
+            let constant = matches!(&self.current().kind, TokenKind::Identifier(word) if word == "const")
+                && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(_) | TokenKind::Keyword(_)));
+            if constant {
+                if !self.emmylua { self.error("`---@generic const T` is EmmyLua Analyzer syntax (--emmylua-syntax)".to_owned()); }
+                self.pos += 1;
+            }
             // Documentation's xGENERIC lexer accepts ID without reserving
             // Lua keywords, unlike the lexer shared with Lua expressions.
             let name = if let TokenKind::Identifier(text) | TokenKind::Keyword(text) =
@@ -1250,6 +1582,7 @@ impl TypeParser {
                 .map_or(name.span, |ty| name.span.join(ty.span));
             parameters.push(GenericParameter {
                 name,
+                constant: constant && self.emmylua,
                 constraint,
                 default,
                 span,
@@ -1826,8 +2159,9 @@ impl TypeParser {
                 self.infer_type(start)
             }
             // LuaLS's `async fun(...)`, and EmmyLua Analyzer's `sync fun(...)`: either is an
-            // ordinary function type.
-            TokenKind::Identifier(name) if (name == "async" || (name == "sync" && self.emmylua))
+            // ordinary function type. So is EmmyLua Analyzer's `new fun(...)`, a class's
+            // constructor, which is its call signature here.
+            TokenKind::Identifier(name) if (name == "async" || ((name == "sync" || name == "new") && self.emmylua))
                 && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(next)) if next == "fun") =>
             {
                 self.pos += 1;
@@ -1977,6 +2311,7 @@ impl TypeParser {
                 }
             }
         }
+        if self.emmylua { ty = emmylua_builtin(ty); }
         ty = self.type_suffixes(ty);
         self.depth -= 1;
         ty
@@ -2166,12 +2501,28 @@ impl TypeParser {
             self.comma_ends_type += 1;
             let mut ty = self.union();
             self.comma_ends_type -= 1;
+            if self.symbol("...") { return self.tuple_rest(start, fields, ty); }
             // An element has no name to write `?` on: its `T?` may be absent.
             let optional = self.optional_field(&mut ty, true, &mut optional_elements);
             fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty, readonly: None, optional });
             if self.take(",").is_none() { break; }
         }
         let end = self.expect("]");
+        TypeExpr { kind: TypeExprKind::Record(fields), span: start.join(end) }
+    }
+    /// EmmyLua Analyzer's rest element, `[A, T...]` (TypeScript's `[A, ...T[]]`): any number of
+    /// further `T`s, the last element. Alone, `[T...]` is `T[]`. Out of line, as the recursive
+    /// type parsers' helpers are.
+    #[inline(never)]
+    fn tuple_rest(&mut self, start: Span, mut fields: Vec<TypeField>, ty: TypeExpr) -> TypeExpr {
+        let ellipsis = self.expect("...");
+        if !self.symbol("]") { self.error("a rest element `T...` ends a tuple".to_owned()); }
+        let end = self.expect("]");
+        if fields.is_empty() {
+            return TypeExpr { kind: TypeExprKind::Array { element: Box::new(ty), suffix_span: ellipsis }, span: start.join(end) };
+        }
+        let key = TypeExpr { kind: TypeExprKind::Named("integer".to_owned()), span: ellipsis };
+        fields.push(TypeField { key: TypeFieldKey::Indexed(Box::new(key)), span: ty.span.join(ellipsis), ty, readonly: None, optional: None });
         TypeExpr { kind: TypeExprKind::Record(fields), span: start.join(end) }
     }
     fn array_suffix(&mut self, mut ty: TypeExpr) -> TypeExpr {
@@ -2212,7 +2563,8 @@ impl TypeParser {
     fn function_type(&mut self) -> TypeExpr {
         let start = self.current().span;
         self.pos += 1;
-        let signature = self.function_type_tail(start);
+        let mut signature = self.function_type_tail(start);
+        if self.emmylua { function_type_guards(&mut signature); }
         TypeExpr {
             span: signature.span,
             kind: TypeExprKind::Function(signature),

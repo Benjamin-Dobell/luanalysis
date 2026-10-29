@@ -213,6 +213,8 @@ pub trait NativeFunctionProvider {
     /// Whether varargs spread the parameter (`...: T...`): a sequence, which a tuple or `any`
     /// given for it spreads into.
     fn type_parameter_is_sequence(&self, _: NativeTypeParamId) -> bool { false }
+    /// Whether the parameter is declared `const` (TypeScript's `<const T>`).
+    fn type_parameter_is_const(&self, _: NativeTypeParamId) -> bool { false }
     fn type_parameter_name(&self, _: &Checker<'_, '_>, _: NativeTypeParamId) -> Atom { Atom::NONE }
     fn has_type_parameter_constraint(&self, _: NativeTypeParamId) -> bool { false }
     fn type_parameter_constraint(&self, _: &mut Checker<'_, '_>, _: NativeTypeParamId) -> Option<TypeId> { None }

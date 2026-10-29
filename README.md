@@ -1070,6 +1070,39 @@ other additions:
 - `T?` as the type of a parameter, field or local, or within another type, where Luanalysis
   writes the `?` on a name or writes `nil | T`. Without the option it is reported. With it, a
   parameter's or field's `T?` is its name's, optional, and any other is `nil | T`.
+- EmmyLua Analyzer's builtin types: `int`; `type`, `collectgarbage_opt` and `metatable`;
+  `std.NotNull<T>` (`T` without nil), `std.Nullable<T>`, `std.RawGet<T, K>` (`T[K]`),
+  `Language<T>` (a string), `ConstructorParameters<T>` and `new fun(...)`, a class's call
+  signature. `---@return TypeGuard<T>` is the predicate that the first parameter is a `T`.
+- `---@interface`, its `---@class`; `---@return_cast x T`, the predicate `x is T`; and
+  `---@language`, `---@mapping`, `---@schema` and `---@[attribute]` lines, which type nothing.
+- `---@generic const T`: literal arguments keep their literal types, as TypeScript's
+  `<const T>`.
+- Several class supers, including table types (`---@class A: B, {[string]: number}`), as
+  lua-language-server reads them too. A class without fields whose super is a primitive
+  (`---@class Key: integer`) is a name for that primitive, assignable to and from it.
+- Several `---@class` tags in one comment: the one named as the variable the statement
+  assigns, or else the first, is that variable's class, and the others are declared alone.
+- Repeated `---@field f fun(...)` lines: the field's overloads.
+- `---@cast` of a field path (`---@cast obj.value +boolean`: a store of a `boolean` there is
+  accepted to the end of the block); `--[[@cast -?]]` without a name, of the expression before
+  it, also between a call and its next suffix (`a:f() --[[@cast -?]]:g()`), as `--[[@as T]]`
+  there; and a trailing `expression ---@as T`.
+- `---@diagnostic disable-next-line: assign-type-mismatch` and its kin, which disable
+  diagnostics by Luanalysis's code or lua-language-server's name.
+- Lua 5.5's `global` declarations and LuaJIT's numerals (`1LL`, `0x10ULL`, `0b101`, `3i`).
+
+Without the option each of these is reported as EmmyLua Analyzer's syntax, except
+`---@diagnostic`, which lua-language-server also writes and Luanalysis then leaves to the editor.
+
+`---@namespace Game`, as EmmyLua Analyzer writes it, needs no option either: the file's named
+types are `Game.Unit` and so on, whichever line it is on, and a name the file writes is looked up
+as `Game.Name` first. `---@using Game` looks a file's names up there too.
+
+A string-template generic, lua-language-server's ``---@param class `T` `` with `---@generic T`,
+needs no option: a call's string names the declared type `T` is, `new("Unit")` a `Unit`.
+`---@module "name"` above a local makes it that module, as `require("name")` would. And
+`---@cast x +T` widens what the variable holds to `T` as well, to the end of its block.
 
 EmmyLua Analyzer and lua-language-server read every optional as `nil | T` and a missing value as
 nil, conflating a value that may be absent with nil. `--dangerously-decay-optionals` (the
