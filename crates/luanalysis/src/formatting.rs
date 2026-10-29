@@ -132,7 +132,7 @@ pub fn format(source: &str, options: &FormattingOptions, range: Option<Span>) ->
                 return false;
             }
             match (&before.kind, &after.kind) {
-                (TokenKind::Comment(before), TokenKind::Comment(after)) => !comments::equivalent(before, after),
+                (TokenKind::Comment(before), TokenKind::Comment(after)) => !comments::equivalent_formatted(before, after),
                 _ => true,
             }
         })

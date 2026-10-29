@@ -1,7 +1,9 @@
-//! Conservative wrapping of standalone prose and annotation comments.
+//! Conservative wrapping of standalone prose and annotation comments, and `nil` first in the
+//! unions of any annotation comment.
 //!
 //! Executable tokens never pass through this module. Each replacement must lex as
-//! one comment and retain the comment's content and parsed annotation structure.
+//! one comment and retain the comment's content and parsed annotation structure, its unions'
+//! members aside, which only move.
 
 use luanalysis_syntax::{Comment, CommentKind, Span, Token, TokenKind};
 use super::{FormatEdit, FormattingOptions};
@@ -17,18 +19,22 @@ pub(super) fn edits(
     let mut edits = Vec::new();
     for token in tokens {
         let TokenKind::Comment(comment) = &token.kind else { continue; };
-        if comment.span.start < bounds.start || comment.span.end > bounds.end
-            || !standalone(source, comment.span.start) || !ends_line(source, comment.span.end)
-        { continue; }
-        let indent = indent_at(comment.span.start);
-        let replacement = match comment.kind {
-            CommentKind::Documentation if comment.text.starts_with("---") =>
-                documentation(&comment.text, &indent, options, newline),
-            CommentKind::Line if options.max_line_length > 0 =>
-                prose(&comment.text, &indent, options, newline),
-            _ => None,
-        };
-        let Some(new_text) = replacement.filter(|text| *text != comment.text) else { continue; };
+        if comment.span.start < bounds.start || comment.span.end > bounds.end { continue; }
+        // A union's written `nil` comes first, in any annotation comment; only a standalone one
+        // wraps.
+        let reordered = nil_first(comment);
+        let text = reordered.as_deref().unwrap_or(&comment.text);
+        let wrapped = if standalone(source, comment.span.start) && ends_line(source, comment.span.end) {
+            let indent = indent_at(comment.span.start);
+            match comment.kind {
+                CommentKind::Documentation if text.starts_with("---") =>
+                    documentation(text, &indent, options, newline),
+                CommentKind::Line if options.max_line_length > 0 =>
+                    prose(text, &indent, options, newline),
+                _ => None,
+            }
+        } else { None };
+        let Some(new_text) = wrapped.or(reordered).filter(|text| *text != comment.text) else { continue; };
         let lexed = luanalysis_syntax::lex(&new_text);
         let comments: Vec<_> = lexed.tokens.iter().filter_map(|token| match &token.kind {
             TokenKind::Comment(comment) => Some(comment),
@@ -38,12 +44,63 @@ pub(super) fn edits(
         if lexed.diagnostics.is_empty() && comments.len() == 1
             && lexed.tokens.iter().all(|token| matches!(token.kind,
                 TokenKind::Comment(_) | TokenKind::Newline | TokenKind::Eof))
-            && equivalent(comment, comments[0])
+            && equivalent_formatted(comment, comments[0])
         {
             edits.push(FormatEdit { span: comment.span, new_text });
         }
     }
     edits
+}
+
+/// `comment` with each union's written `nil` first: `nil | string` for `string|nil`'s
+/// `nil|string`. Its members keep their text and the union its separators, so nothing else moves
+/// and no span does; a union written across lines keeps its order. None when nothing moves, or
+/// when the result would not be the same annotation reordered.
+fn nil_first(comment: &Comment) -> Option<String> {
+    let mut unions = luanalysis_syntax::nil_later_unions(comment);
+    if unions.is_empty() { return None; }
+    let base = comment.span.start;
+    let mut text = comment.text.clone();
+    // Innermost first: a union within another's member moves inside that member's text.
+    unions.sort_by_key(|union| union.members.last().unwrap().end - union.members[0].start);
+    for union in unions {
+        let members: Vec<_> = union.members.iter().map(|span| (span.start - base, span.end - base)).collect();
+        let separators: Vec<String> = members.windows(2).map(|pair| text.get(pair[0].1..pair[1].0).map(str::to_owned)).collect::<Option<_>>()?;
+        if separators.iter().any(|separator| separator.contains(['\r', '\n'])) { continue; }
+        let mut order = vec![union.nil];
+        order.extend((0..members.len()).filter(|&index| index != union.nil));
+        let mut moved = String::new();
+        for (position, &index) in order.iter().enumerate() {
+            if position > 0 { moved.push_str(&separators[position - 1]); }
+            moved.push_str(text.get(members[index].0..members[index].1)?);
+        }
+        text.replace_range(members[0].0..members.last().unwrap().1, &moved);
+    }
+    let same_text = |text: &str| { let mut chars: Vec<_> = text.chars().filter(|ch| !ch.is_whitespace()).collect(); chars.sort_unstable(); chars };
+    let diagnostics = |text: &str| luanalysis_syntax::parse(&format!("{text}\nlocal __formatter_comment_target = nil\n")).diagnostics.len();
+    (text != comment.text && same_text(&text) == same_text(&comment.text)
+        && relexed(&text).is_some_and(|after| after.kind == comment.kind)
+        && diagnostics(&text) == diagnostics(&comment.text))
+        .then_some(text)
+}
+
+/// The one comment `text` lexes as.
+fn relexed(text: &str) -> Option<Comment> {
+    let lexed = luanalysis_syntax::lex(text);
+    let mut comments = lexed.tokens.into_iter().filter_map(|token| match token.kind {
+        TokenKind::Comment(comment) => Some(comment),
+        _ => None,
+    });
+    let comment = comments.next()?;
+    (lexed.diagnostics.is_empty() && comments.next().is_none()).then_some(comment)
+}
+
+/// [`equivalent`], once `before`'s unions have their `nil` first, as the formatter writes them.
+pub(super) fn equivalent_formatted(before: &Comment, after: &Comment) -> bool {
+    match nil_first(before).and_then(|text| relexed(&text)) {
+        Some(reordered) => equivalent(&reordered, after),
+        None => equivalent(before, after),
+    }
 }
 
 fn standalone(source: &str, start: usize) -> bool {
@@ -334,6 +391,29 @@ mod tests {
             output.replace_range(edit.span.start..edit.span.end, &edit.new_text);
         }
         output
+    }
+
+    #[test]
+    fn a_unions_nil_moves_first_keeping_each_members_text_and_the_separators() {
+        assert_eq!(rewrite("---@param x string|nil the value, or nil\n", 0), "---@param x nil|string the value, or nil\n");
+        assert_eq!(rewrite("---@type A | B | nil | C\n", 0), "---@type nil | A | B | C\n");
+        assert_eq!(rewrite("---@type (string | nil)[] | nil\n", 0), "---@type nil | (nil | string)[]\n");
+        assert_eq!(rewrite("---@type fun(x: number|nil): string | nil\n", 0), "---@type fun(x: nil|number): nil | string\n");
+        assert_eq!(rewrite("---@param done fun(deck: Deck) | nil\n", 0), "---@param done nil | fun(deck: Deck)\n");
+        assert_eq!(rewrite("---@alias Json Container | number | nil | Null\n", 0), "---@alias Json nil | Container | number | Null\n");
+        assert_eq!(rewrite("---@type number | string | nil, number\n", 0), "---@type nil | number | string, number\n");
+        // A `T?` writes no nil, and nil first moves nothing.
+        for unchanged in ["---@return string?\n", "---@type nil | string\n", "---@param x? string\n"] {
+            assert_eq!(rewrite(unchanged, 0), unchanged);
+        }
+    }
+
+    #[test]
+    fn a_reordered_union_still_wraps() {
+        let source = "---@param value string|number|nil a value that takes up enough room to need wrapping here\n";
+        let wrapped = rewrite(source, 40);
+        assert!(wrapped.starts_with("---@param value nil|string|number"), "{wrapped}");
+        assert!(wrapped.lines().count() > 1, "{wrapped}");
     }
 
     #[test]

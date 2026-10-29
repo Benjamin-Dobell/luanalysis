@@ -156,3 +156,16 @@ fn wrapping_preserves_blank_line_and_ordinary_comment_attachment_barriers() {
         }
     }
 }
+
+#[test]
+fn unions_write_nil_first_in_every_annotation() {
+    let options = FormattingOptions::default();
+    let source = "---@class Box\n---@field label string|nil the label, or nil\n---@field size table<string, number | nil> | nil\nlocal Box = {}\n\n---@param value string | nil\n---@return boolean|nil, string? message\nlocal function check(value)\n    return nil\nend\n\nlocal width = --[[---@type number|nil]] (Box.size)\n";
+    assert_eq!(
+        apply(source, &options, None),
+        "---@class Box\n---@field label nil|string the label, or nil\n---@field size nil | table<string, nil | number>\nlocal Box = {}\n\n---@param value nil | string\n---@return nil|boolean, string? message\nlocal function check(value)\n    return nil\nend\n\nlocal width = --[[---@type nil|number]] (Box.size)\n",
+    );
+    // A union written across `---|` lines keeps its order.
+    let rows = "---@alias Mode\n---| \"read\"\n---| nil\nlocal mode = 1\n";
+    assert_eq!(apply(rows, &options, None), rows);
+}

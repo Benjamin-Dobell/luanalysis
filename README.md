@@ -841,7 +841,10 @@ bodies, compact simple anonymous functions, and existing table interior spacing.
 long prose comments become Lua block comments; long documentation and type annotations wrap
 onto `---` continuation lines. Wrapping preserves words, quoted contents, native annotation
 structure and attachment, and leaves inline casts, directives and structured comments intact.
-Full/range formatting declines invalid Lua; range edits stay within the selection, and wrapping
+In every annotation, inline casts included, a union's written `nil` moves first:
+`string|nil` becomes `nil|string`. Each member keeps its text and the union its separators,
+and a union written across `---|` lines keeps its order. Hovers and messages print a union in
+the order it is written. Full/range formatting declines invalid Lua; range edits stay within the selection, and wrapping
 requires the complete comment token to be selected.
 It supports `tabSize` (1–32), `insertSpaces`, `trimTrailingWhitespace`, `insertFinalNewline` and
 `trimFinalNewlines`. Extensions in the request's formatting options are `newline: "lf"` or

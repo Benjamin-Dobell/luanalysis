@@ -2,7 +2,7 @@
 //! references and rename of classes, shapes, aliases and generic parameters.
 
 use crate::types::{DeclarationItem, ParsedDocumentation};
-use crate::{CommentKind, File, FunctionAnnotations, Name, FunctionType, GenericParameter, Span, TypeAnnotation, TypeExpr, TypeExprKind, TypeFieldKey};
+use crate::{Comment, CommentKind, File, FunctionAnnotations, Name, FunctionType, GenericParameter, ParseOptions, Span, TypeAnnotation, TypeExpr, TypeExprKind, TypeFieldKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeNameKind {
@@ -65,6 +65,15 @@ enum Visited<'a> {
     Type(TypeNameKind),
     Value,
     Annotation(&'a TypeExpr),
+    Union(&'a TypeExpr),
+}
+
+/// A union written in a documentation comment whose `nil` follows another member: its members'
+/// spans, and which of them is the first `nil`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NilLaterUnion {
+    pub members: Vec<Span>,
+    pub nil: usize,
 }
 
 /// A conditional type written in a documentation comment.
@@ -113,6 +122,27 @@ impl AnnotationDeclaration {
             AnnotationDeclaration::Mapped(mapped) => mapped.span,
         }
     }
+}
+
+/// The unions in documentation `comment` whose written `nil` follows another member, which the
+/// formatter writes first, in source order. A `T?`'s nil is no written one.
+pub fn nil_later_unions(comment: &Comment) -> Vec<NilLaterUnion> {
+    let mut found = Vec::new();
+    if comment.kind != CommentKind::Documentation || !comment.text.contains("nil") { return found }
+    let (parsed, _) = crate::types::annotations(comment, ParseOptions::default());
+    visit_documentation(&parsed, &mut |_, _, visited| {
+        let Visited::Union(ty) = visited else { return };
+        let TypeExprKind::Union(members) = &ty.kind else { return };
+        let written_nil = |member: &TypeExpr| matches!(&member.kind, TypeExprKind::Named(name) if name == "nil")
+            && member.span.end - member.span.start == 3;
+        if let Some(nil) = members.iter().position(written_nil).filter(|&nil| nil > 0)
+            && !found.iter().any(|known: &NilLaterUnion| known.members[0] == members[0].span)
+        {
+            found.push(NilLaterUnion { members: members.iter().map(|member| member.span).collect(), nil });
+        }
+    });
+    found.sort_by_key(|union| (union.members[0].start, union.members[0].end));
+    found
 }
 
 /// The conditional and mapped types in the documentation comments of `file`, in source order,
@@ -242,7 +272,11 @@ fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
             visit(&base.text, base.span, Visited::Type(TypeNameKind::Reference));
             for arg in args { visit_type(arg, visit); }
         }
-        TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::TemplateLiteral { types, .. } => for ty in types { visit_type(ty, visit); },
+        TypeExprKind::Union(types) => {
+            visit("", ty.span, Visited::Union(ty));
+            for ty in types { visit_type(ty, visit); }
+        }
+        TypeExprKind::Intersection(types) | TypeExprKind::TemplateLiteral { types, .. } => for ty in types { visit_type(ty, visit); },
         TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) | TypeExprKind::TypePredicate { ty: Some(element), .. }
         | TypeExprKind::KeyOf(element) => visit_type(element, visit),
         TypeExprKind::IndexedAccess { object, index } => {

@@ -22,7 +22,7 @@ mod diagnostic_origin_tests;
 pub use lexer::{Lexed, Token, TokenKind, identifier_continue, identifier_start, is_identifier, lex};
 pub use parser::{parse, parse_with_checkpoint, parse_with_options};
 pub use documentation::{Documentation, documentation_above, documentation_at};
-pub use navigation::{AnnotationDeclaration, ConditionalDeclaration, InferDeclaration, MappedDeclaration, TypeName, TypeNameKind, annotation_types, referenced_type_names, type_names, type_query_roots};
+pub use navigation::{AnnotationDeclaration, ConditionalDeclaration, InferDeclaration, MappedDeclaration, NilLaterUnion, TypeName, TypeNameKind, annotation_types, nil_later_unions, referenced_type_names, type_names, type_query_roots};
 
 /// Half-open UTF-8 byte offsets in the original Lua source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
