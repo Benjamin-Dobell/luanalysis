@@ -582,7 +582,7 @@ end
 }
 
 #[test]
-fn correlated_owner_rows_keep_a_required_scalar_member_for_direct_and_aliased_producers() {
+fn correlated_owner_rows_take_the_whole_producer_sequence_for_direct_and_aliased_producers() {
     for annotation in ["fun():T", "Producer<T>"] {
         let source = format!(
             r#"
@@ -602,13 +602,19 @@ local flag,value=tagged(produce,true)
 "#
         );
         accepted(&source);
-        rejected(
-            &source.replace(
-                "---@return string\nlocal function produce() return 'ok' end",
-                "---@return string,number\nlocal function produce() return 'ok',42 end",
-            ),
-            "TS2345",
+        // As v1's `TyMultipleResults.substitute` splices, `T` in each row of a union is the
+        // producer's whole result list: `(true, string, number) | (false, number)`.
+        let pair = source.replace(
+            "---@return string\nlocal function produce() return 'ok' end",
+            "---@return string,number\nlocal function produce() return 'ok',42 end",
         );
+        accepted(&pair);
+        let pair = pair.replace(
+            "---@type boolean,string|number\nlocal flag,value=",
+            "---@type boolean,string|number,number|nil\nlocal flag,value,count=",
+        );
+        accepted(&pair);
+        rejected(&pair.replace("number|nil", "number"), "TS2322");
         let missing = source.replace("return true,producer()", "return true");
         rejected(&missing, "TS2322");
         let corrected = missing.replace(

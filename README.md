@@ -445,7 +445,9 @@ local bound = bind(1, "a") -- fun(...: (number, string))
 `pcall` and `xpcall` check the arguments they pass on this way.
 
 Overloads are declared with `@overload`. As in TypeScript, a function that has overloads is
-called through them.
+called through them. A function that returns values may be passed where `fun: void` is expected,
+as in TypeScript, but a call prefers an overload that takes those results to a `fun: void` one,
+as in Luanalysis for IntelliJ.
 
 ```lua
 ---@overload fun(point: Point): Point
@@ -650,6 +652,24 @@ if ok then
     local doubled = number * 2 -- number
 else
     print(problem)             -- string
+end
+```
+
+A generic that a callback's results infer is all of those results, in every outcome that names it,
+as in Luanalysis for IntelliJ. `---@return string | T` is a string or all of the callback's results.
+
+```lua
+---@generic T
+---@param f fun(): T
+---@return (true, T) | (false, string)
+local function try(f) return true, f() end
+
+---@return number, boolean
+local function two() return 1, true end
+
+local ok, value, flag = try(two)
+if ok then
+    print(value, flag) -- number, boolean
 end
 ```
 

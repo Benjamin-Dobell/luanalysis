@@ -402,7 +402,6 @@ fn ambient_protected_call_main_keeps_the_zero_result_success_row() {
     let main = directory.join("main.lua");
     std::fs::write(&main, "local success=protected(function() end)\n").unwrap();
     let source = "---@overload fun(f:(fun:void)):true|(false,any)\n---@overload fun<T>(f:(fun:T)):(true,T)|(false,any)\n---@generic T\n---@param f (fun:T)|(fun:void)\n---@return (true,T)|(false,any)\nfunction protected(f) end\n";
-    std::fs::write(&library, source).unwrap();
     let run = || {
         std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", "json", "--library"])
@@ -411,23 +410,12 @@ fn ambient_protected_call_main_keeps_the_zero_result_success_row() {
             .output()
             .unwrap()
     };
-    let output = run();
-    let report = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(1), "{report}");
-    assert_eq!(report.matches("\"code\":\"TS2394\"").count(), 1, "{report}");
-    std::fs::write(
-        &library,
-        source.replace(
-            "---@return (true,T)|(false,any)",
-            "---@return true|(true,T)|(false,any)",
-        ),
-    )
-    .unwrap();
-    let output = run();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    // `T` captures the callback's whole result list, as in v1's `pcall`, so the zero-result
+    // success row is `(true,T)` with no results: the void overload is compatible with it.
+    for source in [source.to_owned(), source.replace("---@return (true,T)|(false,any)", "---@return true|(true,T)|(false,any)")] {
+        std::fs::write(&library, source).unwrap();
+        let output = run();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    }
     std::fs::remove_dir_all(directory).unwrap();
 }

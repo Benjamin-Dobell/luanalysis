@@ -1145,6 +1145,8 @@ pub trait TypeQueries {
     /// Display-only classification retains whole top/symbolic carriers when
     /// ordinary row inspection is unavailable. Semantic operations use the pack.
     fn inspect_pack_view(&mut self, pack: &ValuePack) -> PackInspection;
+    /// A symbolic pack's rows (`PackInspection::Symbolic`), each value as written.
+    fn symbolic_pack_rows(&mut self, pack: &ValuePack) -> Vec<Vec<PackElement>>;
     fn pack_slot(&mut self, pack: &ValuePack, index: usize) -> Type;
     fn pack_contextual_slot(&mut self, pack: &ValuePack, index: usize) -> Option<Type>;
     fn adjust_pack(
@@ -1845,6 +1847,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn inspect_pack_view(&mut self, pack: &ValuePack) -> PackInspection {
         self.inspect_pack_view_native(pack)
+    }
+    fn symbolic_pack_rows(&mut self, pack: &ValuePack) -> Vec<Vec<PackElement>> {
+        self.symbolic_pack_rows_native(pack)
     }
     fn pack_slot(&mut self, pack: &ValuePack, index: usize) -> Type {
         self.pack_slot_native(pack, index)

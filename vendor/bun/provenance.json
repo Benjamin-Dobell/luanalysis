@@ -3146,6 +3146,18 @@
       "patch": "vendor/patches/bun-sema-variadic-packs.patch",
       "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
       "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-v1-result-lists.patch",
+      "reason": "Let a result pack parameter in a written union of one result be its whole sequence, a row of its own, as Luanalysis v1 substitutes `string | T`; and relate a function that may return values to a native void callback as assignable but no subtype, as v1 relates it, so that overload choice's subtype pass prefers an overload that takes the callback's results over a void one written first.",
+      "patch_sha256": "e78702456e00fa2682eddb4d5de2a7ab2ed588555c4d135346820e32f1dd6fae"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-v1-result-lists.patch",
+      "reason": "Let a result pack parameter in a written union of one result be its whole sequence, a row of its own, as Luanalysis v1 substitutes `string | T`; and relate a function that may return values to a native void callback as assignable but no subtype, as v1 relates it, so that overload choice's subtype pass prefers an overload that takes the callback's results over a void one written first.",
+      "patch_sha256": "e78702456e00fa2682eddb4d5de2a7ab2ed588555c4d135346820e32f1dd6fae"
     }
   ],
   "source_additions": {
@@ -3194,7 +3206,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-nil-compatibility.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "93d0f008de6817a977b08999561b0bc77e4100d41e7f6120262a8474dd296b1a",
+      "extracted_sha256": "d7b25a650770215bd7d3e003b5ce0af33b7b08dfcf705d069029390df0b05b40",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -4205,7 +4217,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "e2dd28a2c083326aeb1efac43203eac546ce0daa602fcf426f50f70f5526754a"
+      "extracted_sha256": "069e691759554fa19698cc762c9a2534d00a8ef2acffe0700e10628fa6f0c747"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",

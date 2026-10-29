@@ -1873,9 +1873,7 @@ fn describe_native_pack(
         PackInspection::Whole(ty) => {
             return format!("{} result pack", describe_native_mode(&ty, engine, stack, diagnostic));
         }
-        PackInspection::Symbolic(ty) => {
-            return format!("result pack {}", describe_native_mode(&ty, engine, stack, diagnostic));
-        }
+        PackInspection::Symbolic(_) => return describe_symbolic_pack(pack, engine, stack, diagnostic),
     };
     if alternatives.is_empty() {
         return "never".to_owned();
@@ -1920,6 +1918,47 @@ fn describe_native_pack(
             match slots.len() {
                 0 => "void".to_owned(),
                 1 if row.tail.is_none() => slots.remove(0),
+                _ => format!("({})", slots.join(", ")),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// A pack that names a sequence parameter, with the sequence written as varargs write it, `T...`,
+/// apart from one value of `T`: `(true, T...) | (false, string)`.
+fn describe_symbolic_pack(
+    pack: &luanalysis_engine::ValuePack,
+    engine: &mut dyn TypeQueries,
+    stack: &mut Vec<Type>,
+    diagnostic: bool,
+) -> String {
+    use luanalysis_engine::PackElement;
+    let rows = engine.symbolic_pack_rows(pack);
+    let alternatives = rows.len();
+    rows.iter()
+        .map(|row| {
+            let tuple_slot = row.len() > 1 || alternatives > 1;
+            let value = if tuple_slot { TypePrecedence::Union } else { TypePrecedence::Function };
+            let mut slots: Vec<_> = row
+                .iter()
+                .map(|element| match element {
+                    PackElement::Required(ty) => {
+                        describe_native_at_precedence(ty, engine, stack, diagnostic, value)
+                    }
+                    PackElement::Optional(ty) => format!(
+                        "{}?",
+                        describe_native_at_precedence(ty, engine, stack, diagnostic, TypePrecedence::Postfix)
+                    ),
+                    PackElement::Rest(ty) | PackElement::Spread(ty) => format!(
+                        "{}...",
+                        describe_native_at_precedence(ty, engine, stack, diagnostic, TypePrecedence::Postfix)
+                    ),
+                })
+                .collect();
+            match row.as_slice() {
+                [] => "void".to_owned(),
+                [PackElement::Required(_)] => slots.remove(0),
                 _ => format!("({})", slots.join(", ")),
             }
         })

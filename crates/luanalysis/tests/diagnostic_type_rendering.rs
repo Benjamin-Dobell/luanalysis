@@ -143,6 +143,30 @@ fn a_callable_union_member_groups_its_own_nullable_return_type() {
     no_placeholders(&diagnostic.message);
 }
 
+#[test]
+fn a_callback_result_generic_renders_as_written_in_result_rows() {
+    // `T` is the callback's whole result list, which diagnostics write as varargs write a
+    // sequence, `T...`, not as the checker's tuple `[true, ...T]`.
+    let source = r#"---@overload fun(f: fun(): void, label: string): nil
+---@overload fun<T>(f: fun(): T, label: string): (true, T) | (false, string)
+---@param f function
+---@param label string
+---@return any
+local function run(f, label) end
+run(function() return 1 end, 2)
+---@generic T
+---@param f fun(): T
+---@return boolean, T
+local function tag(f) return 1 end
+"#;
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 2, "{:#?}", report.diagnostics);
+    let overload = error(&report, "TS2769", "'fun(f: (fun(): (T...)), label: string): (false, string) | (true, T...)'");
+    no_placeholders(&overload.message);
+    let result = error(&report, "TS2322", "Expected: (boolean, T...).");
+    assert!(!result.message.contains("result pack [") && !result.message.contains("...T"), "{result:?}");
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 const OVERLOAD: &str = "-- Unicode: λ\r\n---@shape Receipt<T>\r\n---@field value T\r\n\r\n---@overload fun(value:Receipt<number[]>):Receipt<number[]>\r\n---@param value Receipt<string[]>\r\n---@return Receipt<string[]>\r\nlocal function exchange(value) return value end\r\n";

@@ -857,6 +857,14 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/mod.rs",
     "src/sema/check/native_packs.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-v1-result-lists.patch",
+    "reason": "Let a result pack parameter in a written union of one result be its whole sequence, a row of its own, as Luanalysis v1 substitutes `string | T`; and relate a function that may return values to a native void callback as assignable but no subtype, as v1 relates it, so that overload choice's subtype pass prefers an overload that takes the callback's results over a void one written first.",
+} for path in [
+    "src/sema/check/native_packs.rs",
+    "src/sema/check/relate.rs",
+])
 
 
 def git(source, *args):

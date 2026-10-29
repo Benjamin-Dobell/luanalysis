@@ -7483,7 +7483,16 @@ impl<'p, 's> Checker<'p, 's> {
         let packed = self.sig_has_native_result_pack(target);
         let target_return = if packed {
             let target_pack = self.sig_declared_result_pack_contract(target).unwrap_or_else(|| self.non_circular_result_pack_of_signature(target));
-            if self.native_pack_ignores_callback_results(target_pack) { return result; }
+            if self.native_pack_ignores_callback_results(target_pack) {
+                // A function that may return values is assignable to a void callback, as in
+                // TypeScript, but no subtype of one, as v1 relates it: overload choice's subtype
+                // pass prefers an overload that takes the callback's results.
+                if matches!(r.relation, Relation::Subtype | Relation::StrictSubtype) && self.sig_has_native_result_pack(source) {
+                    let source_pack = self.sig_declared_result_pack_contract(source).unwrap_or_else(|| self.non_circular_result_pack_of_signature(source));
+                    if self.native_pack_count_bounds(source_pack) != (0, Some(0)) { return Ternary::FALSE; }
+                }
+                return result;
+            }
             target_pack.ty
         } else { self.non_circular_return_type_of_signature(target) };
         if target_return == TypeId::VOID || target_return == TypeId::ANY {

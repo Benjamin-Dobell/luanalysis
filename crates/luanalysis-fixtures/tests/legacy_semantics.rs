@@ -300,6 +300,112 @@ local function forward(...) need(...) end
     );
 }
 #[test]
+fn a_callback_result_generic_takes_the_whole_result_list_in_every_row_that_names_it() {
+    // v1's `TyMultipleResults.substitute` splices `T`'s result list into each row, as v1's std
+    // declares `pcall`: `---@return (true, T) | (false, any)`.
+    exact(
+        r#"---@return number, string
+local function two() return 1, "x" end
+---@generic T
+---@param f fun: T
+---@return (true, T)
+local function forward(f) return true, f() end
+local forwarded, c, d = forward(two)
+---@type number
+local third = c
+---@type string
+local fourth = d
+---@generic T
+---@param f fun: T
+---@return (true, T) | (false, string)
+local function try(f) if f then return true, f() end return false, "no" end
+local ok, a, b = try(two)
+---@type number | string
+local first = a
+---@type string | nil
+local second = b
+---@type number
+local wrongFirst = a
+---@type string
+local wrongSecond = b
+"#,
+        &[("TS2322", "a"), ("TS2322", "b")],
+    );
+    exact(
+        r#"---@return number, string
+local function two() return 1, "x" end
+local ok, e, g = pcall(two)
+---@type string | nil
+local second = g
+---@type string
+local present = g
+---@type nil
+local absent = g
+"#,
+        &[("TS2322", "g"), ("TS2322", "g")],
+    );
+}
+#[test]
+fn a_callback_result_generic_in_a_union_of_one_result_is_its_whole_result_list() {
+    // v1 substitutes `string | T` as `string` or T's whole result list, so the body may return the
+    // callback's results and a caller receives each of them.
+    exact(
+        r#"---@return number, boolean
+local function two() return 1, true end
+---@generic T
+---@param f fun: T
+---@return string | T
+local function orString(f) if f then return f() end return "x" end
+---@generic T
+---@param f fun: T
+---@return T | nil
+local function orNil(f) if f then return f() end return nil end
+local first, second = orString(two)
+---@type string | number
+local one = first
+---@type boolean | nil
+local other = second
+---@type boolean
+local present = second
+local value, flag = orNil(two)
+---@type number | nil
+local maybe = value
+---@type boolean | nil
+local maybeFlag = flag
+"#,
+        &[("TS2322", "second")],
+    );
+}
+#[test]
+fn a_void_callback_overload_does_not_take_a_callback_that_returns_values() {
+    // v1's function_multiple_returns.lua, lines 112-124: a function returning values is
+    // assignable to `fun: void`, as in TypeScript, but the call prefers the generic signature that
+    // takes its results, as v1 does. A callback with no results still takes the void overload.
+    exact(
+        r#"---@return 1, 2, 3
+local function returns123() return 1, 2, 3 end
+---@type string
+local aString = "s"
+---@overload fun(f: (fun: void), ...: any): nil|string
+---@generic T
+---@param f fun: T
+---@return string | T
+local function returnStringOrGeneric(f, ...) return aString end
+local inferredNumberOrString = returnStringOrGeneric(returns123)
+---@type 1 | string
+local numberOrString = inferredNumberOrString
+---@type number
+local aNumber = inferredNumberOrString
+local none = returnStringOrGeneric(function() end)
+---@type nil | string
+local nilOrString = none
+---@type string
+local notNil = none
+"#,
+        &[("TS2322", "inferredNumberOrString"), ("TS2322", "none")],
+    );
+}
+#[test]
 fn array_deletion_and_commented_out_documentation_have_explicit_native_policies() {
     exact(
         r#"---@type number[]

@@ -592,14 +592,23 @@ impl<'p, 's> Checker<'p, 's> {
         for alternative in alternatives {
             if alternative.fixed.len() == 1 && alternative.tail.is_none() {
                 let slot = alternative.fixed[0];
-                let parts = self.parts(slot.ty);
-                if parts.contains(&TypeId::VOID) {
-                    let values: Vec<TypeId> = parts.iter().copied().filter(|&part| part != TypeId::VOID).collect();
-                    rows.push(NativePackAlternative { fixed: Vec::new(), tail: None });
+                let parts = self.parts(slot.ty).to_vec();
+                // A result pack parameter in a union is its whole sequence, as it is alone and as
+                // v1 substitutes `string | T`: a row of its own.
+                let sequences: Vec<TypeId> = if slot.optional || parts.len() < 2 { Vec::new() } else {
+                    parts.iter().copied().filter(|&part| self.native_type_parameter_is_result_pack(part)
+                        || matches!(self.data(part), TypeData::NativePackParameter(_))).collect()
+                };
+                if parts.contains(&TypeId::VOID) || !sequences.is_empty() {
+                    let values: Vec<TypeId> = parts.iter().copied().filter(|&part| part != TypeId::VOID && !sequences.contains(&part)).collect();
+                    if parts.contains(&TypeId::VOID) {
+                        rows.push(NativePackAlternative { fixed: Vec::new(), tail: None });
+                    }
                     if !values.is_empty() {
                         let ty = self.union(&values);
                         rows.push(NativePackAlternative { fixed: vec![NativePackSlot { ty, ..slot }], tail: None });
                     }
+                    rows.extend(sequences.into_iter().map(|ty| NativePackAlternative { fixed: vec![NativePackSlot { ty, ..slot }], tail: None }));
                     continue;
                 }
             }

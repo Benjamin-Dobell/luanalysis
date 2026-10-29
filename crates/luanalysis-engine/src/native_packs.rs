@@ -10,6 +10,7 @@ use bun_sema::check::native_packs::{
 };
 use bun_sema::types::NativeResultPack;
 use bun_sema::types::SigParam;
+use bun_sema::types::{ElemFlags, TypeData};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackFunctionType {
@@ -66,6 +67,16 @@ pub enum PackInspection {
     Alternatives(Vec<PackAlternative>),
     Whole(Type),
     Symbolic(Type),
+}
+
+/// One value of a symbolic pack's row, for display: a sequence parameter spread into a row is
+/// its whole list of values.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PackElement {
+    Required(Type),
+    Optional(Type),
+    Rest(Type),
+    Spread(Type),
 }
 
 impl ValuePack {
@@ -516,6 +527,33 @@ impl SessionQueries<'_, '_, '_> {
         let whole = self.checker.is_any(ty) || ty == bun_sema::types::TypeId::UNKNOWN;
         let exact = self.handles.retain(ty);
         if whole { PackInspection::Whole(exact) } else { PackInspection::Symbolic(exact) }
+    }
+    pub(super) fn symbolic_pack_rows_native(&mut self, value: &ValuePack) -> Vec<Vec<PackElement>> {
+        let pack = import_pack(self.checker, self.handles, value);
+        let ty = self.checker.native_pack_type(pack);
+        let parts = self.checker.parts(ty).to_vec();
+        let mut rows = Vec::with_capacity(parts.len());
+        for part in parts {
+            if let Some(element) = self.checker.array_element(part) {
+                rows.push(vec![PackElement::Rest(export_type(self.checker, self.handles, element))]);
+                continue;
+            }
+            let TypeData::Tuple { flags, .. } = self.checker.data(part) else {
+                // A sequence parameter itself is its whole list.
+                rows.push(vec![PackElement::Spread(export_type(self.checker, self.handles, part))]);
+                continue;
+            };
+            let flags = flags.to_vec();
+            let elements = self.checker.type_arguments(part).to_vec();
+            rows.push(flags.into_iter().zip(elements).map(|(flag, element)| {
+                let element = export_type(self.checker, self.handles, element);
+                if flag.contains(ElemFlags::VARIADIC) { PackElement::Spread(element) }
+                else if flag.contains(ElemFlags::REST) { PackElement::Rest(element) }
+                else if flag.contains(ElemFlags::OPTIONAL) { PackElement::Optional(element) }
+                else { PackElement::Required(element) }
+            }).collect());
+        }
+        rows
     }
     pub(super) fn pack_slot_native(&mut self, pack: &ValuePack, index: usize) -> Type {
         let pack = import_pack(self.checker, self.handles, pack);
