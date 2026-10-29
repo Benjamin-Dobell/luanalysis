@@ -398,10 +398,38 @@ impl NativeRegistry {
 
     /// A free producer introduces a physical result sequence. Scalar
     /// transformers and written tuple members retain their scalar contracts.
+    /// Whether the type parameter's owner writes it as varargs, `...: T...`: a sequence of values,
+    /// as a result list's final type parameter is.
+    pub(crate) fn source_type_parameter_is_spread(&self, parameter: NativeTypeParameterKey) -> bool {
+        let source = self.types.parameter(parameter);
+        let name = source.name.text.as_str();
+        let signature = |signature: &luanalysis_syntax::FunctionType| {
+            signature.params.iter().filter_map(|parameter| parameter.ty.as_ref()).any(|ty| ty.spreads(name))
+                || signature.vararg.as_ref().is_some_and(|vararg| vararg.spreads(name) || vararg.ty.spreads(name))
+                || signature.returns.iter().any(|ty| ty.spreads(name))
+        };
+        let annotations = |annotations: &luanalysis_syntax::FunctionAnnotations| {
+            annotations.params.iter().any(|parameter| parameter.ty.spreads(name))
+                || annotations.vararg.as_ref().is_some_and(|vararg| vararg.spreads(name) || vararg.ty.spreads(name))
+                || annotations.returns.iter().chain(&annotations.type_annotation).any(|annotation| annotation.types.iter().any(|ty| ty.spreads(name)))
+        };
+        match source.owner {
+            NativeTypeContext::Function(function) => annotations(&self.function(function).annotations),
+            NativeTypeContext::Signature(owner) => {
+                self.signatures.get(owner).signature.as_ref().is_some_and(signature)
+                    || self.documentation_signature(owner).is_some_and(|documentation| annotations(&documentation.annotations))
+            }
+            NativeTypeContext::Annotation(key) => self.types.annotation(key).is_some_and(|annotation| matches!(&annotation.syntax,
+                luanalysis_syntax::AnnotationDeclaration::Conditional(conditional) if conditional.extends_type.spreads(name))),
+            NativeTypeContext::NamedType(_) => false,
+        }
+    }
+
     pub(super) fn source_type_parameter_is_result_pack(
         &self,
         parameter: NativeTypeParameterKey,
     ) -> bool {
+        if self.source_type_parameter_is_spread(parameter) { return true; }
         let source = self.types.parameter(parameter);
         let project_metadata = self.project_result_pack_alias_metadata();
         let local_aliases;
@@ -886,7 +914,7 @@ impl NativeRegistry {
             return signature.parameters_span.is_none().then(|| ValuePack::variadic(Type::Any));
         };
         let mut checker = self.signature_checker(key, queries);
-        let pack = ValuePack::variadic(checker.annotation(&source.ty));
+        let pack = checker.rest_annotation(source);
         self.merge_report(checker.report);
         Some(pack)
     }

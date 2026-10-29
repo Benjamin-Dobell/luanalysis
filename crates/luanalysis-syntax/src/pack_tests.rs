@@ -583,3 +583,25 @@ fn callback_type_predicates_remain_single_results_with_named_outer_parameters() 
     assert_eq!(invalid.diagnostics.len(), 1, "{:?}", invalid.diagnostics);
     assert_eq!(invalid.diagnostics[0].message, "a type predicate must be the sole function return type");
 }
+
+#[test]
+fn varargs_written_with_a_trailing_ellipsis_spread_a_sequence() {
+    let source = "---@generic T\n---@param ... T...\n---@return fun(...: T...), fun(...: T)\nlocal function bind(...) end\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let annotations = &function(&file).annotations;
+    let vararg = annotations.vararg.as_ref().unwrap();
+    assert!(vararg.spread.is_some() && vararg.spreads("T"), "{vararg:?}");
+    let returns = &annotations.returns.as_ref().unwrap().types;
+    let [TypeExpr { kind: TypeExprKind::Function(spread), .. }, TypeExpr { kind: TypeExprKind::Function(each), .. }] = returns.as_slice() else {
+        panic!("{returns:?}")
+    };
+    assert!(spread.vararg.as_ref().unwrap().spreads("T"));
+    assert!(each.vararg.as_ref().unwrap().spread.is_none());
+    assert!(returns[0].spreads("T") && !returns[1].spreads("T"));
+    // `infer P...` in a conditional's extends type is a spread `P` too.
+    let file = parse("---@alias Params<F> F extends fun(...: infer P...) and P or never\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let NamedTypeDeclarationKind::Alias { target } = &file.type_declarations[0].kind else { panic!() };
+    assert!(target.spreads("P"));
+}

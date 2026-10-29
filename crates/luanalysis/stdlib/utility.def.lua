@@ -39,3 +39,7 @@
 ---
 --- What the function type `T` returns.
 ---@alias ReturnType<T: function> T extends fun(...): infer R and R or any
+
+---
+--- The parameters of the function type `T`, as a tuple.
+---@alias Parameters<T: function> T extends fun(...: infer P...) and P or never

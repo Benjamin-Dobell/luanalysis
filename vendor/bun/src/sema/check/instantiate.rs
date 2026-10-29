@@ -706,6 +706,15 @@ impl<'p, 's> Checker<'p, 's> {
                 if value == parameter { return ty; }
                 if self.native_type_parameter_is_result_pack(value) {
                     self.intern(TypeData::NativePackParameter(value))
+                } else if self.native_type_parameter_is_sequence(parameter) {
+                    // A sequence given as a type, by its default or written type arguments: a
+                    // tuple is its elements, and `any` or `unknown` any number of values, as
+                    // TypeScript's `T extends unknown[]` is `unknown[]`.
+                    if self.is_any(value) || value == TypeId::UNKNOWN {
+                        self.native_result_pack(&[super::native_packs::NativePackAlternative { fixed: Vec::new(), tail: Some(value) }]).ty
+                    } else {
+                        self.native_spread_pack(value).ty
+                    }
                 } else {
                     let pack = self.native_scalar_pack(value);
                     let pack = self.native_declared_result_pack(pack);

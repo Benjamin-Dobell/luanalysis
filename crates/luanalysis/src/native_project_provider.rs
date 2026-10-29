@@ -1254,6 +1254,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_outer_type_parameters(key: NativeFunctionKey) -> Vec<NativeTypeParameterKey>;
         fn function_outer_type_parameter_instances(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
         fn type_parameter_is_result_pack(key: NativeTypeParameterKey) -> bool;
+        fn type_parameter_is_sequence(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_name(key: NativeTypeParameterKey) -> String;
         fn has_type_parameter_constraint(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_constraint(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;

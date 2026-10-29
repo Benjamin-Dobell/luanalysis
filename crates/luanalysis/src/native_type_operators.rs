@@ -62,6 +62,20 @@ impl super::Checker<'_> {
         self.engine.conditional_type(&check_type, &extends_type, &infer, &branches, &outer)
     }
 
+    /// A type parameter that varargs spread, `...: T...` or `infer T...`, is a sequence of values
+    /// wherever it is named, as TypeScript's `T extends unknown[]` is a tuple: `P` in
+    /// `F extends fun(...: infer P...): any and P or never` is the parameter list.
+    pub(super) fn sequence_annotation(&mut self, ty: &TypeExpr, resolved: Type) -> Type {
+        match (&resolved, &ty.kind, self.native) {
+            (Type::NativeTypeParameter(parameter), TypeExprKind::Named(_), Some(native))
+                if native.types.contains(*parameter) && native.source_type_parameter_is_spread(*parameter) =>
+            {
+                self.engine.sequence_type(&resolved)
+            }
+            _ => resolved,
+        }
+    }
+
     /// TypeScript's `getConditionalFlowTypeOfType`: within the true branch of `T extends U and X
     /// or Y`, `T` is known to be a `U` (each enclosing conditional of `T` adds its extends type),
     /// so `T extends string and OnlyStr<T> or never` satisfies `OnlyStr`'s constraint.

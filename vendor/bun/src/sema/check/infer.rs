@@ -109,7 +109,20 @@ pub(super) struct Inference {
     pub(super) distributions: Vec<SmallVec<[SmallVec<[(usize, TypeId); 2]>; 4]>>,
     /// Whole physical return sequences inferred through the result facet of a
     /// native parameter. Its ordinary candidate still denotes the first value.
-    pub(super) native_result_packs: Vec<(TypeId, u32, Vec<TypeId>)>,
+    /// Sequences inferred from a parameter list (a callback's, for its spread
+    /// varargs) are contravariant candidates, kept apart as TypeScript keeps a
+    /// type parameter's.
+    pub(super) native_result_packs: Vec<NativeResultPackCandidates>,
+}
+
+/// A native parameter's whole-sequence candidates: from results and arguments (covariant) and
+/// from parameter lists (contravariant).
+#[derive(Clone, Debug)]
+pub(super) struct NativeResultPackCandidates {
+    pub facet: TypeId,
+    pub priority: u32,
+    pub covariant: Vec<TypeId>,
+    pub contravariant: Vec<TypeId>,
 }
 
 impl Inference {
@@ -179,6 +192,27 @@ impl<'p, 's> Checker<'p, 's> {
         self.infer_from_types_comparing(params, source, target, around, &mut |c, s, t| {
             c.is_assignable(s, t)
         })
+    }
+
+    /// `infer_from_types`, with the mapper pairs of the whole sequences that `infer P...`
+    /// positions infer, for the sequence facets of their parameters.
+    pub(super) fn infer_from_types_with_packs(
+        &mut self,
+        params: &[TypeId],
+        source: TypeId,
+        target: TypeId,
+        around: MapperId,
+    ) -> (Vec<TypeId>, Vec<(TypeId, TypeId)>) {
+        let mut inference = Inference::for_params(params, None);
+        inference.around = around;
+        self.infer(&mut inference, source, target, PRIORITY_NO_CONSTRAINTS | PRIORITY_ALWAYS_STRICT);
+        let types: Vec<_> = (0..params.len())
+            .map(|i| self.get_inferred_type_comparing(&inference, i, false, &mut |c, s, t| c.is_assignable(s, t)))
+            .collect();
+        let mut pairs: Vec<_> = params.iter().copied().zip(types.iter().copied()).collect();
+        let scalars = pairs.len();
+        self.native_result_pack_inference_pairs(&inference, &mut pairs);
+        (types, pairs.split_off(scalars))
     }
 
     pub(super) fn infer_from_types_comparing(
@@ -277,14 +311,18 @@ impl<'p, 's> Checker<'p, 's> {
                 // are not candidates, and a weaker contextual row must not
                 // absorb a later argument's precise physical return sequence.
                 if self.is_non_inferrable(first) || first == TypeId::NON_INFERRABLE_ANY { return; }
-                if let Some((_, priority, candidates)) = n.native_result_packs.iter_mut().find(|(key, _, _)| *key == target) {
-                    if n.priority < *priority {
-                        *priority = n.priority;
-                        candidates.clear();
+                let contra = n.contra && !n.bivariant;
+                if let Some(packs) = n.native_result_packs.iter_mut().find(|packs| packs.facet == target) {
+                    if n.priority < packs.priority {
+                        packs.priority = n.priority;
+                        packs.covariant.clear();
+                        packs.contravariant.clear();
                     }
-                    if n.priority == *priority && !candidates.contains(&source) { candidates.push(source); }
+                    let candidates = if contra { &mut packs.contravariant } else { &mut packs.covariant };
+                    if n.priority == packs.priority && !candidates.contains(&source) { candidates.push(source); }
                 } else {
-                    n.native_result_packs.push((target, n.priority, vec![source]));
+                    let (covariant, contravariant) = if contra { (Vec::new(), vec![source]) } else { (vec![source], Vec::new()) };
+                    n.native_result_packs.push(NativeResultPackCandidates { facet: target, priority: n.priority, covariant, contravariant });
                 }
                 self.infer_types(n, first, parameter);
             }
@@ -1847,10 +1885,35 @@ impl<'p, 's> Checker<'p, 's> {
         // From the last signature to the first. If the source has fewer, its first signature is
         // paired with the remaining target signatures.
         let target_signatures = self.signatures(target, construct);
+        // A Lua callback's overloads are each a parameter list that varargs spread as a sequence
+        // (`fun(...: A...)`) may be: `string.rep` lists its most specific last. Each offers its
+        // own candidate, where TypeScript infers from the last alone.
+        if source_len > 1 && let [t] = target_signatures[..] && self.native_sig_rest_is_sequence(t) {
+            for &s in source_signatures.iter() {
+                self.infer_from_signature(n, s, t, return_only);
+            }
+            return;
+        }
         for (i, &t) in target_signatures.iter().enumerate() {
             let source_index = (source_len + i).saturating_sub(target_signatures.len());
             self.infer_from_signature(n, source_signatures[source_index], t, return_only);
         }
+    }
+
+    /// Whether a signature's varargs are a sequence parameter, `...: A...`.
+    fn native_sig_rest_is_sequence(&mut self, sig: SigId) -> bool {
+        let params = self.sig_params(sig);
+        let Some(rest) = params.last().filter(|parameter| parameter.rest) else { return false };
+        let ty = self.get_type_of_parameter(rest);
+        self.parts(ty).to_vec().into_iter().any(|part| match self.data(part) {
+            TypeData::NativePackParameter(_) => true,
+            TypeData::Tuple { flags, .. } => {
+                let flags = flags.to_vec();
+                self.type_arguments(part).to_vec().into_iter().zip(flags)
+                    .any(|(element, flag)| flag.contains(ElemFlags::VARIADIC) && matches!(self.data(element), TypeData::NativePackParameter(_)))
+            }
+            _ => false,
+        })
     }
 
     /// `instantiate_sig(sig, mapper)`, where `sig` is the only call (or construct) signature among
@@ -3193,21 +3256,62 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_result_pack_inference_pairs(&mut self, n: &Inference, pairs: &mut Vec<(TypeId, TypeId)>) {
-        for (facet, _, candidates) in &n.native_result_packs {
+        for candidates in &n.native_result_packs {
+            let facet = &candidates.facet;
             let TypeData::NativePackParameter(parameter) = *self.data(*facet) else { unreachable!("result facet") };
             let Some(scalar) = pairs.iter().find(|pair| pair.0 == parameter).map(|pair| pair.1) else { continue };
             let required_first = !self.native_pack_parameter_first_is_optional(parameter)
                 || !self.native_pack_parameter_first_is_optional(scalar);
             let mut missing_required_first = false;
-            let packs: Vec<_> = candidates.iter().copied().filter(|&ty| {
-                let pack = crate::types::NativeResultPack { ty };
-                if required_first && !self.native_pack_has_required_first(pack) {
-                    missing_required_first = true;
-                    return false;
+            // A sequence agrees with the scalar inference of its first value: a covariant one's
+            // first value is a scalar, a contravariant one's first parameter takes one.
+            let mut compatible = |c: &mut Self, candidates: &[TypeId], contravariant: bool| -> Vec<TypeId> {
+                candidates.iter().copied().filter(|&ty| {
+                    let pack = crate::types::NativeResultPack { ty };
+                    if required_first && !c.native_pack_has_required_first(pack) {
+                        missing_required_first = true;
+                        return false;
+                    }
+                    let first = c.native_pack_slot(pack, 0);
+                    if contravariant { c.is_assignable(scalar, first) } else { c.is_assignable(first, scalar) }
+                }).collect()
+            };
+            let covariant = compatible(self, &candidates.covariant, false);
+            let contravariant = compatible(self, &candidates.contravariant, true);
+            // As TypeScript chooses a type parameter's inference: the sequences the arguments
+            // give, unless a callback's parameter list (a contravariant candidate) does not admit
+            // them, when its parameter list is the sequence, so the arguments are checked
+            // against it.
+            let packs = if contravariant.is_empty() { covariant } else {
+                let given = (!covariant.is_empty()).then(|| self.union(&covariant));
+                // An overloaded callback's parameter lists are alternatives: one admitting the
+                // arguments is enough.
+                match given {
+                    Some(given) if contravariant.iter().any(|&expected| self.is_assignable(given, expected)) => vec![given],
+                    _ if contravariant.len() == 1 => contravariant,
+                    // Of an overloaded callback's parameter lists, one that takes as many values
+                    // as the arguments, so a wrong one is reported as such; then TypeScript's
+                    // common subtype, ties to the last, the overload it infers from.
+                    given => {
+                        let fitting: Vec<_> = match given {
+                            Some(given) => {
+                                let (given_min, given_max) = self.native_pack_count_bounds(crate::types::NativeResultPack { ty: given });
+                                contravariant.iter().copied().filter(|&candidate| {
+                                    let (min, max) = self.native_pack_count_bounds(crate::types::NativeResultPack { ty: candidate });
+                                    min <= given_min && max.is_none_or(|max| given_max.is_some_and(|given_max| given_max <= max))
+                                }).collect()
+                            }
+                            None => Vec::new(),
+                        };
+                        let candidates = if fitting.is_empty() { &contravariant } else { &fitting };
+                        let mut best = *candidates.last().unwrap();
+                        for &candidate in candidates.iter().rev().skip(1) {
+                            if self.is_subtype(candidate, best) { best = candidate; }
+                        }
+                        vec![best]
+                    }
                 }
-                let first = self.native_pack_slot(pack, 0);
-                self.is_assignable(first, scalar)
-            }).collect();
+            };
             // A contextual result row may have suggested a conflicting first
             // value before an argument supplied the stronger scalar inference.
             // Keep compatible physical rows without dropping the producer's

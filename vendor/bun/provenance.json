@@ -3104,6 +3104,48 @@
       "patch": "vendor/patches/bun-sema-emmylua-comparison-gaps.patch",
       "reason": "Let a native `table<K, V>` head be a base, as a record of its one indexer is; expose the string library's global binding, so that a method a host declares on that table takes a string as `self`; expose TypeScript's substitution types, which a native conditional type's true branch gives its check type; and let a member be private, protected or package, reporting the visibility and owner of the member an access resolves to, which the host checks.",
       "patch_sha256": "a8cabe7f3f4ee1ec971b33af3efb05aba65f298f18dab8448b18a21e34eb2e99"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+      "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+      "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+      "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+      "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+      "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+      "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+      "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+      "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
+    },
+    {
+      "path": "src/sema/check/mapped.rs",
+      "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+      "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+      "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+      "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+      "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+      "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+      "patch_sha256": "c12f7557725b8a2cbbe38824253e15b65cf0c5868be77ff01bbb0f6d91d6fc0e"
     }
   ],
   "source_additions": {
@@ -3152,7 +3194,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-nil-compatibility.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "0d3eaad0f64054c71e5aacf46b412644ffe4a139ee6697d0a7e8cec7925856f8",
+      "extracted_sha256": "93d0f008de6817a977b08999561b0bc77e4100d41e7f6120262a8474dd296b1a",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -3878,7 +3920,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "20dd2fe2a75b6a8ca027e968bdb7b1be858296c244ba0ab2a78548efcb2e4238"
+      "extracted_sha256": "f03abf52f7993a350d07ddd9d42bf3a432c071b14af3ccaf2a0f92d0034da66c"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3893,7 +3935,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "a797c87055821a7c486f3ce1a1e88e69ac1d5b5047a28da6790cbd1daff1676c"
+      "extracted_sha256": "727c060b17b5b1138a962424fb825b131d39886667cd4d9f138b9579187013cd"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -4103,12 +4145,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "c320471ebddd47b48172c6ca19b8bb386a5283f0719831154d18f5225f62ce80"
+      "extracted_sha256": "8709f58e1f700c84a153847ae909044f549cd58aa897044cd628262866ceb8e1"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "84debf6f8af310e34cf52465b534ca6581aa840d3a237b5b584369d99917abc4"
+      "extracted_sha256": "cb7f17c5ea6b24591d31823736e8658b53834f19c92b2d511cacdcd8ba834be1"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -4133,12 +4175,12 @@
     "src/sema/check/mapped.rs": {
       "upstream": "src/sema/check/mapped.rs",
       "sha256": "4dd9deabe9cc5c9e6fd585457addae05eab3311270100ef682f9bbfece820361",
-      "extracted_sha256": "bf45f17c2bd87911395fd845a9d20b7c88b99cabb13a9dd95d963796529199f2"
+      "extracted_sha256": "c5d631a9202b6b995ae46c3cb130ab21f0ccbb1cd465e2e776d16d08482ecf2d"
     },
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "7c607432435572ce0ffbbc7188ce583e14455dea1e5a65b7b08243350094c19e"
+      "extracted_sha256": "344f41a2b87066eb669831da1a2cbab2b91399d0adf8ced67159ad1f9da53447"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

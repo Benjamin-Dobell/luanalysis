@@ -844,6 +844,19 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/native_named.rs",
     "src/sema/check/shape.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-variadic-packs.patch",
+    "reason": "Let a host's varargs be a sequence, `...: T...`: a type parameter's whole sequence facet or a Lua tuple's elements; infer a sequence from a callback's parameter lists as contravariant candidates, from each of an overloaded callback's, chosen as TypeScript chooses an inference; map an `infer P...` sequence in a conditional type; expand a final result that is a sequence; spread a sequence parameter's default or written type argument; and report an overloaded call's arity from its instantiated overloads.",
+} for path in [
+    "src/sema/check/call.rs",
+    "src/sema/check/decl.rs",
+    "src/sema/check/infer.rs",
+    "src/sema/check/instantiate.rs",
+    "src/sema/check/mapped.rs",
+    "src/sema/check/mod.rs",
+    "src/sema/check/native_packs.rs",
+])
 
 
 def git(source, *args):

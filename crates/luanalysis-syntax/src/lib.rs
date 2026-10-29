@@ -569,6 +569,21 @@ pub struct VarargAnnotation {
     pub span: Span,
     /// Present for function-type `...: T`, absent for `@vararg` / `vararg T`.
     pub ellipsis_span: Option<Span>,
+    /// `...: T...` and `---@param ... T...` (EmmyLua Analyzer's variadic generics, TypeScript's
+    /// `...args: T`): the varargs are the sequence `T`, a pack type parameter or a tuple, rather
+    /// than each a `T`.
+    pub spread: Option<Span>,
+}
+
+impl VarargAnnotation {
+    /// Whether these varargs are the sequence `name`: `...: T...` or `...: infer T...`.
+    pub fn spreads(&self, name: &str) -> bool {
+        self.spread.is_some() && match &self.ty.kind {
+            TypeExprKind::Named(spread) => spread == name,
+            TypeExprKind::Infer { name: spread, .. } => spread.text == name,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -738,6 +753,21 @@ impl TypeExpr {
             | TypeExprKind::TypePredicate { ty: None, .. } | TypeExprKind::Infer { constraint: None, .. } | TypeExprKind::TypeQuery(_)
             | TypeExprKind::Error => Vec::new(),
         }
+    }
+
+    /// Whether a function type in this type spreads `name` as its varargs, `fun(...: T...)` or
+    /// `fun(...: infer T...)`: whether `name` is a sequence of values there.
+    pub fn spreads(&self, name: &str) -> bool {
+        let mut pending = vec![self];
+        while let Some(ty) = pending.pop() {
+            if let TypeExprKind::Function(function) = &ty.kind
+                && function.vararg.as_ref().is_some_and(|vararg| vararg.spreads(name))
+            {
+                return true;
+            }
+            pending.extend(ty.children());
+        }
+        false
     }
 
     /// The `infer P` declarations of the conditional type whose extends type this is, in source

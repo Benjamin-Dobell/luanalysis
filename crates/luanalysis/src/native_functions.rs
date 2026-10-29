@@ -795,8 +795,8 @@ impl NativeRegistry {
             .map_or_else(luanalysis_engine::NativeCheckMode::empty, |context| {
                 context.mode
             });
-        let ty = match annotation {
-            None if self.source_role() == luanalysis_project::SourceRole::Declaration => Type::Unknown,
+        let pack = match annotation {
+            None if self.source_role() == luanalysis_project::SourceRole::Declaration => ValuePack::variadic(Type::Unknown),
             None => {
                 checker.implicit_parameter_any(
                     "TS7019",
@@ -804,14 +804,14 @@ impl NativeRegistry {
                     "...",
                     "Rest parameter '...' implicitly has an 'any[]' type.",
                 );
-                Type::Any
+                ValuePack::variadic(Type::Any)
             }
-            Some(annotation) => checker.annotation(&annotation.ty),
+            Some(annotation) => checker.rest_annotation(annotation),
         };
         if super::native_expressions::publishes(checker.check_mode) {
             self.merge_report(checker.report);
         }
-        Some(ValuePack::variadic(ty))
+        Some(pack)
     }
 
     pub(super) fn checker_for_expression<'a>(
@@ -3295,6 +3295,10 @@ impl NativeTypeProvider for NativeRegistry {
 
     fn type_parameter_is_result_pack(&self, key: NativeTypeParameterKey) -> bool {
         self.source_type_parameter_is_result_pack(key)
+    }
+
+    fn type_parameter_is_sequence(&self, key: NativeTypeParameterKey) -> bool {
+        self.source_type_parameter_is_spread(key)
     }
 
     fn type_parameter_name(&self, key: NativeTypeParameterKey) -> String {

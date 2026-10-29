@@ -1710,14 +1710,18 @@ impl<'p, 's> Checker<'p, 's> {
                     // The `infer` positions are found in the `extends` type with everything else
                     // instantiated.
                     let target = self.instantiate(extends_declared, mapper);
-                    let inferred = self.infer_from_types(&params, check_ty, target, mapper);
+                    let (inferred, packs) = self.infer_from_types_with_packs(&params, check_ty, target, mapper);
                     let mapping = self.types().mapping(mapper);
-                    let mut pairs = Vec::with_capacity(mapping.len() + params.len());
+                    let mut pairs = Vec::with_capacity(mapping.len() + params.len() + packs.len());
                     pairs.extend_from_slice(mapping);
                     // `combineTypeMappers(context.mapper, mapper)`: an inferred type is
                     // instantiated with `mapper`.
                     for (&param, inferred) in params.iter().zip(inferred) {
                         pairs.push((param, self.instantiate(inferred, mapper)));
+                    }
+                    // `infer P...` infers a whole sequence for P's sequence facet.
+                    for (facet, pack) in packs {
+                        pairs.push((facet, self.instantiate(pack, mapper)));
                     }
                     combined = self.types().mapper(pairs);
                 } else if params

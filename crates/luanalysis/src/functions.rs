@@ -306,7 +306,7 @@ impl Checker<'_> {
         let rest = function
             .vararg
             .as_ref()
-            .map(|vararg| ValuePack::variadic(self.annotation(&vararg.ty)))
+            .map(|vararg| self.rest_annotation(vararg))
             .or_else(|| function.parameters_span.is_none().then(|| ValuePack::variadic(Type::Any)));
         self.engine.pack_function(&PackFunctionType {
             params,
@@ -314,6 +314,12 @@ impl Checker<'_> {
             type_parameters: Vec::new(),
             returns,
         })
+    }
+
+    /// Varargs' written values: each a `T` (`...: T`), or the sequence `T` (`...: T...`).
+    pub(super) fn rest_annotation(&mut self, vararg: &luanalysis_syntax::VarargAnnotation) -> ValuePack {
+        let ty = self.annotation(&vararg.ty);
+        if vararg.spread.is_some() { self.engine.spread_pack(&ty) } else { ValuePack::variadic(ty) }
     }
 
     fn function_signature(&mut self, function: &Function) -> FunctionType {

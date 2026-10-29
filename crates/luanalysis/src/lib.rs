@@ -772,6 +772,7 @@ impl Checker<'_> {
         self.annotation_depth = depth + 1;
         let limits = self.engine.unplaced_limits();
         let resolved = self.annotation_node(ty);
+        let resolved = self.sequence_annotation(ty, resolved);
         let resolved = self.conditional_flow_type(ty, resolved);
         self.report_unplaced_limit(limits, ty.span);
         self.annotation_depth = depth;
@@ -1824,6 +1825,8 @@ fn describe_native_function_parts(
             )
         })
         .collect();
+    // Varargs that are an empty sequence, `bind()`'s, take no values: `fun()`.
+    let rest = rest.filter(|rest| !matches!(engine.inspect_pack(rest).as_deref(), Some([row]) if row.fixed.is_empty() && row.tail.is_none()));
     if let Some(rest) = rest {
         let text = match engine.inspect_pack(&rest).as_deref() {
             Some([row]) if row.fixed.is_empty() && row.tail.is_some() => {
@@ -1835,6 +1838,13 @@ fn describe_native_function_parts(
                     TypePrecedence::Union,
                 )
             }
+            // Varargs that are a sequence still to be inferred, as written: `...: T...`.
+            None => match engine.inspect_pack_view(&rest) {
+                luanalysis_engine::PackInspection::Symbolic(ty) => {
+                    format!("{}...", describe_native_at_precedence(&ty, engine, stack, diagnostic, TypePrecedence::Union))
+                }
+                _ => describe_native_pack(&rest, engine, stack, diagnostic),
+            },
             _ => describe_native_pack(&rest, engine, stack, diagnostic),
         };
         parameters.push(format!("...: {text}"));

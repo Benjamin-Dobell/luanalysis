@@ -784,6 +784,8 @@ pub trait NativeTypeProvider {
         false
     }
     fn type_parameter_is_result_pack(&self, _: NativeTypeParameterKey) -> bool { false }
+    /// Whether varargs spread the parameter (`...: T...`), so it is a sequence.
+    fn type_parameter_is_sequence(&self, _: NativeTypeParameterKey) -> bool { false }
     fn type_parameter_name(&self, _: NativeTypeParameterKey) -> String {
         String::new()
     }
@@ -1134,6 +1136,11 @@ pub trait TypeQueries {
     fn table_value_context(&mut self, table: &Type, key: &TableKey) -> Option<Type>;
     fn array_type(&mut self, element: &Type) -> Type;
     fn retain_pack(&mut self, pack: &ValuePack) -> ValuePack;
+    /// The sequence that varargs written `...: T...` are: a type parameter's whole sequence, or a
+    /// tuple's elements.
+    fn spread_pack(&mut self, ty: &Type) -> ValuePack;
+    /// A type parameter's whole sequence, as a type: what `T` is where `...: T...` declares it.
+    fn sequence_type(&mut self, parameter: &Type) -> Type;
     fn inspect_pack(&mut self, pack: &ValuePack) -> Option<Vec<PackAlternative>>;
     /// Display-only classification retains whole top/symbolic carriers when
     /// ordinary row inspection is unavailable. Semantic operations use the pack.
@@ -1823,6 +1830,12 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn array_type(&mut self, element: &Type) -> Type {
         self.array_type_native(element)
+    }
+    fn spread_pack(&mut self, ty: &Type) -> ValuePack {
+        self.spread_pack_native(ty)
+    }
+    fn sequence_type(&mut self, parameter: &Type) -> Type {
+        self.sequence_type_native(parameter)
     }
     fn retain_pack(&mut self, pack: &ValuePack) -> ValuePack {
         self.retain_pack_native(pack)
@@ -3399,6 +3412,9 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     fn contains_type_parameter(&self, key: NativeTypeParamId) -> bool {
         self.provider
             .contains_type_parameter(source_parameter_key(key))
+    }
+    fn type_parameter_is_sequence(&self, key: NativeTypeParamId) -> bool {
+        self.provider.type_parameter_is_sequence(source_parameter_key(key))
     }
     fn type_parameter_is_result_pack(&self, key: NativeTypeParamId) -> bool {
         self.provider.type_parameter_is_result_pack(source_parameter_key(key))

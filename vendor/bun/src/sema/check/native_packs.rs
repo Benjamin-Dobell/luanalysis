@@ -243,6 +243,44 @@ impl<'p, 's> Checker<'p, 's> {
         NativeResultPack { ty: self.union(&rows) }
     }
 
+    /// The sequence that varargs written `...: T...` are: a type parameter's whole sequence, as a
+    /// result list's final type parameter is, or a tuple's elements (TypeScript's `...args: T`).
+    pub fn native_spread_pack(&mut self, ty: TypeId) -> NativeResultPack {
+        if matches!(self.data(ty), TypeData::NativeTypeParam { .. }) {
+            return NativeResultPack { ty: self.intern(TypeData::NativePackParameter(ty)) };
+        }
+        let parts = self.parts(ty).to_vec();
+        let rows: Option<Vec<_>> = parts.iter().map(|&part| self.native_tuple_rows(part)).collect();
+        match rows {
+            Some(rows) => self.native_result_pack(&rows.concat()),
+            None => NativeResultPack { ty },
+        }
+    }
+
+    /// A Lua tuple, `[A, B?]`, as result rows: a table whose only members are the fields `1..n`,
+    /// of which only the last may be optional. An optional element may be absent, so each row
+    /// without it is one too, as a result list's `T?` is: the rows hold values, never nil for it.
+    fn native_tuple_rows(&mut self, ty: TypeId) -> Option<Vec<NativePackAlternative>> {
+        let table = self.native_object_schema_resolved(ty).unwrap_or(ty);
+        let TypeData::NativeTable(data) = self.data(table) else { return None };
+        if data.is_array || !data.indexers.is_empty() || data.fields.is_empty() { return None }
+        let written: Vec<_> = data.fields.iter().map(|field| (field.key, field.value, field.optional)).collect();
+        let mut fields: Vec<(i64, NativePackSlot)> = Vec::with_capacity(written.len());
+        for (key, value, optional) in written {
+            let super::native_tables::NativeTableKey::Integer(index) = key else { return None };
+            // An optional element's value is no nil: it is absent instead.
+            let ty = if optional { self.remove_missing_or_undefined_type(value) } else { value };
+            fields.push((index, NativePackSlot { ty, optional }));
+        }
+        fields.sort_by_key(|(index, _)| *index);
+        let optional: Vec<_> = fields.iter().map(|(_, slot)| slot.optional).collect();
+        if fields.iter().enumerate().any(|(position, (index, _))| *index != position as i64 + 1) { return None }
+        let fixed: Vec<_> = fields.into_iter().map(|(_, slot)| NativePackSlot { optional: false, ..slot }).collect();
+        let required = optional.iter().position(|&optional| optional).unwrap_or(fixed.len());
+        if optional[required..].iter().any(|&optional| !optional) { return None }
+        Some((required..=fixed.len()).map(|count| NativePackAlternative { fixed: fixed[..count].to_vec(), tail: None }).collect())
+    }
+
     pub fn native_pack_type(&self, pack: NativeResultPack) -> TypeId {
         pack.ty
     }
@@ -584,12 +622,15 @@ impl<'p, 's> Checker<'p, 's> {
             } else if row.tail.is_none()
                 && let Some(last) = row.fixed.last()
                 && !last.optional
-                && self.native_type_parameter_is_result_pack(last.ty)
+                && (self.native_type_parameter_is_result_pack(last.ty) || matches!(self.data(last.ty), TypeData::NativePackParameter(_)))
             {
-                let parameter = row.fixed.pop().unwrap().ty;
+                // A final result that is a whole sequence, a result pack parameter or its
+                // sequence, is each of its values.
+                let last = row.fixed.pop().unwrap().ty;
                 let prefix: Vec<_> = row.fixed.iter().map(|slot| slot.ty).collect();
-                let tail = NativeResultPack { ty: self.intern(TypeData::NativePackParameter(parameter)) };
-                expanded.push(self.native_concat_pack(&prefix, tail));
+                let tail = if matches!(self.data(last), TypeData::NativePackParameter(_)) { last }
+                    else { self.intern(TypeData::NativePackParameter(last)) };
+                expanded.push(self.native_concat_pack(&prefix, NativeResultPack { ty: tail }));
             } else {
                 expanded.push(self.native_result_pack(&[row]));
             }

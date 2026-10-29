@@ -870,8 +870,12 @@ impl<'p, 's> Checker<'p, 's> {
                 let params = self.sig_params(failed);
                 if !self.has_correct_arity(&state, &params) {
                     let (min, max) = if state.candidates.len() > 1 {
-                        // `getArgumentArityError`: the range the overloads admit together.
-                        let candidates = state.candidates.clone();
+                        // `getArgumentArityError`: the range the overloads admit together. Once
+                        // each was instantiated, as their inferred varargs sequences are, they
+                        // admit what they were instantiated with.
+                        let candidates = if state.candidates_for_argument_error.len() == state.candidates.len() {
+                            state.candidates_for_argument_error.clone()
+                        } else { state.candidates.clone() };
                         let (mut min, mut max) = (usize::MAX, Some(0));
                         for candidate in candidates {
                             let params = self.sig_params(candidate);

@@ -399,10 +399,12 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                             } else {
                                 parser.parameter_type().0
                             };
+                            let spread = parser.take("...");
                             group.vararg = Some(Box::new(VarargAnnotation {
                                 ty,
                                 span: annotation_span,
                                 ellipsis_span: None,
+                                spread,
                             }));
                         } else if let Some(name) = parser.name() {
                             subject = Some(name.text.clone());
@@ -421,6 +423,7 @@ pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (P
                             ty: parser.parameter_type().0,
                             span: annotation_span,
                             ellipsis_span: None,
+                            spread: None,
                         }));
                     }
                     "return" => {
@@ -1066,7 +1069,7 @@ impl TypeParser {
             (Some(operator), _) if operator.unary() => (Vec::new(), None),
             (_, Some(operand)) => (vec![parameter(operand)], None),
             // `---@operator call: R` is called with any arguments.
-            (None, None) if name.text == "call" => (Vec::new(), Some(Box::new(VarargAnnotation { ty: any(name.span), span: name.span, ellipsis_span: None }))),
+            (None, None) if name.text == "call" => (Vec::new(), Some(Box::new(VarargAnnotation { ty: any(name.span), span: name.span, ellipsis_span: None, spread: None }))),
             (_, None) => (vec![parameter(any(name.span))], None),
         };
         let signature = Box::new(FunctionType {
@@ -2216,6 +2219,27 @@ impl TypeParser {
         }
     }
 
+    /// A function type's varargs, at `...` or `vararg`: `...: T`, `...: T...` or LuaLS's untyped
+    /// `...`. Out of line: the recursive type parsers keep small frames.
+    #[inline(never)]
+    fn function_type_vararg(&mut self, ellipsis: bool, param_start: Span) -> Box<VarargAnnotation> {
+        self.pos += 1;
+        // LuaLS also writes an untyped `...`, which is `any`.
+        let untyped = ellipsis && !self.symbol(":");
+        if ellipsis && !untyped {
+            self.expect(":");
+        }
+        let ty = self.vararg_type(untyped, param_start);
+        let spread = if untyped { None } else { self.take("...") };
+        let span = param_start.join(spread.unwrap_or(ty.span));
+        Box::new(VarargAnnotation {
+            ty,
+            span,
+            ellipsis_span: ellipsis.then_some(param_start),
+            spread,
+        })
+    }
+
     fn function_type_tail(&mut self, start: Span) -> FunctionType {
         let mut params = Vec::new();
         let mut vararg = None;
@@ -2229,19 +2253,7 @@ impl TypeParser {
                     && !self.symbol_at(self.pos + 1, ":")
                     && !self.symbol_at(self.pos + 1, "?");
                 if ellipsis || word {
-                    self.pos += 1;
-                    // LuaLS also writes an untyped `...`, which is `any`.
-                    let untyped = ellipsis && !self.symbol(":");
-                    if ellipsis && !untyped {
-                        self.expect(":");
-                    }
-                    let ty = self.vararg_type(untyped, param_start);
-                    let span = param_start.join(ty.span);
-                    vararg = Some(Box::new(VarargAnnotation {
-                        ty,
-                        span,
-                        ellipsis_span: ellipsis.then_some(param_start),
-                    }));
+                    vararg = Some(self.function_type_vararg(ellipsis, param_start));
                     if self.take(",").is_some() {
                         self.error("variadic function type parameter must be last".to_owned());
                         self.recover_function_params();

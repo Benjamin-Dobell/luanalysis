@@ -62,7 +62,7 @@ fn excerpt<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 fn corrected_original_xpcall_names_its_real_handler_and_checks_the_original_argument() {
     let original = excerpt(
         GLOBAL,
-        "---@overload fun(f: (fun: void), msgh:",
+        "---@overload fun<A>(f: fun(...: A...): void, msgh:",
         "function xpcall(f, msgh, ...) end",
     );
     let fixture = Fixture::new(

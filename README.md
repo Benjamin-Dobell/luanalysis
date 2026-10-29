@@ -382,7 +382,8 @@ absent property as `nil`, so a property whose type admits `nil` need not be ther
 goes through a mapped type, as TypeScript's does: a function taking `Partial<T>` infers `T`.
 
 TypeScript's utility types are declared with every version of Lua: `Partial`, `Required`,
-`Readonly`, `Pick`, `Omit`, `Record`, `Exclude`, `Extract`, `NonNullable` and `ReturnType`. A
+`Readonly`, `Pick`, `Omit`, `Record`, `Exclude`, `Extract`, `NonNullable`, `ReturnType` and
+`Parameters`. A
 project's own declaration of one of those names is the type of that name. `NoInfer<T>` is `T`
 where inference does not look for a type parameter:
 
@@ -418,6 +419,30 @@ apart, as `select("#", ...)` does.
   assigns it.
 
 Elsewhere, `T?` is EmmyLua Analyzer syntax, which [Compatibility](#compatibility) describes.
+
+Varargs written `...: T...` are a sequence of values, `T`, rather than each a `T`: TypeScript's
+`...args: T` for a tuple `T`, in EmmyLua Analyzer's spelling. A call infers the sequence from its
+arguments, or from a callback's parameter list, and `T` named elsewhere is that sequence. A tuple
+spreads the same way, `fun(...: [number, string?]...)`.
+
+```lua
+---@generic A, R
+---@param f fun(...: A...): R
+---@param ... A...
+---@return R
+local function call(f, ...) return f(...) end
+
+call(string.rep, "a", 3)   -- string
+call(string.rep, "a", "b") -- error: '"b"' is not assignable to 'number'
+
+---@generic T
+---@param ... T...
+---@return fun(...: T...)
+local function bind(...) return function(...) end end
+local bound = bind(1, "a") -- fun(...: (number, string))
+```
+
+`pcall` and `xpcall` check the arguments they pass on this way.
 
 Overloads are declared with `@overload`. As in TypeScript, a function that has overloads is
 called through them.

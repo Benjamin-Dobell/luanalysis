@@ -220,11 +220,11 @@ function pairs(t) end
 --- boolean), which is true if the call succeeds without errors. In such case,
 --- `pcall` also returns all results from the call, after this first result. In
 --- case of any error, `pcall` returns **false** plus the error message.
----@overload fun(f:(fun: void),...:any):true | (false, any)
----@overload fun<T>(f:(fun: T),...:any):(true, T) | (false, any)
----@generic T
----@param f (fun: T) | (fun: void)
----@vararg any
+---@overload fun<A>(f: fun(...: A...): void, ...: A...): true | (false, any)
+---@overload fun<A, T>(f: fun(...: A...): T, ...: A...): (true, T) | (false, any)
+---@generic A, T
+---@param f (fun(...: A...): T) | (fun(...: A...): void)
+---@param ... A...
 ---@return true | (true, T) | (false, any)
 function pcall(f, ...) end
 

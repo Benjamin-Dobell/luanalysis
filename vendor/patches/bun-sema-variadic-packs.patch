@@ -1,0 +1,354 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index 6478070..7db98d7 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -870,8 +870,12 @@ impl<'p, 's> Checker<'p, 's> {
+                 let params = self.sig_params(failed);
+                 if !self.has_correct_arity(&state, &params) {
+                     let (min, max) = if state.candidates.len() > 1 {
+-                        // `getArgumentArityError`: the range the overloads admit together.
+-                        let candidates = state.candidates.clone();
++                        // `getArgumentArityError`: the range the overloads admit together. Once
++                        // each was instantiated, as their inferred varargs sequences are, they
++                        // admit what they were instantiated with.
++                        let candidates = if state.candidates_for_argument_error.len() == state.candidates.len() {
++                            state.candidates_for_argument_error.clone()
++                        } else { state.candidates.clone() };
+                         let (mut min, mut max) = (usize::MAX, Some(0));
+                         for candidate in candidates {
+                             let params = self.sig_params(candidate);
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+index 2063006..68ba3ea 100644
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -1777,6 +1777,12 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_type_parameter_provider_for(declaration).type_parameter_order(declaration)
+     }
+ 
++    pub(super) fn native_type_parameter_is_sequence(&self, parameter: TypeId) -> bool {
++        self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
++            self.native_type_parameter_provider_for(declaration).type_parameter_is_sequence(declaration)
++        })
++    }
++
+     pub(super) fn native_type_parameter_is_result_pack(&self, parameter: TypeId) -> bool {
+         self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
+             self.native_type_parameter_provider_for(declaration).type_parameter_is_result_pack(declaration)
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index e950968..73021f2 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -109,7 +109,20 @@ pub(super) struct Inference {
+     pub(super) distributions: Vec<SmallVec<[SmallVec<[(usize, TypeId); 2]>; 4]>>,
+     /// Whole physical return sequences inferred through the result facet of a
+     /// native parameter. Its ordinary candidate still denotes the first value.
+-    pub(super) native_result_packs: Vec<(TypeId, u32, Vec<TypeId>)>,
++    /// Sequences inferred from a parameter list (a callback's, for its spread
++    /// varargs) are contravariant candidates, kept apart as TypeScript keeps a
++    /// type parameter's.
++    pub(super) native_result_packs: Vec<NativeResultPackCandidates>,
++}
++
++/// A native parameter's whole-sequence candidates: from results and arguments (covariant) and
++/// from parameter lists (contravariant).
++#[derive(Clone, Debug)]
++pub(super) struct NativeResultPackCandidates {
++    pub facet: TypeId,
++    pub priority: u32,
++    pub covariant: Vec<TypeId>,
++    pub contravariant: Vec<TypeId>,
+ }
+ 
+ impl Inference {
+@@ -181,6 +194,27 @@ impl<'p, 's> Checker<'p, 's> {
+         })
+     }
+ 
++    /// `infer_from_types`, with the mapper pairs of the whole sequences that `infer P...`
++    /// positions infer, for the sequence facets of their parameters.
++    pub(super) fn infer_from_types_with_packs(
++        &mut self,
++        params: &[TypeId],
++        source: TypeId,
++        target: TypeId,
++        around: MapperId,
++    ) -> (Vec<TypeId>, Vec<(TypeId, TypeId)>) {
++        let mut inference = Inference::for_params(params, None);
++        inference.around = around;
++        self.infer(&mut inference, source, target, PRIORITY_NO_CONSTRAINTS | PRIORITY_ALWAYS_STRICT);
++        let types: Vec<_> = (0..params.len())
++            .map(|i| self.get_inferred_type_comparing(&inference, i, false, &mut |c, s, t| c.is_assignable(s, t)))
++            .collect();
++        let mut pairs: Vec<_> = params.iter().copied().zip(types.iter().copied()).collect();
++        let scalars = pairs.len();
++        self.native_result_pack_inference_pairs(&inference, &mut pairs);
++        (types, pairs.split_off(scalars))
++    }
++
+     pub(super) fn infer_from_types_comparing(
+         &mut self,
+         params: &[TypeId],
+@@ -277,14 +311,18 @@ impl<'p, 's> Checker<'p, 's> {
+                 // are not candidates, and a weaker contextual row must not
+                 // absorb a later argument's precise physical return sequence.
+                 if self.is_non_inferrable(first) || first == TypeId::NON_INFERRABLE_ANY { return; }
+-                if let Some((_, priority, candidates)) = n.native_result_packs.iter_mut().find(|(key, _, _)| *key == target) {
+-                    if n.priority < *priority {
+-                        *priority = n.priority;
+-                        candidates.clear();
++                let contra = n.contra && !n.bivariant;
++                if let Some(packs) = n.native_result_packs.iter_mut().find(|packs| packs.facet == target) {
++                    if n.priority < packs.priority {
++                        packs.priority = n.priority;
++                        packs.covariant.clear();
++                        packs.contravariant.clear();
+                     }
+-                    if n.priority == *priority && !candidates.contains(&source) { candidates.push(source); }
++                    let candidates = if contra { &mut packs.contravariant } else { &mut packs.covariant };
++                    if n.priority == packs.priority && !candidates.contains(&source) { candidates.push(source); }
+                 } else {
+-                    n.native_result_packs.push((target, n.priority, vec![source]));
++                    let (covariant, contravariant) = if contra { (Vec::new(), vec![source]) } else { (vec![source], Vec::new()) };
++                    n.native_result_packs.push(NativeResultPackCandidates { facet: target, priority: n.priority, covariant, contravariant });
+                 }
+                 self.infer_types(n, first, parameter);
+             }
+@@ -1847,12 +1885,37 @@ impl<'p, 's> Checker<'p, 's> {
+         // From the last signature to the first. If the source has fewer, its first signature is
+         // paired with the remaining target signatures.
+         let target_signatures = self.signatures(target, construct);
++        // A Lua callback's overloads are each a parameter list that varargs spread as a sequence
++        // (`fun(...: A...)`) may be: `string.rep` lists its most specific last. Each offers its
++        // own candidate, where TypeScript infers from the last alone.
++        if source_len > 1 && let [t] = target_signatures[..] && self.native_sig_rest_is_sequence(t) {
++            for &s in source_signatures.iter() {
++                self.infer_from_signature(n, s, t, return_only);
++            }
++            return;
++        }
+         for (i, &t) in target_signatures.iter().enumerate() {
+             let source_index = (source_len + i).saturating_sub(target_signatures.len());
+             self.infer_from_signature(n, source_signatures[source_index], t, return_only);
+         }
+     }
+ 
++    /// Whether a signature's varargs are a sequence parameter, `...: A...`.
++    fn native_sig_rest_is_sequence(&mut self, sig: SigId) -> bool {
++        let params = self.sig_params(sig);
++        let Some(rest) = params.last().filter(|parameter| parameter.rest) else { return false };
++        let ty = self.get_type_of_parameter(rest);
++        self.parts(ty).to_vec().into_iter().any(|part| match self.data(part) {
++            TypeData::NativePackParameter(_) => true,
++            TypeData::Tuple { flags, .. } => {
++                let flags = flags.to_vec();
++                self.type_arguments(part).to_vec().into_iter().zip(flags)
++                    .any(|(element, flag)| flag.contains(ElemFlags::VARIADIC) && matches!(self.data(element), TypeData::NativePackParameter(_)))
++            }
++            _ => false,
++        })
++    }
++
+     /// `instantiate_sig(sig, mapper)`, where `sig` is the only call (or construct) signature among
+     /// the members of `ty` and `mapper` is their mapper. `signatures` caches it for an object type
+     /// that is inspected as is.
+@@ -3193,21 +3256,62 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     fn native_result_pack_inference_pairs(&mut self, n: &Inference, pairs: &mut Vec<(TypeId, TypeId)>) {
+-        for (facet, _, candidates) in &n.native_result_packs {
++        for candidates in &n.native_result_packs {
++            let facet = &candidates.facet;
+             let TypeData::NativePackParameter(parameter) = *self.data(*facet) else { unreachable!("result facet") };
+             let Some(scalar) = pairs.iter().find(|pair| pair.0 == parameter).map(|pair| pair.1) else { continue };
+             let required_first = !self.native_pack_parameter_first_is_optional(parameter)
+                 || !self.native_pack_parameter_first_is_optional(scalar);
+             let mut missing_required_first = false;
+-            let packs: Vec<_> = candidates.iter().copied().filter(|&ty| {
+-                let pack = crate::types::NativeResultPack { ty };
+-                if required_first && !self.native_pack_has_required_first(pack) {
+-                    missing_required_first = true;
+-                    return false;
++            // A sequence agrees with the scalar inference of its first value: a covariant one's
++            // first value is a scalar, a contravariant one's first parameter takes one.
++            let mut compatible = |c: &mut Self, candidates: &[TypeId], contravariant: bool| -> Vec<TypeId> {
++                candidates.iter().copied().filter(|&ty| {
++                    let pack = crate::types::NativeResultPack { ty };
++                    if required_first && !c.native_pack_has_required_first(pack) {
++                        missing_required_first = true;
++                        return false;
++                    }
++                    let first = c.native_pack_slot(pack, 0);
++                    if contravariant { c.is_assignable(scalar, first) } else { c.is_assignable(first, scalar) }
++                }).collect()
++            };
++            let covariant = compatible(self, &candidates.covariant, false);
++            let contravariant = compatible(self, &candidates.contravariant, true);
++            // As TypeScript chooses a type parameter's inference: the sequences the arguments
++            // give, unless a callback's parameter list (a contravariant candidate) does not admit
++            // them, when its parameter list is the sequence, so the arguments are checked
++            // against it.
++            let packs = if contravariant.is_empty() { covariant } else {
++                let given = (!covariant.is_empty()).then(|| self.union(&covariant));
++                // An overloaded callback's parameter lists are alternatives: one admitting the
++                // arguments is enough.
++                match given {
++                    Some(given) if contravariant.iter().any(|&expected| self.is_assignable(given, expected)) => vec![given],
++                    _ if contravariant.len() == 1 => contravariant,
++                    // Of an overloaded callback's parameter lists, one that takes as many values
++                    // as the arguments, so a wrong one is reported as such; then TypeScript's
++                    // common subtype, ties to the last, the overload it infers from.
++                    given => {
++                        let fitting: Vec<_> = match given {
++                            Some(given) => {
++                                let (given_min, given_max) = self.native_pack_count_bounds(crate::types::NativeResultPack { ty: given });
++                                contravariant.iter().copied().filter(|&candidate| {
++                                    let (min, max) = self.native_pack_count_bounds(crate::types::NativeResultPack { ty: candidate });
++                                    min <= given_min && max.is_none_or(|max| given_max.is_some_and(|given_max| given_max <= max))
++                                }).collect()
++                            }
++                            None => Vec::new(),
++                        };
++                        let candidates = if fitting.is_empty() { &contravariant } else { &fitting };
++                        let mut best = *candidates.last().unwrap();
++                        for &candidate in candidates.iter().rev().skip(1) {
++                            if self.is_subtype(candidate, best) { best = candidate; }
++                        }
++                        vec![best]
++                    }
+                 }
+-                let first = self.native_pack_slot(pack, 0);
+-                self.is_assignable(first, scalar)
+-            }).collect();
++            };
+             // A contextual result row may have suggested a conflicting first
+             // value before an argument supplied the stronger scalar inference.
+             // Keep compatible physical rows without dropping the producer's
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+index 903dd32..8ea05d8 100644
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -706,6 +706,15 @@ impl<'p, 's> Checker<'p, 's> {
+                 if value == parameter { return ty; }
+                 if self.native_type_parameter_is_result_pack(value) {
+                     self.intern(TypeData::NativePackParameter(value))
++                } else if self.native_type_parameter_is_sequence(parameter) {
++                    // A sequence given as a type, by its default or written type arguments: a
++                    // tuple is its elements, and `any` or `unknown` any number of values, as
++                    // TypeScript's `T extends unknown[]` is `unknown[]`.
++                    if self.is_any(value) || value == TypeId::UNKNOWN {
++                        self.native_result_pack(&[super::native_packs::NativePackAlternative { fixed: Vec::new(), tail: Some(value) }]).ty
++                    } else {
++                        self.native_spread_pack(value).ty
++                    }
+                 } else {
+                     let pack = self.native_scalar_pack(value);
+                     let pack = self.native_declared_result_pack(pack);
+diff --git a/src/sema/check/mapped.rs b/src/sema/check/mapped.rs
+index 24f91da..106e65a 100644
+--- a/src/sema/check/mapped.rs
++++ b/src/sema/check/mapped.rs
+@@ -1710,15 +1710,19 @@ impl<'p, 's> Checker<'p, 's> {
+                     // The `infer` positions are found in the `extends` type with everything else
+                     // instantiated.
+                     let target = self.instantiate(extends_declared, mapper);
+-                    let inferred = self.infer_from_types(&params, check_ty, target, mapper);
++                    let (inferred, packs) = self.infer_from_types_with_packs(&params, check_ty, target, mapper);
+                     let mapping = self.types().mapping(mapper);
+-                    let mut pairs = Vec::with_capacity(mapping.len() + params.len());
++                    let mut pairs = Vec::with_capacity(mapping.len() + params.len() + packs.len());
+                     pairs.extend_from_slice(mapping);
+                     // `combineTypeMappers(context.mapper, mapper)`: an inferred type is
+                     // instantiated with `mapper`.
+                     for (&param, inferred) in params.iter().zip(inferred) {
+                         pairs.push((param, self.instantiate(inferred, mapper)));
+                     }
++                    // `infer P...` infers a whole sequence for P's sequence facet.
++                    for (facet, pack) in packs {
++                        pairs.push((facet, self.instantiate(pack, mapper)));
++                    }
+                     combined = self.types().mapper(pairs);
+                 } else if params
+                     .iter()
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 06564aa..69469fa 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -210,6 +210,9 @@ pub trait NativeFunctionProvider {
+     fn return_type_too_deep(&self, declaration: NativeFunctionId);
+     fn contains_type_parameter(&self, _: NativeTypeParamId) -> bool { false }
+     fn type_parameter_is_result_pack(&self, _: NativeTypeParamId) -> bool { false }
++    /// Whether varargs spread the parameter (`...: T...`): a sequence, which a tuple or `any`
++    /// given for it spreads into.
++    fn type_parameter_is_sequence(&self, _: NativeTypeParamId) -> bool { false }
+     fn type_parameter_name(&self, _: &Checker<'_, '_>, _: NativeTypeParamId) -> Atom { Atom::NONE }
+     fn has_type_parameter_constraint(&self, _: NativeTypeParamId) -> bool { false }
+     fn type_parameter_constraint(&self, _: &mut Checker<'_, '_>, _: NativeTypeParamId) -> Option<TypeId> { None }
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+index df001ab..0a36aff 100644
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -243,6 +243,44 @@ impl<'p, 's> Checker<'p, 's> {
+         NativeResultPack { ty: self.union(&rows) }
+     }
+ 
++    /// The sequence that varargs written `...: T...` are: a type parameter's whole sequence, as a
++    /// result list's final type parameter is, or a tuple's elements (TypeScript's `...args: T`).
++    pub fn native_spread_pack(&mut self, ty: TypeId) -> NativeResultPack {
++        if matches!(self.data(ty), TypeData::NativeTypeParam { .. }) {
++            return NativeResultPack { ty: self.intern(TypeData::NativePackParameter(ty)) };
++        }
++        let parts = self.parts(ty).to_vec();
++        let rows: Option<Vec<_>> = parts.iter().map(|&part| self.native_tuple_rows(part)).collect();
++        match rows {
++            Some(rows) => self.native_result_pack(&rows.concat()),
++            None => NativeResultPack { ty },
++        }
++    }
++
++    /// A Lua tuple, `[A, B?]`, as result rows: a table whose only members are the fields `1..n`,
++    /// of which only the last may be optional. An optional element may be absent, so each row
++    /// without it is one too, as a result list's `T?` is: the rows hold values, never nil for it.
++    fn native_tuple_rows(&mut self, ty: TypeId) -> Option<Vec<NativePackAlternative>> {
++        let table = self.native_object_schema_resolved(ty).unwrap_or(ty);
++        let TypeData::NativeTable(data) = self.data(table) else { return None };
++        if data.is_array || !data.indexers.is_empty() || data.fields.is_empty() { return None }
++        let written: Vec<_> = data.fields.iter().map(|field| (field.key, field.value, field.optional)).collect();
++        let mut fields: Vec<(i64, NativePackSlot)> = Vec::with_capacity(written.len());
++        for (key, value, optional) in written {
++            let super::native_tables::NativeTableKey::Integer(index) = key else { return None };
++            // An optional element's value is no nil: it is absent instead.
++            let ty = if optional { self.remove_missing_or_undefined_type(value) } else { value };
++            fields.push((index, NativePackSlot { ty, optional }));
++        }
++        fields.sort_by_key(|(index, _)| *index);
++        let optional: Vec<_> = fields.iter().map(|(_, slot)| slot.optional).collect();
++        if fields.iter().enumerate().any(|(position, (index, _))| *index != position as i64 + 1) { return None }
++        let fixed: Vec<_> = fields.into_iter().map(|(_, slot)| NativePackSlot { optional: false, ..slot }).collect();
++        let required = optional.iter().position(|&optional| optional).unwrap_or(fixed.len());
++        if optional[required..].iter().any(|&optional| !optional) { return None }
++        Some((required..=fixed.len()).map(|count| NativePackAlternative { fixed: fixed[..count].to_vec(), tail: None }).collect())
++    }
++
+     pub fn native_pack_type(&self, pack: NativeResultPack) -> TypeId {
+         pack.ty
+     }
+@@ -584,12 +622,15 @@ impl<'p, 's> Checker<'p, 's> {
+             } else if row.tail.is_none()
+                 && let Some(last) = row.fixed.last()
+                 && !last.optional
+-                && self.native_type_parameter_is_result_pack(last.ty)
++                && (self.native_type_parameter_is_result_pack(last.ty) || matches!(self.data(last.ty), TypeData::NativePackParameter(_)))
+             {
+-                let parameter = row.fixed.pop().unwrap().ty;
++                // A final result that is a whole sequence, a result pack parameter or its
++                // sequence, is each of its values.
++                let last = row.fixed.pop().unwrap().ty;
+                 let prefix: Vec<_> = row.fixed.iter().map(|slot| slot.ty).collect();
+-                let tail = NativeResultPack { ty: self.intern(TypeData::NativePackParameter(parameter)) };
+-                expanded.push(self.native_concat_pack(&prefix, tail));
++                let tail = if matches!(self.data(last), TypeData::NativePackParameter(_)) { last }
++                    else { self.intern(TypeData::NativePackParameter(last)) };
++                expanded.push(self.native_concat_pack(&prefix, NativeResultPack { ty: tail }));
+             } else {
+                 expanded.push(self.native_result_pack(&[row]));
+             }

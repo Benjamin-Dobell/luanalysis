@@ -471,6 +471,16 @@ impl SessionQueries<'_, '_, '_> {
             .instantiate_native_pack_in_capture(context, pack);
         self.handles.retain_pack(self.checker, mapped)
     }
+    pub(super) fn sequence_type_native(&mut self, parameter: &Type) -> Type {
+        let parameter = import_type(self.checker, self.handles, parameter);
+        let pack = self.checker.native_spread_pack(parameter);
+        export_type(self.checker, self.handles, self.checker.native_pack_type(pack))
+    }
+    pub(super) fn spread_pack_native(&mut self, ty: &Type) -> ValuePack {
+        let ty = import_type(self.checker, self.handles, ty);
+        let pack = self.checker.native_spread_pack(ty);
+        self.handles.retain_pack(self.checker, pack)
+    }
     pub(super) fn retain_pack_native(&mut self, pack: &ValuePack) -> ValuePack {
         let pack = import_pack(self.checker, self.handles, pack);
         self.handles.retain_pack(self.checker, pack)
