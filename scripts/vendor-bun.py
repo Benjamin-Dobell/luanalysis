@@ -826,6 +826,15 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/print.rs",
     "src/sema/types.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-native-exact-optionals.patch",
+    "reason": "Let an optional Lua parameter be absent without taking nil it does not declare: a frontend marks its absence with `missing`, which reads as nil, and the native argument checks strip it, checking an expansion against the rows of present values; a checker flag restores EmmyLua's reading, where absence is nil.",
+} for path in [
+    "src/sema/check/errors_call.rs",
+    "src/sema/check/mod.rs",
+    "src/sema/check/native_nil.rs",
+])
 
 
 def git(source, *args):

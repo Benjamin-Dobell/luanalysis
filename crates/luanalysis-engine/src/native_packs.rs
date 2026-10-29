@@ -312,7 +312,7 @@ impl SessionQueries<'_, '_, '_> {
             .map(|param| {
                 let mut ty = import_type(self.checker, self.handles, &param.ty);
                 if param.optional {
-                    ty = self.checker.optional(ty);
+                    ty = crate::optional_parameter(self.checker, ty);
                 }
                 SigParam {
                     name: self.checker.atoms().intern(param.name.as_bytes()),

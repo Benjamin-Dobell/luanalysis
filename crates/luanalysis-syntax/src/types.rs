@@ -76,7 +76,7 @@ pub(crate) enum DeclarationItem {
 }
 
 /// Parse only documentation tags. Ordinary prose remains a retained comment.
-pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagnostic>) {
+pub(crate) fn annotations(comment: &Comment, options: crate::ParseOptions) -> (ParsedDocumentation, Vec<Diagnostic>) {
     let mut result = ParsedDocumentation::default();
     let mut diagnostics = Vec::new();
     let text = &comment.text;
@@ -165,7 +165,8 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "enum"
                     | "as"
                     | "cast"
-            ) {
+            ) || (tag_name == "return_overload" && !options.emmylua)
+            {
                 diagnostics.push(Diagnostic {
                     origin: crate::DiagnosticOrigin::Annotation,
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
@@ -231,6 +232,9 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     comma_ends_type: 0,
                     function_parameter_comma_depth: None,
                     in_conditional_extends: false,
+                    emmylua: options.emmylua,
+                    decay_optionals: options.decay_optionals,
+                    optional_suffixes: Vec::new(),
                 };
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
@@ -284,7 +288,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                 // An alias without a type lists its members on the `---|` lines
                                 // that follow it (LuaLS).
                                 let target = if parser.eof() {
-                                    alias_continuation(&lines[index + 1..], base + line_offset + line.len(), annotation_span, &mut diagnostics)
+                                    alias_continuation(&lines[index + 1..], base + line_offset + line.len(), annotation_span, &mut diagnostics, options)
                                 } else {
                                     parser.union()
                                 };
@@ -379,7 +383,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                             let ty = if parser.eof() || parser.symbol("#") {
                                 TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span: ellipsis_span }
                             } else {
-                                parser.union()
+                                parser.parameter_type().0
                             };
                             group.vararg = Some(Box::new(VarargAnnotation {
                                 ty,
@@ -389,18 +393,18 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         } else if let Some(name) = parser.name() {
                             subject = Some(name.text.clone());
                             let optional = parser.take("?").is_some();
-                            let ty = parser.union();
+                            let (ty, absent) = parser.parameter_type();
                             group.params.push(ParamAnnotation {
                                 name,
                                 ty,
-                                optional,
+                                optional: optional || absent,
                                 span: annotation_span,
                             });
                         }
                     }
                     "vararg" => {
                         group.vararg = Some(Box::new(VarargAnnotation {
-                            ty: parser.union(),
+                            ty: parser.parameter_type().0,
                             span: annotation_span,
                             ellipsis_span: None,
                         }));
@@ -507,6 +511,9 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 }
                 diagnostics.extend(lexer_diagnostics.into_iter().filter(|diagnostic| description.is_none_or(|start| diagnostic.span.start < start)));
                 diagnostics.extend(parser.diagnostics);
+                if !options.emmylua {
+                    diagnostics.extend(parser.optional_suffixes.iter().map(|&span| optional_suffix_diagnostic(span)));
+                }
                 if let Some(DeclarationItem::Function { annotations, .. }) =
                     active_function.map(|index| &mut result.declarations[index])
                 {
@@ -790,6 +797,13 @@ struct TypeParser {
     function_parameter_comma_depth: Option<usize>,
     /// Directly in a conditional type's extends type, where `infer P extends C` constrains `P`.
     in_conditional_extends: bool,
+    /// EmmyLua Analyzer's `A - B`, `sync fun` and parameters' `T?` ([`crate::ParseOptions::emmylua`]).
+    emmylua: bool,
+    /// `T?` is `nil | T` everywhere ([`crate::ParseOptions::decay_optionals`]).
+    decay_optionals: bool,
+    /// The `?` of each `T?` that no position written `T?` has claimed: without EmmyLua Analyzer's
+    /// syntax, each is reported where its tag ends.
+    optional_suffixes: Vec<Span>,
 }
 
 struct ParsedReturnPack {
@@ -909,9 +923,12 @@ impl TypeParser {
             }
             TypeFieldKey::Named(member)
         };
-        // `---@field name? T` (LuaLS): the field may be nil.
+        // `---@field name? T` (LuaLS): the field may be nil. EmmyLua Analyzer writes it
+        // `---@field name T?`.
         let optional = self.take("?");
         let mut ty = self.union();
+        if self.emmylua { self.claim_optional(&ty); }
+        let optional = optional.or_else(|| self.absent_type(&mut ty));
         if let Some(question) = optional {
             // Its own span: the type's is the key of an array, table or record head it may be.
             let span = question.join(ty.span);
@@ -1258,7 +1275,7 @@ impl TypeParser {
                 token.span.end += base + body;
                 token
             }).collect();
-            let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: self.depth, comma_ends_type: 0, function_parameter_comma_depth: None, in_conditional_extends: false };
+            let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: self.depth, comma_ends_type: 0, function_parameter_comma_depth: None, in_conditional_extends: false, emmylua: self.emmylua, decay_optionals: self.decay_optionals, optional_suffixes: Vec::new() };
             let ty = if parser.eof() {
                 parser.error("a template literal type's `${…}` needs a type".to_owned());
                 TypeExpr { kind: TypeExprKind::Error, span: Span { start: base + at, end: base + end + 1 } }
@@ -1269,6 +1286,7 @@ impl TypeParser {
                 parser.error("unexpected text in a template literal type's `${…}`".to_owned());
             }
             self.diagnostics.extend(parser.diagnostics);
+            self.optional_suffixes.extend(parser.optional_suffixes);
             texts.push(std::mem::take(&mut literal));
             types.push(ty);
         }
@@ -1342,6 +1360,7 @@ impl TypeParser {
                 break;
             }
         }
+        self.optional_results(&mut types, &alternatives);
         let has_tail = alternatives.iter().any(|pack| pack.variadic.is_some());
         if alternatives.len() == 1 && !has_tail {
             return (types, None);
@@ -1353,6 +1372,34 @@ impl TypeParser {
             .join(alternatives.last().unwrap().span);
         (types, Some(Box::new(TypePacks { alternatives, span })))
     }
+    /// A result is written `T?`, having no name to write it on: `void | T`, a T or none, whereas
+    /// `nil | T` is a value. A required result cannot follow one, as TypeScript's required tuple
+    /// element cannot follow an optional one. A tail's values are each a T: one that is absent
+    /// only shortens it. Decayed, `T?` is `nil | T`, a value. Out of line, to keep the recursive
+    /// result parser's frame small.
+    #[inline(never)]
+    fn optional_results(&mut self, types: &mut [TypeExpr], alternatives: &[TypePack]) {
+        for pack in alternatives {
+            for ty in &types[pack.fixed.clone()] {
+                self.claim_optional(ty);
+            }
+            if let Some(tail) = &pack.variadic {
+                self.claim_optional(&types[tail.type_index]);
+                if !self.decay_optionals { without_suffix_nil(&mut types[tail.type_index]); }
+            }
+            if self.decay_optionals { continue }
+            let optional: Vec<_> = types[pack.fixed.clone()].iter_mut().map(optional_result).collect();
+            let required = optional.iter().rposition(Option::is_none).unwrap_or(0);
+            for &span in optional[..required].iter().flatten() {
+                self.diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
+                    span,
+                    message: "a required result cannot follow a `T?` result, which may be absent".to_owned(),
+                });
+            }
+        }
+    }
+
     #[inline(never)]
     fn predicate_return(&mut self, asserts: bool) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
         let asserts = asserts.then(|| {
@@ -1680,7 +1727,7 @@ impl TypeParser {
     /// (`number - the count`) subtracts nothing: a subtrahend other than `?` must end the type.
     fn subtracted(&mut self) -> TypeExpr {
         let mut ty = self.primary();
-        while self.symbol("-") {
+        while self.emmylua && self.symbol("-") {
             let (pos, diagnostics) = (self.pos, self.diagnostics.len());
             let operator = self.current().span;
             self.pos += 1;
@@ -1747,7 +1794,7 @@ impl TypeParser {
             }
             // LuaLS's `async fun(...)`, and EmmyLua Analyzer's `sync fun(...)`: either is an
             // ordinary function type.
-            TokenKind::Identifier(name) if (name == "async" || name == "sync")
+            TokenKind::Identifier(name) if (name == "async" || (name == "sync" && self.emmylua))
                 && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(next)) if next == "fun") =>
             {
                 self.pos += 1;
@@ -1902,7 +1949,8 @@ impl TypeParser {
         ty
     }
 
-    /// Array and index suffixes, then LuaLS's `T?`: T or nil. Out of line, as one call, to
+    /// Array and index suffixes, then LuaLS's `T?`: T or nil, whose nil has the `?`'s span (a
+    /// result's is a T or none instead: [`optional_result`]). Out of line, as one call, to
     /// keep the recursive type parsers' frames small.
     #[inline(never)]
     fn type_suffixes(&mut self, ty: TypeExpr) -> TypeExpr {
@@ -1913,6 +1961,7 @@ impl TypeParser {
                 kind: TypeExprKind::Union(vec![ty, TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: question }]),
                 span,
             };
+            self.optional_suffixes.push(question);
             ty = self.postfix_types(ty);
         }
         ty
@@ -2016,20 +2065,77 @@ impl TypeParser {
             return TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span: ellipsis };
         }
         self.comma_ends_type += 1;
-        let ty = self.union();
+        let (ty, _) = self.parameter_type();
         self.comma_ends_type -= 1;
         ty
+    }
+
+    /// A parameter's type, and whether it may be absent. EmmyLua Analyzer's `T?` there is read only
+    /// with its syntax, as Luanalysis's optional parameter is `name? T`. It is a value that may be
+    /// absent, as a `T?` result is: the parameter is optional, and a variadic parameter's values
+    /// are each a `T`. With optionals decayed it is `nil | T`.
+    fn parameter_type(&mut self) -> (TypeExpr, bool) {
+        let mut ty = self.union();
+        if self.emmylua { self.claim_optional(&ty); }
+        let absent = self.absent_type(&mut ty).is_some();
+        (ty, absent)
+    }
+
+    /// Claims the `T?`s that `ty` is, or that members of its union are, for a position that may
+    /// write them.
+    #[inline(never)]
+    fn claim_optional(&mut self, ty: &TypeExpr) {
+        let mut spans = Vec::new();
+        suffix_spans(ty, &mut spans);
+        if !spans.is_empty() {
+            self.optional_suffixes.retain(|span| !spans.contains(span));
+        }
+    }
+
+    /// The `T?` of a parameter, field or table element, which may be absent and is otherwise a
+    /// T: its `?`, and `ty` without its nil. Decayed, it is `nil | T`, which is no absence.
+    #[inline(never)]
+    fn absent_type(&mut self, ty: &mut TypeExpr) -> Option<Span> {
+        if self.decay_optionals { return None }
+        without_suffix_nil(ty)
+    }
+
+    /// A table field's or element's `T?`, claimed for an `element`, which has no name to write it
+    /// on, or in EmmyLua Analyzer's syntax: the `?` when it may be absent. A required element
+    /// cannot follow one that may be absent, each of the `optional_elements` before it. Out of
+    /// line, to keep the recursive table parsers' frames small.
+    #[inline(never)]
+    fn optional_field(&mut self, ty: &mut TypeExpr, element: bool, optional_elements: &mut Vec<Span>) -> Option<Span> {
+        if element || self.emmylua { self.claim_optional(ty); }
+        let optional = self.absent_type(ty);
+        match optional {
+            Some(span) if element => optional_elements.push(span),
+            None if element => {
+                for span in optional_elements.drain(..) {
+                    self.diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::Annotation,
+                        span,
+                        message: "a required element cannot follow a `T?` element, which may be absent".to_owned(),
+                    });
+                }
+            }
+            _ => {}
+        }
+        optional
     }
 
     #[inline(never)]
     fn tuple(&mut self) -> TypeExpr {
         let start = self.expect("[");
         let mut fields = Vec::new();
+        let mut optional_elements = Vec::new();
         while !self.eof() && !self.symbol("]") {
             self.comma_ends_type += 1;
-            let ty = self.union();
+            let mut ty = self.union();
             self.comma_ends_type -= 1;
-            fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty, readonly: None, optional: None });
+            // An element has no name to write `?` on: its `T?` may be absent.
+            let optional = self.optional_field(&mut ty, true, &mut optional_elements);
+            fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty, readonly: None, optional });
             if self.take(",").is_none() { break; }
         }
         let end = self.expect("]");
@@ -2129,12 +2235,13 @@ impl TypeParser {
                     }
                     break;
                 };
-                let optional = self.take("?").is_some();
+                let mut optional = self.take("?").is_some();
                 let ty = if self.take(":").is_some() {
                     self.comma_ends_type += 1;
                     let surrounding_parameter_depth = self.function_parameter_comma_depth;
                     self.function_parameter_comma_depth = Some(self.comma_ends_type);
-                    let ty = self.union();
+                    let (ty, absent) = self.parameter_type();
+                    optional |= absent;
                     self.function_parameter_comma_depth = surrounding_parameter_depth;
                     self.comma_ends_type -= 1;
                     Some(ty)
@@ -2208,6 +2315,7 @@ impl TypeParser {
         let start = self.expect("{");
         let mut fields = Vec::new();
         let mut sequence_index = 0;
+        let mut optional_elements = Vec::new();
         while !self.eof() && !self.symbol("}") {
             let field_start = self.current().span;
             let readonly = self.readonly_record_modifier();
@@ -2265,6 +2373,10 @@ impl TypeParser {
             self.comma_ends_type += 1;
             let mut ty = self.union();
             self.comma_ends_type -= 1;
+            // A positional element is written `T?`, as a tuple's is; a named or indexed field's
+            // `?` is on its key, except in EmmyLua Analyzer's syntax.
+            let element = matches!(key, TypeFieldKey::Sequence { .. });
+            optional = optional.or(self.optional_field(&mut ty, element, &mut optional_elements));
             if type_depth(&ty) >= 128 {
                 self.diagnostics.push(Diagnostic {
                     origin: crate::DiagnosticOrigin::Annotation,
@@ -2411,7 +2523,7 @@ fn split_owner(name: Name) -> (Option<Name>, Name) {
 
 /// The members of an alias written on the `---| type # description` lines after it, as one union.
 /// `offset` is where the first of `lines` starts in the source.
-fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostics: &mut Vec<Diagnostic>) -> TypeExpr {
+fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostics: &mut Vec<Diagnostic>, options: crate::ParseOptions) -> TypeExpr {
     let mut members = Vec::new();
     for line in lines {
         let stripped = line.trim_start_matches([' ', '\t', '\r']).trim_start_matches('-').trim_start_matches([' ', '\t']);
@@ -2428,9 +2540,12 @@ fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostic
             token.span.end += start;
             token
         }).collect();
-        let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0, function_parameter_comma_depth: None, in_conditional_extends: false };
+        let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0, function_parameter_comma_depth: None, in_conditional_extends: false, emmylua: options.emmylua, decay_optionals: options.decay_optionals, optional_suffixes: Vec::new() };
         members.push(parser.union());
         diagnostics.extend(parser.diagnostics);
+        if !options.emmylua {
+            diagnostics.extend(parser.optional_suffixes.iter().map(|&span| optional_suffix_diagnostic(span)));
+        }
         offset += line.len();
     }
     match members.len() {
@@ -2460,7 +2575,7 @@ mod predicate_documentation_tests {
             let source = format!("---@{tag} Widget is documented here\nlocal Widget = {{}}");
             let file = crate::parse(&source);
             assert!(file.diagnostics.is_empty(), "{tag}: {:#?}", file.diagnostics);
-            let (parsed, diagnostics) = annotations(&file.comments[0]);
+            let (parsed, diagnostics) = annotations(&file.comments[0], file.options);
             assert!(diagnostics.is_empty(), "{tag}: {diagnostics:#?}");
             assert_eq!(parsed.descriptions, vec![TagDescription {
                 tag: tag.to_owned(),
@@ -2484,7 +2599,7 @@ mod predicate_documentation_tests {
                 text,
                 kind: crate::CommentKind::Documentation,
             };
-            let (parsed, diagnostics) = annotations(&comment);
+            let (parsed, diagnostics) = annotations(&comment, crate::ParseOptions::default());
             assert!(diagnostics.is_empty(), "{tag}: {diagnostics:#?}");
             assert_eq!(parsed.descriptions, vec![TagDescription {
                 tag: tag.to_owned(),
@@ -2492,5 +2607,73 @@ mod predicate_documentation_tests {
                 text: "is documented here".to_owned(),
             }]);
         }
+    }
+}
+
+/// A result slot's `T?` (the nil [`TypeParser::type_suffixes`] gives the `?`'s own one-byte span)
+/// is `void | T`: a T, or no result, as a bare `return` or reaching the end of the function
+/// gives. It is not nil: `return nil` is no `T?`. The `?`'s span, when `ty` is one.
+fn optional_result(ty: &mut TypeExpr) -> Option<Span> {
+    let TypeExprKind::Union(members) = &mut ty.kind else { return None };
+    let mut optional = None;
+    for member in members {
+        if let Some(span) = suffix_nil(member) {
+            member.kind = TypeExprKind::Named("void".to_owned());
+            optional = Some(span);
+        } else if let Some(span) = optional_result(member) {
+            optional = Some(span);
+        }
+    }
+    optional
+}
+
+/// The `?`s of the `T?`s that `ty` is, or that members of its union are.
+fn suffix_spans(ty: &TypeExpr, spans: &mut Vec<Span>) {
+    let TypeExprKind::Union(members) = &ty.kind else { return };
+    for member in members {
+        match suffix_nil(member) {
+            Some(span) => spans.push(span),
+            None => suffix_spans(member, spans),
+        }
+    }
+}
+
+/// A `T?` where Luanalysis writes the `?` on a name, or writes `nil | T`.
+fn optional_suffix_diagnostic(span: Span) -> Diagnostic {
+    Diagnostic {
+        origin: crate::DiagnosticOrigin::Annotation,
+        span,
+        message: "`T?` here is EmmyLua Analyzer syntax (--emmylua-syntax): only a result or a tuple element is written `T?`; an optional parameter or field is `name? T`, and a type that admits nil is `nil | T`".to_owned(),
+    }
+}
+
+/// `ty` without `T?`'s nil, a value that may be absent: the `?`'s span, when it was one.
+fn without_suffix_nil(ty: &mut TypeExpr) -> Option<Span> {
+    let TypeExprKind::Union(members) = &mut ty.kind else { return None };
+    let mut optional = None;
+    members.retain(|member| match suffix_nil(member) {
+        Some(span) => {
+            optional = Some(span);
+            false
+        }
+        None => true,
+    });
+    for member in members.iter_mut() {
+        if let Some(span) = without_suffix_nil(member) {
+            optional = Some(span);
+        }
+    }
+    if members.len() == 1 {
+        let member = members.remove(0);
+        *ty = TypeExpr { span: ty.span, ..member };
+    }
+    optional
+}
+
+/// The span of `T?`'s nil, the `?` itself: a written `nil` is three bytes.
+fn suffix_nil(member: &TypeExpr) -> Option<Span> {
+    match &member.kind {
+        TypeExprKind::Named(name) if name == "nil" && member.span.end == member.span.start + 1 => Some(member.span),
+        _ => None,
     }
 }

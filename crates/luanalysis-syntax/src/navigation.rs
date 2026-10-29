@@ -34,7 +34,7 @@ pub fn type_names(file: &File, source: &str) -> Vec<TypeName> {
             Some(span) if source.get(span.end..comment.span.start).is_some_and(|gap| gap.trim().is_empty() && gap.matches('\n').count() <= 1) => span.join(comment.span),
             _ => comment.span,
         });
-        let (parsed, _) = crate::types::annotations(comment);
+        let (parsed, _) = crate::types::annotations(comment, file.options);
         let mut found = Vec::new();
         visit_documentation(&parsed, &mut |name, span, kind| if let Visited::Type(kind) = kind { found.push((name.to_owned(), span, kind)) });
         names.extend(found.into_iter().map(|(name, span, kind)| TypeName { name, span, kind, block: comment.span }));
@@ -121,7 +121,7 @@ pub fn annotation_types(file: &File) -> Vec<AnnotationDeclaration> {
     let mut found: Vec<AnnotationDeclaration> = Vec::new();
     let may_have = |text: &str| text.contains("extends") || text.contains(" in ");
     for comment in file.comments.iter().filter(|comment| comment.kind == CommentKind::Documentation && may_have(&comment.text)) {
-        let (parsed, _) = crate::types::annotations(comment);
+        let (parsed, _) = crate::types::annotations(comment, file.options);
         visit_documentation(&parsed, &mut |_, _, visited| {
             let Visited::Annotation(ty) = visited else { return };
             if found.iter().any(|known| known.span() == ty.span) { return }
@@ -153,7 +153,7 @@ pub fn annotation_types(file: &File) -> Vec<AnnotationDeclaration> {
 pub fn type_query_roots(file: &File) -> Vec<Name> {
     let mut roots = Vec::new();
     for comment in file.comments.iter().filter(|comment| comment.kind == CommentKind::Documentation && comment.text.contains("typeof")) {
-        let (parsed, _) = crate::types::annotations(comment);
+        let (parsed, _) = crate::types::annotations(comment, file.options);
         visit_documentation(&parsed, &mut |name, span, kind| if let Visited::Value = kind { roots.push(Name { text: name.to_owned(), span }) });
     }
     roots

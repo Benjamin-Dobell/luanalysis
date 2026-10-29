@@ -370,6 +370,24 @@ Function types describe parameters, optional parameters, variadic parameters and
 variadic results: `fun(name: string, greeting?: string, ...: any): boolean, string...`. A `fun`
 with only some of that written is partially typed, which suits callbacks and event handlers.
 
+An optional is a value that may be absent. It is not nil, which is a value: Lua tells them
+apart, as `select("#", ...)` does.
+
+- A parameter or field writes it on its name: `---@param name? T`, `fun(name?: T)`,
+  `---@field name? T`, `{ name?: T }`. A caller may leave an optional parameter out, but an
+  argument for it is a `T`, so `f(nil)` is an error unless `T` admits nil, as in Luanalysis for
+  IntelliJ. Within its function, the parameter may be nil.
+- A result or a tuple element has no name, so it is written `T?`. `---@return number?` is a
+  `number` or no result: a bare `return`, or reaching the end of the function, satisfies it,
+  and `return nil` does not. `---@return string?, boolean?` is
+  `void | string | (string, boolean)`, and `[string, number?]` may lack its second element. A
+  required result or element cannot follow an optional one.
+- `nil | T` is a value, which the function must return: passing on a `T?` result where
+  `nil | T` is declared is an error. Only a caller's local reads a missing result as nil, as Lua
+  assigns it.
+
+Elsewhere, `T?` is EmmyLua Analyzer syntax, which [Compatibility](#compatibility) describes.
+
 Overloads are declared with `@overload`. As in TypeScript, a function that has overloads is
 called through them.
 
@@ -697,6 +715,8 @@ files ignore unless a `.luarc.json` says otherwise.
 | `--watch` | Check again whenever sources or declarations change. |
 | `--no-implicit-any` | Require types for parameters and for locals whose type cannot be inferred. |
 | `--no-unsafe-any` | Report reading a member of, indexing or calling a value of type `any`, as Luanalysis for IntelliJ did with "unknown callable/indexable" off. `any` stays assignable either way. |
+| `--emmylua-syntax` | Read EmmyLua Analyzer's own annotation syntax (see [Compatibility](#compatibility)). |
+| `--dangerously-decay-optionals` | Read every optional as `nil \| T`, as EmmyLua Analyzer does, rather than as a value that may be absent. |
 | `--no-strict-nil` | Permit nil assignments for v1 compatibility; preserve runtime nil flow and physical result counts. |
 | `--format text\|json` | Report format. JSON reports include exact source ranges. |
 
@@ -790,6 +810,8 @@ with `settings` in `workspace/didChangeConfiguration`, either directly or under 
 | `noStdlib` | boolean | `false` | `--no-stdlib` | | Declare none of the standard library, for a host that declares its own. |
 | `noImplicitAny` | boolean | `false` | `--no-implicit-any` | | Require types for parameters and for locals whose type cannot be inferred. |
 | `noUnsafeAny` | boolean | `false` | `--no-unsafe-any` | | Report reading a member of, indexing or calling a value of type `any`. |
+| `emmyluaSyntax` | boolean | `false` | `--emmylua-syntax` | | Read EmmyLua Analyzer's own annotation syntax. |
+| `dangerouslyDecayOptionals` | boolean | `false` | `--dangerously-decay-optionals` | | Read every optional as `nil \| T`, as EmmyLua Analyzer does. |
 | `strictNil` | boolean | `true` | `--no-strict-nil` (`false`) | | `false` permits nil assignments, for v1 compatibility. |
 | `inlayHints.types` | boolean | `true` | | | Show the inferred types of locals declared without one. |
 | `inlayHints.parameterNames` | boolean | `true` | | | Show parameter names at literal arguments: `nil`, booleans, numbers and strings. |
@@ -929,11 +951,25 @@ over stdio; separately resolved item details are excluded.
 Luanalysis reads the annotations of Luanalysis for IntelliJ and EmmyLua, and the annotation
 syntax of lua-language-server, so existing annotated code can be checked as it is.
 
-It also reads EmmyLua Analyzer's additions: `A - B`, `A` without the members of `B`
-(`Exclude<A, B>`; `T - ?` is `T` without nil); `async` and `sync` function types; result rows
-written as `---@return_overload true, T` lines, which a call returns one of; `---@readonly`
-above a local, whose table's fields are then not assigned; and signature tags (`---@param`,
-`---@return`, `---@overload`) above a local whose value is no function, which declare its type.
+`---@readonly` above a local, as EmmyLua Analyzer writes it, makes its table's fields read-only.
+With `--emmylua-syntax` (the `emmyluaSyntax` setting), Luanalysis also reads EmmyLua Analyzer's
+other additions:
+
+- `A - B`, `A` without the members of `B` (`Exclude<A, B>`); `T - ?` is `T` without nil.
+- `sync fun(...)`, an ordinary function type, as `async fun(...)` always is.
+- `---@return_overload true, T` lines, result rows that a call returns one of.
+- Signature tags (`---@param`, `---@return`, `---@overload`) above a local whose value is no
+  function, which declare its type.
+- `T?` as the type of a parameter, field or local, or within another type, where Luanalysis
+  writes the `?` on a name or writes `nil | T`. Without the option it is reported. With it, a
+  parameter's or field's `T?` is its name's, optional, and any other is `nil | T`.
+
+EmmyLua Analyzer and lua-language-server read every optional as `nil | T`, conflating a value
+that may be absent with nil. `--dangerously-decay-optionals` (the `dangerouslyDecayOptionals`
+setting) reads them that way: a `T?` result is a value that may be nil, so `---@return string?,
+boolean` is `nil | string, boolean`; a `T?` parameter is a required `nil | T`; and an optional
+parameter takes nil. It is separate from `--emmylua-syntax`, which does not enable it, because
+it is incorrect.
 
 Some checks deliberately differ from Luanalysis for IntelliJ's. Stricter, as TypeScript's are:
 

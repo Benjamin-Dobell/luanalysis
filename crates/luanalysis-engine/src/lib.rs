@@ -1400,6 +1400,7 @@ pub trait TypeQueries {
 
 pub struct Engine {
     strict_nil: bool,
+    decay_optionals: bool,
 }
 
 impl Default for Engine {
@@ -1408,13 +1409,20 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new() -> Self {
-        Self { strict_nil: true }
+        Self { strict_nil: true, decay_optionals: false }
     }
 
     /// Luanalysis v1 compatibility: nil satisfies assignment contracts. Physical
     /// nil types, runtime presence, narrowing and arity remain independent facts.
     pub fn with_strict_nil(mut self, strict: bool) -> Self {
         self.strict_nil = strict;
+        self
+    }
+
+    /// EmmyLua Analyzer's reading: an optional parameter takes nil, as if absence were nil. By
+    /// default it may be absent, but an argument for it is a value of its own type.
+    pub fn with_decayed_optionals(mut self, decay: bool) -> Self {
+        self.decay_optionals = decay;
         self
     }
 
@@ -1428,6 +1436,7 @@ impl Engine {
             );
             checker.enable_native_arrays();
             checker.set_native_strict_nil(self.strict_nil);
+            checker.set_native_exact_optionals(!self.decay_optionals);
             work(&mut SessionQueries {
                 checker: &mut checker,
                 handles,
@@ -1457,6 +1466,7 @@ impl Engine {
             checker.set_native_project_provider(&adapter);
             checker.enable_native_arrays();
             checker.set_native_strict_nil(self.strict_nil);
+            checker.set_native_exact_optionals(!self.decay_optionals);
             work(
                 &provider,
                 &mut SessionQueries {
@@ -3530,7 +3540,7 @@ fn import_parameters(
         .map(|parameter| {
             let mut ty = import_type(checker, handles, &parameter.ty);
             if parameter.optional {
-                ty = checker.optional(ty);
+                ty = optional_parameter(checker, ty);
             }
             SigParam {
                 name: checker.atoms().intern(parameter.name.as_bytes()),
@@ -3542,6 +3552,16 @@ fn import_parameters(
             }
         })
         .collect()
+}
+
+/// An optional parameter's type: `ty` or absent, which `missing` marks so that an argument for
+/// it must be a `ty` (`set_native_exact_optionals`). It reads as nil, as Lua binds it.
+pub(crate) fn optional_parameter(checker: &mut Checker<'_, '_>, ty: TypeId) -> TypeId {
+    if checker.native_exact_optionals() {
+        checker.union(&[ty, TypeId::MISSING])
+    } else {
+        checker.optional(ty)
+    }
 }
 
 fn import_predicate(checker: &mut Checker<'_, '_>, handles: &TypeHandles, predicate: &TypePredicate) -> bun_sema::check::native_signatures::NativeTypePredicate {
@@ -3627,7 +3647,7 @@ fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) 
             for param in &function.params {
                 let mut ty = import_type(checker, handles, &param.ty);
                 if param.optional {
-                    ty = checker.optional(ty);
+                    ty = optional_parameter(checker, ty);
                 }
                 params.push(SigParam {
                     name: checker.atoms().intern(param.name.as_bytes()),
@@ -3803,10 +3823,14 @@ fn export_signature_with_literal_policy(
     FunctionType {
         params: params
             .into_iter()
-            .map(|param| Parameter {
-                name: String::from_utf8_lossy(checker.atoms().bytes(param.name)).into_owned(),
-                ty: export_type_with_literal_policy(checker, handles, param.ty, preserve_regular),
-                optional: param.optional,
+            .map(|param| {
+                // An optional parameter's absence is its `optional`; importing it marks it again.
+                let ty = if param.optional { checker.filter(param.ty, |_, member| member != TypeId::MISSING) } else { param.ty };
+                Parameter {
+                    name: String::from_utf8_lossy(checker.atoms().bytes(param.name)).into_owned(),
+                    ty: export_type_with_literal_policy(checker, handles, ty, preserve_regular),
+                    optional: param.optional,
+                }
             })
             .collect(),
         returns: Box::new(export_type_with_literal_policy(checker, handles, returns, preserve_regular)),
@@ -6045,12 +6069,14 @@ mod tests {
     }
 
     #[test]
-    fn native_call_optional_parameters_accept_omission_and_nil() {
+    fn native_call_optional_parameters_accept_omission_but_not_nil() {
         let engine = Engine::new();
         let callee = function(Type::Number, true, Type::String);
         assert!(engine.call(&callee, &[]).errors.is_empty());
-        assert!(engine.call(&callee, &[Type::Nil]).errors.is_empty());
+        assert!(matches!(engine.call(&callee, &[Type::Nil]).errors.as_slice(), [CallError::Argument { index: 0, .. }]));
         assert!(engine.call(&callee, &[Type::Number]).errors.is_empty());
+        // Decayed, as EmmyLua Analyzer reads it, absence is nil.
+        assert!(Engine::new().with_decayed_optionals(true).call(&callee, &[Type::Nil]).errors.is_empty());
         assert!(matches!(
             engine.call(&callee, &[Type::String]).errors.as_slice(),
             [CallError::Argument { index: 0, .. }]

@@ -150,19 +150,53 @@ impl<'a> AnnotationPack<'a> {
         ValuePack::Alternatives(
             self.alternatives
                 .iter()
-                .map(|alternative| PackAlternative {
-                    fixed: alternative
-                        .fixed
-                        .clone()
-                        .map(|index| PackSlot::required(types[index].clone()))
-                        .collect(),
-                    tail: alternative
-                        .variadic
-                        .map(|index| Box::new(types[index].clone())),
+                .flat_map(|alternative| {
+                    absent_results(
+                        alternative.fixed.clone().map(|index| types[index].clone()).collect(),
+                        alternative.variadic.map(|index| Box::new(types[index].clone())),
+                    )
                 })
                 .collect(),
         )
     }
+}
+
+/// A written result that admits void beside its values, as `T?` (`void | T`) does, may be
+/// absent: a row that ends in such results is also each shorter row without them. These are
+/// rows rather than optional slots, which admit nil, as `T?` does not. One that a required
+/// result follows cannot be absent, and is only its values.
+fn absent_results(types: Vec<Type>, tail: Option<Box<Type>>) -> Vec<PackAlternative> {
+    let mut fixed = Vec::with_capacity(types.len());
+    let mut required = 0;
+    for (index, ty) in types.into_iter().enumerate() {
+        match without_void(&ty) {
+            Some(values) => fixed.push(PackSlot::required(values)),
+            None => {
+                fixed.push(PackSlot::required(ty));
+                required = index + 1;
+            }
+        }
+    }
+    let mut rows: Vec<_> = (required..fixed.len())
+        .map(|count| PackAlternative { fixed: fixed[..count].to_vec(), tail: None })
+        .collect();
+    rows.push(PackAlternative { fixed, tail });
+    rows
+}
+
+/// `ty` without void, when it is a union of void and other types.
+fn without_void(ty: &Type) -> Option<Type> {
+    fn members(ty: &Type, values: &mut Vec<Type>, void: &mut bool) {
+        match ty {
+            Type::Union(types) => types.iter().for_each(|ty| members(ty, values, void)),
+            Type::Void => *void = true,
+            ty => values.push(ty.clone()),
+        }
+    }
+    let Type::Union(_) = ty else { return None };
+    let (mut values, mut void) = (Vec::new(), false);
+    members(ty, &mut values, &mut void);
+    (void && !values.is_empty()).then(|| if values.len() == 1 { values.remove(0) } else { Type::Union(values) })
 }
 
 #[derive(Clone, Debug)]

@@ -1469,7 +1469,7 @@ impl<P: NativeTypeProvider> ProviderAdapter<'_, P> {
             .map(|parameter| {
                 let mut ty = import_type(checker, self.handles, &parameter.ty);
                 if parameter.optional {
-                    ty = checker.optional(ty);
+                    ty = crate::optional_parameter(checker, ty);
                 }
                 SigParam {
                     name: checker.atoms().intern(parameter.name.as_bytes()),

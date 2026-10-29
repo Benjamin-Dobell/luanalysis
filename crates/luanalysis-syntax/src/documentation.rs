@@ -86,7 +86,7 @@ fn collect(file: &File, source: &str, first: usize, last: usize) -> Documentatio
     let mut description: Vec<String> = Vec::new();
     for comment in &file.comments[first..=last] {
         if !standalone(source, comment.span.start) { continue; }
-        let (parsed, _) = crate::types::annotations(comment);
+        let (parsed, _) = crate::types::annotations(comment, file.options);
         if parsed.deprecated.is_some() { documentation.deprecated = parsed.deprecated.clone(); }
         let prose = parsed.prose.join("\n");
         if !prose.trim().is_empty() { description.push(prose.trim().to_owned()); }

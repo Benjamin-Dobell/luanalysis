@@ -55,18 +55,21 @@ fn exact(source: &str, expected: &[(&str, &str)]) {
 }
 
 #[test]
-fn optional_parameter_nil_is_accepted_but_an_incompatible_number_is_rejected() {
+fn optional_parameter_may_be_absent_but_takes_no_nil_it_does_not_declare() {
+    // As v1's function_optional_parameters.lua expects: "Required: 'string' Found: 'nil | string'".
+    // Within its function the parameter may be nil, so it is no argument for itself.
     exact(
         r#"---@param value? string
 ---@return string
 local function optional(value) return optional(value) end
 ---@type string|nil
 local nullable
+optional()
 optional(nil)
 optional(nullable)
 optional(42)
 "#,
-        &[("TS2345", "42")],
+        &[("TS2345", "value"), ("TS2345", "nil"), ("TS2345", "nullable"), ("TS2345", "42")],
     );
 }
 #[test]

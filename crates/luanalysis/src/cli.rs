@@ -43,6 +43,8 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
     let mut overload_mode = crate::OverloadMode::default();
     let mut no_implicit_any = false;
     let mut no_unsafe_any = false;
+    let mut emmylua_syntax = false;
+    let mut decay_optionals = false;
     let mut strict_nil = true;
     let mut assume_unknown_standard_effects = true;
     let mut positional = false;
@@ -82,6 +84,14 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         }
         if !positional && arg == "--no-unsafe-any" {
             no_unsafe_any = true;
+            continue;
+        }
+        if !positional && arg == "--emmylua-syntax" {
+            emmylua_syntax = true;
+            continue;
+        }
+        if !positional && arg == "--dangerously-decay-optionals" {
+            decay_optionals = true;
             continue;
         }
         if !positional && arg == "--no-strict-nil" {
@@ -195,6 +205,8 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         overload_mode,
         no_implicit_any,
         no_unsafe_any,
+        emmylua_syntax,
+        decay_optionals,
         strict_nil,
         loader_policy,
         assume_unknown_standard_effects,
@@ -389,6 +401,8 @@ pub fn check_json(arguments: Vec<OsString>) -> String {
 pub fn check_once(arguments: &Arguments, workspace: &mut ProjectWorkspace) -> io::Result<CliReport> {
     let discovery = arguments.inputs.discover()?;
     let resolver = arguments.inputs.resolver(&discovery)?;
+    // Discovery parses what the check reads, as the check will read it.
+    workspace.set_parse_options(arguments.options.parse_options());
     let project = Project::load_plan(&resolver, discovery.plan.clone(), |source| workspace.static_require_requests(source));
     let result = workspace.check_project(project, arguments.options.clone());
     Ok(CliReport::from_project(&result, &discovery.display_paths, discovery.errors.clone(), arguments.dump))
@@ -428,7 +442,7 @@ fn expand(path: &Path, ignore: IgnoreRules, errors: &mut Vec<HostDiagnostic>) ->
 /// The command line's help text.
 pub fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--no-unsafe-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] [--path-strict] [--module-map <manifest.json>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively, skipping .vscode and what .gitignore files ignore.\nA directory's LuaLS .luarc.json (or .luarc.jsonc) supplies runtime.version, runtime.path, runtime.pathStrict, workspace.library, workspace.ignoreDir and workspace.useGitIgnore where options do not.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots; files named *.def.lua or *.def.ttslua are declarations wherever they are found.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nA module no root provides is the checked or library file whose path ends with a template's path for it, the shortest first; --path-strict leaves it unresolved.\n--module-map supplies a host's closed module namespace: each source's modules by their exact names (version 1 JSON; paths relative to the manifest). An unmapped module is unresolved, never found by package.path.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--no-unsafe-any] [--emmylua-syntax] [--dangerously-decay-optionals] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] [--path-strict] [--module-map <manifest.json>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively, skipping .vscode and what .gitignore files ignore.\nA directory's LuaLS .luarc.json (or .luarc.jsonc) supplies runtime.version, runtime.path, runtime.pathStrict, workspace.library, workspace.ignoreDir and workspace.useGitIgnore where options do not.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--emmylua-syntax reads EmmyLua Analyzer Rust's own annotations: A - B and T - ?, sync fun, @return_overload, T? outside results and tuple elements, and signature tags on a local whose value is no function. It does not decay optionals.\n--dangerously-decay-optionals reads every T? and name? as nil | T, as EmmyLua Analyzer does, rather than as a value that may be absent: a T? result may then return nil, and an optional parameter accept it.\n--library includes original declaration files independently of module search roots; files named *.def.lua or *.def.ttslua are declarations wherever they are found.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nA module no root provides is the checked or library file whose path ends with a template's path for it, the shortest first; --path-strict leaves it unresolved.\n--module-map supplies a host's closed module namespace: each source's modules by their exact names (version 1 JSON; paths relative to the manifest). An unmapped module is unresolved, never found by package.path.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."

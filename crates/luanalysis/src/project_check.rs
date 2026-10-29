@@ -31,6 +31,12 @@ pub struct ProjectCheckOptions {
     /// v1's strict mode and typescript-eslint's `no-unsafe-member-access` and `no-unsafe-call`
     /// report them. `any` remains assignable either way.
     pub no_unsafe_any: bool,
+    /// Opt-in reading of EmmyLua Analyzer Rust's own annotation syntax
+    /// ([`luanalysis_syntax::ParseOptions::emmylua`]).
+    pub emmylua_syntax: bool,
+    /// Opt-in reading of every optional as `nil | T`, as EmmyLua Analyzer does, rather than as a
+    /// value that may be absent ([`luanalysis_syntax::ParseOptions::decay_optionals`]).
+    pub decay_optionals: bool,
     /// False selects v1's permissive nil assignments; runtime nil remains represented.
     pub strict_nil: bool,
     /// Ordinary analysis preserves reached standard bindings across unknown
@@ -83,6 +89,13 @@ pub(crate) fn unwind_if_cancelled() {
         std::panic::resume_unwind(Box::new(Cancelled));
     }
 }
+impl ProjectCheckOptions {
+    /// How the project's annotations are read.
+    pub fn parse_options(&self) -> luanalysis_syntax::ParseOptions {
+        luanalysis_syntax::ParseOptions { emmylua: self.emmylua_syntax, decay_optionals: self.decay_optionals }
+    }
+}
+
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
         Self {
@@ -93,6 +106,8 @@ impl Default for ProjectCheckOptions {
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
             no_unsafe_any: false,
+            emmylua_syntax: false,
+            decay_optionals: false,
             strict_nil: true,
             assume_unknown_standard_effects: true,
             describe_types: true,
@@ -293,7 +308,7 @@ pub(crate) fn with_project_session<R: Send>(
     let prepared = prepare_program(&mut project, &options, workspace);
     let snapshot = &prepared.snapshot;
     let project = &project;
-    let (result, flows) = Engine::new().with_strict_nil(options.strict_nil).with_native_provider(
+    let (result, flows) = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(
         || {
             options.cancellation.enter();
             let mut registry = snapshot.worker_registry();
@@ -321,6 +336,7 @@ pub(crate) fn check_project_with_workspace(
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let started = Instant::now();
     options.cancellation.enter();
+    workspace.set_parse_options(options.parse_options());
     let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors, unparsed, mut version_diagnostics } =
         prepare_program(&mut project, &options, workspace);
     // As in Bun, the program is every file the load reached: explicit inputs and
@@ -374,7 +390,7 @@ pub(crate) fn check_project_with_workspace(
     }
     let checking_started = Instant::now();
     let (checked, execution) = if workers == 1 {
-        let (checked, flows) = Engine::new().with_strict_nil(options.strict_nil).with_native_provider(
+        let (checked, flows) = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(
             || make_registry(0),
             |registry, queries| {
                 let flows = registry.source_recipes();
@@ -393,7 +409,7 @@ pub(crate) fn check_project_with_workspace(
             .map(|batch| batch.iter().map(|file| source_costs[file]).sum())
             .collect();
         let steps = vec![(0..batches.len()).collect::<Vec<_>>()];
-        let run = Engine::new().with_strict_nil(options.strict_nil).with_native_task_plan_by_cost_report(
+        let run = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_task_plan_by_cost_report(
             NonZeroUsize::new(workers).unwrap(),
             &steps,
             |job| batch_costs[job],

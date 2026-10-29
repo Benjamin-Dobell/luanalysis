@@ -3068,6 +3068,24 @@
       "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
       "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
       "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-native-exact-optionals.patch",
+      "reason": "Let an optional Lua parameter be absent without taking nil it does not declare: a frontend marks its absence with `missing`, which reads as nil, and the native argument checks strip it, checking an expansion against the rows of present values; a checker flag restores EmmyLua's reading, where absence is nil.",
+      "patch_sha256": "6e0465db830a2bbda6a97a96c05f8fcc74447f71ff53cc13fbf571018c7be13d"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-exact-optionals.patch",
+      "reason": "Let an optional Lua parameter be absent without taking nil it does not declare: a frontend marks its absence with `missing`, which reads as nil, and the native argument checks strip it, checking an expansion against the rows of present values; a checker flag restores EmmyLua's reading, where absence is nil.",
+      "patch_sha256": "6e0465db830a2bbda6a97a96c05f8fcc74447f71ff53cc13fbf571018c7be13d"
+    },
+    {
+      "path": "src/sema/check/native_nil.rs",
+      "patch": "vendor/patches/bun-sema-native-exact-optionals.patch",
+      "reason": "Let an optional Lua parameter be absent without taking nil it does not declare: a frontend marks its absence with `missing`, which reads as nil, and the native argument checks strip it, checking an expansion against the rows of present values; a checker flag restores EmmyLua's reading, where absence is nil.",
+      "patch_sha256": "6e0465db830a2bbda6a97a96c05f8fcc74447f71ff53cc13fbf571018c7be13d"
     }
   ],
   "source_additions": {
@@ -3112,7 +3130,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
-      "extracted_sha256": "ca55099e1d0bd4417ba9cb501cff0d3939d7f0c182f884508c09186a73e5d15c",
+      "extracted_sha256": "8aa5bf2875970ae2558da658de0bd92271ecbbea7077d6b48aaf40597ba7891e",
       "introduced_by_patch": "vendor/patches/bun-sema-native-nil-compatibility.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -3892,7 +3910,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "5a69ddb136055adf54d1d82ea8ee8134970df11f4cb02ded2e1119ca82ba881e"
+      "extracted_sha256": "ee5760201fd0860a4adc56599d85aa9ce19b6cfad91e8fa6fcd7e0ff34661618"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -4102,7 +4120,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "8e0cc2364068e609d747d4bee7a616c72a2b889d150acdacd7afb597251c00e5"
+      "extracted_sha256": "7c607432435572ce0ffbbc7188ce583e14455dea1e5a65b7b08243350094c19e"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

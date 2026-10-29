@@ -1,0 +1,148 @@
+diff --git a/src/sema/check/errors_call.rs b/src/sema/check/errors_call.rs
+index 6f99cd5..67c7cf0 100644
+--- a/src/sema/check/errors_call.rs
++++ b/src/sema/check/errors_call.rs
+@@ -1001,7 +1001,7 @@ impl Checker<'_, '_> {
+         for member in members {
+             let params = self.sig_params_up_to(member, if sequence { usize::MAX } else { index + 1 });
+             let expected = if sequence { self.rest_type_at_position(&params, index, false) }
+-                else { let Some(expected) = self.param_type_at(&params, index) else { return false }; expected };
++                else { let Some(expected) = self.param_type_at(&params, index) else { return false }; self.native_argument_parameter_type(expected) };
+             if !self.is_resolved_call_argument_applicable(actual, expected, relation)
+                 && !self.native_union_any_argument_applicable(member, index, actual, expected, relation, sequence)
+             { return false }
+@@ -1046,6 +1046,7 @@ impl Checker<'_, '_> {
+             let Some(expected) = self.param_type_at(&params, i) else {
+                 continue;
+             };
++            let expected = self.native_argument_parameter_type(expected);
+             let contextual = if self.is_any(expected) || expected == TypeId::UNKNOWN {
+                 identity_context.and_then(|pack| self.native_pack_contextual_slot(pack, i)).unwrap_or(expected)
+             } else { expected };
+@@ -1067,11 +1068,13 @@ impl Checker<'_, '_> {
+             if identity_context.is_some() { prefix.push(actual); }
+         }
+         if boundary < args.len() || rest.is_some() {
+-            let expected = self.rest_type_at_position(&params, boundary, false);
++            let tuple = self.rest_type_at_position(&params, boundary, false);
++            let expected = self.native_argument_sequence_parameter_type(&params, boundary, tuple);
+             let contextual = identity_context.and_then(|pack| self.native_pack_contextual_tail(pack, &prefix)).map_or(expected, |pack| pack.ty);
+             let actual = self.native_argument_sequence_type(args, boundary, contextual, None, check_mode);
+             // Lua drops values past the parameters, so a variadic tail reaching past them is no excess.
+             let actual = self.native_pack_without_possible_excess(NativeResultPack { ty: actual }, NativeResultPack { ty: expected }).ty;
++            let actual = if expected != tuple { self.native_argument_sequence_rows(actual) } else { actual };
+             if !self.is_resolved_call_argument_applicable(actual, expected, relation)
+                 && !self.native_union_any_argument_applicable(sig, boundary, actual, expected, relation, true) {
+                 self.note_parameter_types_resolved(sig, &params, boundary);
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index b691c78..06564aa 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -819,6 +819,7 @@ impl<'s> Program<'s> {
+             native_runtime_tops: [None; 2],
+             native_arrays: false,
+             native_strict_nil: true,
++            native_exact_optionals: true,
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
+             native_type_query_depth: 0,
+@@ -1382,6 +1383,9 @@ pub struct Checker<'p, 's> {
+     native_runtime_tops: [Option<TypeId>; 2],
+     native_arrays: bool,
+     native_strict_nil: bool,
++    /// An optional parameter may be absent, which `missing` marks, but takes no nil it does not
++    /// declare (`native_nil.rs`).
++    native_exact_optionals: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
+     /// Nested metadata demands propagate TYPE_ONLY to every native argument
+diff --git a/src/sema/check/native_nil.rs b/src/sema/check/native_nil.rs
+index a8002fe..cda379d 100644
+--- a/src/sema/check/native_nil.rs
++++ b/src/sema/check/native_nil.rs
+@@ -1,8 +1,9 @@
+ //! Luanalysis v1's optional nil assignment compatibility. Runtime nil and its
+ //! union members remain physical facts even when contracts accept nil.
+ use super::Checker;
++use super::native_packs::{NativePackAlternative, NativePackSlot};
+ use super::relate::Relation;
+-use crate::types::TypeId;
++use crate::types::{NativeResultPack, SigParam, TypeId};
+ 
+ impl<'p, 's> Checker<'p, 's> {
+     /// Set before any queries; a checker's relation caches belong to one policy.
+@@ -10,6 +11,74 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_strict_nil = strict;
+     }
+ 
++    /// Set before any queries. Exact: an optional Lua parameter may be absent, but an argument
++    /// is a value, so nil satisfies it only when its own type admits nil. A frontend marks the
++    /// absence with `missing` rather than `undefined`, which reads as nil everywhere else.
++    /// Otherwise, as EmmyLua Analyzer reads it, absence and nil are one.
++    pub fn set_native_exact_optionals(&mut self, exact: bool) {
++        self.native_exact_optionals = exact;
++    }
++
++    pub fn native_exact_optionals(&self) -> bool {
++        self.native_exact_optionals
++    }
++
++    /// The type an argument must have for a parameter of type `expected`: an optional one's
++    /// absence, `missing`, is no value an argument can be.
++    pub(super) fn native_argument_parameter_type(&mut self, expected: TypeId) -> TypeId {
++        if !self.native_exact_optionals || !self.parts(expected).contains(&TypeId::MISSING) {
++            return expected;
++        }
++        self.filter(expected, |_, member| member != TypeId::MISSING)
++    }
++
++    /// The values an expansion must supply for `params` from `position`, whose tuple is
++    /// `expected`: each optional parameter's value is a value of its own type, or absent, so the
++    /// expansion is one of the rows of present values, not a tuple whose optional element is nil.
++    pub(super) fn native_argument_sequence_parameter_type(&mut self, params: &[SigParam], position: usize, expected: TypeId) -> TypeId {
++        let remaining = params.get(position..).unwrap_or_default();
++        if !self.native_exact_optionals
++            || remaining.iter().any(|param| param.rest)
++            || !remaining.iter().any(|param| self.parts(param.ty).contains(&TypeId::MISSING))
++        {
++            return expected;
++        }
++        let required = self.min_argument_count(params).saturating_sub(position).min(remaining.len());
++        let mut slots = Vec::with_capacity(remaining.len());
++        for param in remaining {
++            let ty = self.native_argument_parameter_type(param.ty);
++            slots.push(NativePackSlot { ty, optional: false });
++        }
++        let rows: Vec<_> = (required..=slots.len())
++            .map(|count| NativePackAlternative { fixed: slots[..count].to_vec(), tail: None })
++            .collect();
++        self.native_result_pack(&rows).ty
++    }
++
++    /// An expansion against [`Self::native_argument_sequence_parameter_type`]'s rows: each row
++    /// whose last values may be absent is also each shorter row without them. An optional slot's
++    /// tuple element carries the nil its absence reads as; present, its value is the rest.
++    pub(super) fn native_argument_sequence_rows(&mut self, actual: TypeId) -> TypeId {
++        let Some(rows) = self.native_pack_alternatives(NativeResultPack { ty: actual }) else { return actual };
++        if !rows.iter().any(|row| row.tail.is_none() && row.fixed.last().is_some_and(|slot| slot.optional)) {
++            return actual;
++        }
++        let mut expanded = Vec::new();
++        for row in rows {
++            if row.tail.is_some() {
++                expanded.push(row);
++                continue;
++            }
++            let present = row.fixed.iter().rposition(|slot| !slot.optional).map_or(0, |index| index + 1);
++            let fixed: Vec<_> = row.fixed.iter().map(|slot| NativePackSlot {
++                ty: if slot.optional { self.filter(slot.ty, |_, member| !member.is_undefined()) } else { slot.ty },
++                optional: false,
++            }).collect();
++            expanded.extend((present..=fixed.len()).map(|count| NativePackAlternative { fixed: fixed[..count].to_vec(), tail: None }));
++        }
++        self.native_result_pack(&expanded).ty
++    }
++
+     pub fn native_contains_nil(&mut self, ty: TypeId) -> bool {
+         self.native_is_assignable_with_strict_nil(TypeId::UNDEFINED, ty)
+     }

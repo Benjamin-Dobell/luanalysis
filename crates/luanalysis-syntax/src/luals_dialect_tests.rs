@@ -42,7 +42,7 @@ fn callback(statement: &Stmt) -> &Function {
 
 #[test]
 fn qualified_optional_and_tuple_types() {
-    let file = checked(concat!(
+    let source = concat!(
         "---@class parser.object\n",
         "---@field type? string|string[] # the node's kind\n",
         "---@field range [integer, integer] 'start and finish'\n",
@@ -52,7 +52,14 @@ fn qualified_optional_and_tuple_types() {
         "---@return boolean success\n",
         "---@return ...\n",
         "local function f(...) end\n",
-    ));
+    );
+    // An alias's `T?` is read with EmmyLua Analyzer's syntax; without it, it is that one report.
+    let plain = parse(source).diagnostics;
+    assert_eq!(plain.len(), 1, "{plain:#?}");
+    assert_eq!(&source[plain[0].span.start..plain[0].span.end], "?");
+    assert!(plain[0].message.starts_with("`T?` here is EmmyLua Analyzer syntax"), "{plain:#?}");
+    let file = parse_with_options(source, ParseOptions { emmylua: true, ..ParseOptions::default() }, || {});
+    assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
     let NamedTypeDeclarationKind::Record { fields, .. } = &file.type_declarations[0].kind else { panic!("a class") };
     let TypeExprKind::Union(members) = &fields[0].ty.kind else { panic!("an optional field") };
     assert_eq!(named(members.last().unwrap()), "nil");

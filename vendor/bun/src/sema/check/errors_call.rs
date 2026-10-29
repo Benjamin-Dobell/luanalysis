@@ -1001,7 +1001,7 @@ impl Checker<'_, '_> {
         for member in members {
             let params = self.sig_params_up_to(member, if sequence { usize::MAX } else { index + 1 });
             let expected = if sequence { self.rest_type_at_position(&params, index, false) }
-                else { let Some(expected) = self.param_type_at(&params, index) else { return false }; expected };
+                else { let Some(expected) = self.param_type_at(&params, index) else { return false }; self.native_argument_parameter_type(expected) };
             if !self.is_resolved_call_argument_applicable(actual, expected, relation)
                 && !self.native_union_any_argument_applicable(member, index, actual, expected, relation, sequence)
             { return false }
@@ -1046,6 +1046,7 @@ impl Checker<'_, '_> {
             let Some(expected) = self.param_type_at(&params, i) else {
                 continue;
             };
+            let expected = self.native_argument_parameter_type(expected);
             let contextual = if self.is_any(expected) || expected == TypeId::UNKNOWN {
                 identity_context.and_then(|pack| self.native_pack_contextual_slot(pack, i)).unwrap_or(expected)
             } else { expected };
@@ -1067,11 +1068,13 @@ impl Checker<'_, '_> {
             if identity_context.is_some() { prefix.push(actual); }
         }
         if boundary < args.len() || rest.is_some() {
-            let expected = self.rest_type_at_position(&params, boundary, false);
+            let tuple = self.rest_type_at_position(&params, boundary, false);
+            let expected = self.native_argument_sequence_parameter_type(&params, boundary, tuple);
             let contextual = identity_context.and_then(|pack| self.native_pack_contextual_tail(pack, &prefix)).map_or(expected, |pack| pack.ty);
             let actual = self.native_argument_sequence_type(args, boundary, contextual, None, check_mode);
             // Lua drops values past the parameters, so a variadic tail reaching past them is no excess.
             let actual = self.native_pack_without_possible_excess(NativeResultPack { ty: actual }, NativeResultPack { ty: expected }).ty;
+            let actual = if expected != tuple { self.native_argument_sequence_rows(actual) } else { actual };
             if !self.is_resolved_call_argument_applicable(actual, expected, relation)
                 && !self.native_union_any_argument_applicable(sig, boundary, actual, expected, relation, true) {
                 self.note_parameter_types_resolved(sig, &params, boundary);

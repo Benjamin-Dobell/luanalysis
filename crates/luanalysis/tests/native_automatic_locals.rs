@@ -296,5 +296,5 @@ fn a_local_a_nested_function_assigns_is_undetermined_where_no_own_write_reaches(
 #[test]
 fn a_closure_keeps_the_narrowing_of_an_inferred_local_assigned_before_it() {
     // As TypeScript 5.4 keeps narrowing in closures created after a variable's last assignment.
-    clean("---@return string?\nlocal function maybe() return nil end\n---@param s string\nlocal function want(s) end\n---@param cb fun()\nlocal function each(cb) cb() end\nlocal function test()\n    local v = maybe()\n    if not v then return end\n    each(function() want(v) end)\nend\n");
+    clean("---@return nil | string\nlocal function maybe() return nil end\n---@param s string\nlocal function want(s) end\n---@param cb fun()\nlocal function each(cb) cb() end\nlocal function test()\n    local v = maybe()\n    if not v then return end\n    each(function() want(v) end)\nend\n");
 }

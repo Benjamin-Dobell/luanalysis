@@ -91,13 +91,15 @@ fn function_type_annotations_contextualize_native_parameters_and_returns() {
 fn optional_parameters_and_native_call_arity_are_checked() {
     let source = "---@param value? number\n---@return number|nil\nlocal function optional(value) return value end\noptional()\noptional(nil)\noptional(1)\noptional(1, 2)";
     let report = check(source);
+    // An optional parameter may be absent, but takes no nil it does not declare, as in v1
+    // (function_optional_parameters.lua).
     assert_eq!(
         report
             .diagnostics
             .iter()
             .map(|error| error.code)
             .collect::<Vec<_>>(),
-        ["TS2554"]
+        ["TS2345", "TS2554"]
     );
     let body_read = source.find("return value").unwrap() + "return ".len();
     assert_eq!(report.type_at(body_read), Some("nil | number"));

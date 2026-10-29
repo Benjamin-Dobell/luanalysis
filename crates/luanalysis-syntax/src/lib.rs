@@ -20,7 +20,7 @@ mod documentation_reference_tests;
 mod diagnostic_origin_tests;
 
 pub use lexer::{Lexed, Token, TokenKind, identifier_continue, identifier_start, is_identifier, lex};
-pub use parser::{parse, parse_with_checkpoint};
+pub use parser::{parse, parse_with_checkpoint, parse_with_options};
 pub use documentation::{Documentation, documentation_above, documentation_at};
 pub use navigation::{AnnotationDeclaration, ConditionalDeclaration, InferDeclaration, MappedDeclaration, TypeName, TypeNameKind, annotation_types, referenced_type_names, type_names, type_query_roots};
 
@@ -102,6 +102,22 @@ pub struct File {
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
+    /// How the file's annotations were read, as its comments are read again.
+    pub options: ParseOptions,
+}
+
+/// Which annotation syntax is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ParseOptions {
+    /// EmmyLua Analyzer Rust's own forms, opt-in: `A - B` and `T - ?`, `sync fun(...)`,
+    /// `---@return_overload`, `T?` outside results and tuple elements (otherwise reported: a
+    /// parameter's or field's is then its name's) and signature tags above a local whose value
+    /// is no function. It does not decay optionals.
+    pub emmylua: bool,
+    /// `T?` is `nil | T` everywhere, as EmmyLua Analyzer and lua-language-server read it, rather
+    /// than a value that may be absent: a `T?` result may then be nil, and a `T?` parameter is a
+    /// required nil-admitting one.
+    pub decay_optionals: bool,
 }
 
 impl File {

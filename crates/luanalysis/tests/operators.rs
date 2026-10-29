@@ -163,7 +163,7 @@ fn zero_and_empty_string_are_truthy_and_unreachable_rhs_is_not_demanded() {
 
 #[test]
 fn short_circuit_unions_narrow_only_the_conditional_rhs_reference() {
-    let source = "---@param value? number\nlocal function fallback(value) return (value or 0) + 1 end\nlocal result = fallback(nil)\n---@param record {x: number}|nil\nlocal function read(record)\n  local safe = record and record.x\n  return safe\nend\nlocal selected = read({x = 1})\n---@param flag boolean\nlocal function choose(flag) return flag and \"yes\" end";
+    let source = "---@param value? number\nlocal function fallback(value) return (value or 0) + 1 end\nlocal result = fallback()\n---@param record {x: number}|nil\nlocal function read(record)\n  local safe = record and record.x\n  return safe\nend\nlocal selected = read({x = 1})\n---@param flag boolean\nlocal function choose(flag) return flag and \"yes\" end";
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     assert_eq!(ty(&report, "result"), "number");

@@ -3,7 +3,7 @@ use crate::{
     FunctionAnnotations, FunctionType, FunctionTypeParam, Name, NamedTypeDeclaration, NamedTypeDeclarationId,
     NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableField, TableFieldKind, Token, TokenKind,
     TypeAnnotation, TypeExpr, TypeExprKind, TypeExtension, UnaryOperator, types,
-    OverloadAnnotation, OverloadDeclarationId, OverloadReference,
+    OverloadAnnotation, OverloadDeclarationId, OverloadReference, ParseOptions,
 };
 
 #[path = "control.rs"]
@@ -16,6 +16,11 @@ pub fn parse(source: &str) -> File {
 /// Parses with checkpoints while lexing and traversing statements. A host may unwind from
 /// `checkpoint` to cancel the parse; no partial syntax tree is returned or retained.
 pub fn parse_with_checkpoint(source: &str, checkpoint: impl Fn()) -> File {
+    parse_with_options(source, ParseOptions::default(), checkpoint)
+}
+
+/// [`parse_with_checkpoint`], reading the annotation syntax `options` selects.
+pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl Fn()) -> File {
     let lexed = crate::lexer::lex_with_checkpoint(source, &checkpoint);
     let comments = lexed
         .tokens
@@ -28,7 +33,7 @@ pub fn parse_with_checkpoint(source: &str, checkpoint: impl Fn()) -> File {
             }
         })
         .collect();
-    let mut parser = Parser::new(source, lexed, &checkpoint);
+    let mut parser = Parser::new(source, lexed, &checkpoint, options);
     let statements = parser.statements(&[]);
     control::validate_labels(&statements, &mut parser.diagnostics, &checkpoint);
     File {
@@ -45,6 +50,7 @@ pub fn parse_with_checkpoint(source: &str, checkpoint: impl Fn()) -> File {
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
+        options,
     }
 }
 
@@ -66,6 +72,7 @@ struct Parser<'a> {
     documentation_references: Vec<crate::DocumentationReference>,
     return_annotations: Vec<crate::ReturnAnnotation>,
     readonly_locals: Vec<Span>,
+    options: ParseOptions,
     documentation_group: Option<DocumentationGroup>,
     depth: usize,
     block_depth: usize,
@@ -123,16 +130,16 @@ fn documentation_gap_is_contiguous(gap: &str) -> bool {
     lines <= 1
 }
 
-fn expression_assertion_comment(comment: &Comment) -> bool {
+fn expression_assertion_comment(comment: &Comment, options: ParseOptions) -> bool {
     if comment.kind != CommentKind::Documentation {
         return false;
     }
-    let (documentation, _) = types::annotations(comment);
+    let (documentation, _) = types::annotations(comment, options);
     documentation.functions.type_annotation.is_some() || !documentation.exclusions.is_empty()
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str, lexed: crate::Lexed, checkpoint: &'a dyn Fn()) -> Self {
+    fn new(source: &'a str, lexed: crate::Lexed, checkpoint: &'a dyn Fn(), options: ParseOptions) -> Self {
         Self {
             source,
             checkpoint,
@@ -150,6 +157,7 @@ impl<'a> Parser<'a> {
             documentation_references: Vec::new(),
             return_annotations: Vec::new(),
             readonly_locals: Vec::new(),
+            options,
             documentation_group: None,
             depth: 0,
             block_depth: 0,
@@ -540,7 +548,7 @@ impl<'a> Parser<'a> {
             match self.current().kind.clone() {
                 TokenKind::Newline => self.pos += 1,
                 TokenKind::Comment(comment) => {
-                    if expression_assertion_comment(&comment) {
+                    if expression_assertion_comment(&comment, self.options) {
                         let next = self.significant_index();
                         let declaration = matches!(&self.tokens[next].kind, TokenKind::Keyword(word) if matches!(word.as_str(), "local" | "function" | "return" | "if" | "while" | "repeat" | "for" | "do"));
                         if !declaration
@@ -561,7 +569,7 @@ impl<'a> Parser<'a> {
                     }) {
                         self.pending_annotations = FunctionAnnotations::default();
                     }
-                    let (mut annotations, diagnostics) = types::annotations(&comment);
+                    let (mut annotations, diagnostics) = types::annotations(&comment, self.options);
                     self.diagnostics.extend(diagnostics);
                     self.pending_casts.append(&mut annotations.casts);
                     let annotations = self.record_documentation(&comment, annotations);
@@ -611,13 +619,13 @@ impl<'a> Parser<'a> {
             match self.current().kind.clone() {
                 TokenKind::Newline => self.pos += 1,
                 TokenKind::Comment(comment) => {
-                    if expression_assertion_comment(&comment) {
+                    if expression_assertion_comment(&comment, self.options) {
                         break;
                     }
                     if expression_documentation
                         && comment.kind == CommentKind::Documentation
                         && {
-                            let documentation=types::annotations(&comment).0;
+                            let documentation=types::annotations(&comment, self.options).0;
                             !types::annotation_spans(&documentation.functions).is_empty()
                                 || documentation.declarations.iter().any(|item|matches!(item,types::DeclarationItem::Overload {..}))
                         }
@@ -642,7 +650,7 @@ impl<'a> Parser<'a> {
     // Documentation inside an expression is its own group; it never joins the
     // statement-level group around the expression.
     fn expression_documentation_comment(&mut self, comment: &Comment) -> FunctionAnnotations {
-        let (annotations, diagnostics) = types::annotations(comment);
+        let (annotations, diagnostics) = types::annotations(comment, self.options);
         self.diagnostics.extend(diagnostics);
         let outer = self.documentation_group.take();
         let annotations = self.record_documentation(comment, annotations);
@@ -671,7 +679,7 @@ impl<'a> Parser<'a> {
             match self.current().kind.clone() {
                 TokenKind::Newline => self.pos += 1,
                 TokenKind::Comment(comment) => {
-                    if expression_assertion_comment(&comment) {
+                    if expression_assertion_comment(&comment, self.options) {
                         break;
                     }
                     self.pos += 1;
@@ -825,10 +833,10 @@ impl<'a> Parser<'a> {
             let value_end = values.last().map_or(names.last().unwrap().span, |value| value.span);
             self.trailing_type_annotation(value_end, &mut annotations);
             let annotation = annotations.type_annotation.take();
-            // As EmmyLua Analyzer and LuaLS read them, a signature's tags on a local whose value
-            // is no function (`local f = debug.setmetatable`) declare its type, that signature.
+            // As EmmyLua Analyzer reads them, a signature's tags on a local whose value is no
+            // function (`local f = debug.setmetatable`) declare its type, that signature.
             let annotation = annotation.or_else(|| {
-                (names.len() == 1 && values.len() == 1 && first_function(&mut values[0]).is_none())
+                (self.options.emmylua && names.len() == 1 && values.len() == 1 && first_function(&mut values[0]).is_none())
                     .then(|| self.documented_signature(&mut annotations)).flatten()
             });
             if annotation.as_ref().is_some_and(function_type_annotation)
@@ -948,7 +956,7 @@ impl<'a> Parser<'a> {
             {
                 break;
             }
-            let (documentation, diagnostics) = types::annotations(&comment);
+            let (documentation, diagnostics) = types::annotations(&comment, self.options);
             if documentation.functions.type_annotation.is_none()
                 || types::annotation_spans(&documentation.functions).len() != 1
                 || documentation.declarations.iter().any(|item| {
@@ -1348,7 +1356,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.pos += 1;
-            let (mut documentation, diagnostics) = types::annotations(&comment);
+            let (mut documentation, diagnostics) = types::annotations(&comment, self.options);
             self.diagnostics.extend(diagnostics);
             if let Some(annotation) = documentation.functions.type_annotation.take() {
                 assertions.push((
@@ -1404,7 +1412,7 @@ impl<'a> Parser<'a> {
         }
         let comment = comment.clone();
         self.pos += 1;
-        let (documentation, diagnostics) = types::annotations(&comment);
+        let (documentation, diagnostics) = types::annotations(&comment, self.options);
         self.diagnostics.extend(diagnostics);
         for annotation in documentation.as_casts {
             self.expression_assertions.push(crate::ExpressionAssertion {
@@ -1786,13 +1794,13 @@ impl<'a> Parser<'a> {
     fn table_field_documentation(&mut self) -> FunctionAnnotations {
         let mut function_annotations = FunctionAnnotations::default();
         while let TokenKind::Comment(comment) = self.current().kind.clone() {
-            if expression_assertion_comment(&comment)
+            if expression_assertion_comment(&comment, self.options)
                 && !self.table_field_declaration_ahead(&comment)
             {
                 break;
             }
             self.pos += 1;
-            let (mut documentation, diagnostics) = types::annotations(&comment);
+            let (mut documentation, diagnostics) = types::annotations(&comment, self.options);
             self.diagnostics.extend(diagnostics);
             self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"a table field");
             types::merge_annotations(
@@ -1908,7 +1916,7 @@ impl<'a> Parser<'a> {
         )
     }
     fn table_field_declaration_ahead(&self, comment: &Comment) -> bool {
-        let documentation = types::annotations(comment).0;
+        let documentation = types::annotations(comment, self.options).0;
         if documentation.functions.type_annotation.is_none() || !documentation.exclusions.is_empty() {
             return false;
         }
@@ -2274,7 +2282,7 @@ mod checkpoint_tests {
             calls.set(calls.get() + 1);
             if calls.get() == 32 { std::panic::resume_unwind(Box::new(Cancelled)); }
         };
-        let mut parser = Parser::new(&source, lexed, &checkpoint);
+        let mut parser = Parser::new(&source, lexed, &checkpoint, ParseOptions::default());
         let cancelled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser.statements(&[])));
         assert!(cancelled.unwrap_err().is::<Cancelled>());
         assert_eq!(calls.get(), 32);

@@ -117,7 +117,7 @@ impl Engine {
             };
         }
         let workers = workers.get().min(steps.iter().map(Vec::len).max().unwrap());
-        with_program(|program, _coordinator_handles| run(program, workers, steps, task_cost, &factory, &work, self.strict_nil))
+        with_program(|program, _coordinator_handles| run(program, workers, steps, task_cost, &factory, &work, self.strict_nil, self.decay_optionals))
     }
 }
 
@@ -129,6 +129,7 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
     factory: &(impl Fn(usize) -> P + Sync),
     work: &(impl Fn(usize, &P, &mut dyn super::TypeQueries) -> R + Sync),
     strict_nil: bool,
+    decay_optionals: bool,
 ) -> NativeTaskRun<R> {
     std::thread::scope(|scope| {
         let (commands, receive_commands) = mpsc::channel::<Command>();
@@ -171,6 +172,7 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
                                 checker.set_native_project_provider(&adapter);
                                 checker.enable_native_arrays();
                                 checker.set_native_strict_nil(strict_nil);
+                                checker.set_native_exact_optionals(!decay_optionals);
                                 // No native IDs may be created before this resets the task stores.
                                 checker.begin_task(command.step, command.index, true);
                                 let result = work(
@@ -283,6 +285,7 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
                         program.checker_with_native_provider(&metadata_adapter);
                     metadata_checker.enable_native_arrays();
                     metadata_checker.set_native_strict_nil(strict_nil);
+                    metadata_checker.set_native_exact_optionals(!decay_optionals);
                     metadata_checker.set_native_type_declaration_provider(&metadata_adapter);
                     metadata_checker.set_native_globals_provider(&metadata_adapter);
                     metadata_checker.set_native_project_provider(&metadata_adapter);

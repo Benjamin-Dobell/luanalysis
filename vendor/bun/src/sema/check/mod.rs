@@ -819,6 +819,7 @@ impl<'s> Program<'s> {
             native_runtime_tops: [None; 2],
             native_arrays: false,
             native_strict_nil: true,
+            native_exact_optionals: true,
             native_function_contexts: Vec::new(),
             native_capture_contexts: Vec::new(),
             native_type_query_depth: 0,
@@ -1382,6 +1383,9 @@ pub struct Checker<'p, 's> {
     native_runtime_tops: [Option<TypeId>; 2],
     native_arrays: bool,
     native_strict_nil: bool,
+    /// An optional parameter may be absent, which `missing` marks, but takes no nil it does not
+    /// declare (`native_nil.rs`).
+    native_exact_optionals: bool,
     native_function_contexts: Vec<NativeFunctionContext>,
     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
     /// Nested metadata demands propagate TYPE_ONLY to every native argument

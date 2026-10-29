@@ -129,6 +129,8 @@ pub struct ProjectWorkspace {
     /// query threads are: they then parse, bind and build each revision's recipes once between
     /// them, rather than each keeping its own copy.
     shared: Option<Arc<SharedSources>>,
+    /// How its sources' annotations are read; a snapshot read otherwise is parsed again.
+    parse_options: luanalysis_syntax::ParseOptions,
 }
 
 /// The source revisions and recipes that several workspaces share. A revision is kept while a
@@ -175,6 +177,11 @@ impl ProjectWorkspace {
     /// A workspace that shares its sources' revisions and recipes with the others given `shared`.
     pub fn shared(shared: Arc<SharedSources>) -> Self {
         Self { shared: Some(shared), ..Self::default() }
+    }
+
+    /// Reads annotations as `options` select from now on (`ProjectCheckOptions::emmylua_syntax`).
+    pub fn set_parse_options(&mut self, options: luanalysis_syntax::ParseOptions) {
+        self.parse_options = options;
     }
 
     pub fn retained_source_count(&self) -> usize {
@@ -280,22 +287,24 @@ impl ProjectWorkspace {
 
     fn snapshot_for(&mut self, source: &SourceFile) -> (Arc<SourceSnapshot>, bool) {
         let identity = SourceIdentity::of(source);
+        let options = self.parse_options;
         if let Some(known) = self.sources.get(&identity)
             && known.source.as_ref() == source.source.as_str()
+            && known.syntax.options == options
         {
             return (Arc::clone(known), false);
         }
         // Another workspace's revision of the same text.
         if let Some(shared) = &self.shared
             && let Some(known) = shared.state().snapshots.get(&identity)
-                .and_then(|snapshots| snapshots.iter().filter_map(std::sync::Weak::upgrade).find(|known| known.source.as_ref() == source.source.as_str()))
+                .and_then(|snapshots| snapshots.iter().filter_map(std::sync::Weak::upgrade).find(|known| known.source.as_ref() == source.source.as_str() && known.syntax.options == options))
         {
             self.sources.insert(identity, Arc::clone(&known));
             return (known, false);
         }
         // As TypeScript binds the tree its parser recovers, a source with syntax errors is bound
         // too, so the language service answers in it while it is being typed.
-        let syntax = luanalysis_syntax::parse_with_checkpoint(&source.source, crate::project_check::unwind_if_cancelled);
+        let syntax = luanalysis_syntax::parse_with_options(&source.source, options, crate::project_check::unwind_if_cancelled);
         let bound = Some(Arc::new(bind::bind(&syntax)));
         // Revisions are numbered across the workspaces that share them.
         let revision = match &self.shared {
@@ -481,6 +490,26 @@ mod tests {
         drop((first, second));
         querying.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
         assert!(!shared.state().revisions.contains_key(&revision[0]));
+    }
+
+    #[test]
+    fn other_parse_options_parse_an_unchanged_source_again() {
+        let fixture = Fixture::new();
+        let path = fixture.file("main.lua", "---@type (1 | 2) - 2\nlocal value\n");
+        let shared = Arc::new(SharedSources::default());
+        let mut plain = ProjectWorkspace::shared(Arc::clone(&shared));
+        let mut emmylua = ProjectWorkspace::shared(Arc::clone(&shared));
+        emmylua.set_parse_options(luanalysis_syntax::ParseOptions { emmylua: true, ..Default::default() });
+        let first = plain.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        let second = emmylua.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        assert_eq!((second.stats.parsed, second.stats.parse_reused), (1, 0));
+        assert!(!first.sources[0].snapshot.syntax().options.emmylua);
+        assert!(second.sources[0].snapshot.syntax().options.emmylua);
+        assert!(!first.sources[0].snapshot.syntax().diagnostics.is_empty());
+        assert!(second.sources[0].snapshot.syntax().diagnostics.is_empty());
+        // Each keeps reusing its own reading.
+        let again = emmylua.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        assert_eq!((again.stats.parsed, again.stats.parse_reused), (0, 1));
     }
 
     #[test]

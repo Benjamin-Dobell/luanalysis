@@ -94,6 +94,10 @@ pub struct CheckOptions {
     pub no_implicit_any: bool,
     /// Report member access, indexing and calls of `any` (`ProjectCheckOptions::no_unsafe_any`).
     pub no_unsafe_any: bool,
+    /// Read EmmyLua Analyzer Rust's own annotation syntax (`ProjectCheckOptions::emmylua_syntax`).
+    pub emmylua_syntax: bool,
+    /// Read every optional as `nil | T` (`ProjectCheckOptions::decay_optionals`).
+    pub decay_optionals: bool,
     /// Require nil to appear in assignment contracts. False selects v1's
     /// permissive nil assignments without erasing physical runtime nil types.
     pub strict_nil: bool,
@@ -101,7 +105,7 @@ pub struct CheckOptions {
 
 impl Default for CheckOptions {
     fn default() -> Self {
-        Self { overload_mode: OverloadMode::default(), no_implicit_any: false, no_unsafe_any: false, strict_nil: true }
+        Self { overload_mode: OverloadMode::default(), no_implicit_any: false, no_unsafe_any: false, emmylua_syntax: false, decay_optionals: false, strict_nil: true }
     }
 }
 
@@ -368,7 +372,7 @@ pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> Ch
 /// Checks original Lua with explicit source declaration policies. Missing
 /// contracts keep their inferred/contextual type regardless of strict reporting.
 pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
-    let file = luanalysis_syntax::parse(source);
+    let file = luanalysis_syntax::parse_with_options(source, luanalysis_syntax::ParseOptions { emmylua: options.emmylua_syntax, decay_optionals: options.decay_optionals }, || {});
     if file.has_lua_syntax_errors() {
         return CheckReport {
             diagnostics: file
@@ -390,7 +394,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
         };
     }
     let bound = bind::bind(&file);
-    Engine::new().with_strict_nil(options.strict_nil).with_native_provider(
+    Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(
         move || {
             let mut registry = NativeRegistry::new(file, bound);
             registry.set_overload_mode(options.overload_mode);
@@ -1839,16 +1843,19 @@ fn describe_native_pack(
     if alternatives.is_empty() {
         return "never".to_owned();
     }
+    let alternatives = absent_result_rows(alternatives);
     alternatives
         .iter()
-        .map(|row| {
+        .map(|(row, present)| {
             let tuple_slot =
                 row.fixed.len() > 1 || row.tail.is_some() || alternatives.len() > 1;
             let mut slots: Vec<_> = row
                 .fixed
                 .iter()
-                .map(|slot| {
-                    let minimum = if slot.optional {
+                .enumerate()
+                .map(|(index, slot)| {
+                    let absent = slot.optional || index >= *present;
+                    let minimum = if absent {
                         TypePrecedence::Postfix
                     } else if tuple_slot {
                         TypePrecedence::Union
@@ -1858,7 +1865,7 @@ fn describe_native_pack(
                     let ty = describe_native_at_precedence(
                         &slot.ty, engine, stack, diagnostic, minimum,
                     );
-                    if slot.optional { format!("{ty}?") } else { ty }
+                    if absent { format!("{ty}?") } else { ty }
                 })
                 .collect();
             if let Some(tail) = &row.tail {
@@ -1881,6 +1888,33 @@ fn describe_native_pack(
         })
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+/// Rows each one result shorter than the next are one row whose last results may be absent,
+/// as `---@return A, B?` writes them: `(A, B?)`. Each distinct row, in order, with how many of
+/// its results are always present.
+fn absent_result_rows(rows: Vec<luanalysis_engine::PackAlternative>) -> Vec<(luanalysis_engine::PackAlternative, usize)> {
+    let mut distinct: Vec<luanalysis_engine::PackAlternative> = Vec::with_capacity(rows.len());
+    for row in rows {
+        if !distinct.contains(&row) { distinct.push(row); }
+    }
+    let rows = distinct;
+    let mut present: Vec<Option<usize>> = rows.iter().map(|row| Some(row.fixed.len())).collect();
+    let mut longest: Vec<usize> = (0..rows.len()).collect();
+    longest.sort_by_key(|&index| std::cmp::Reverse(rows[index].fixed.len()));
+    for index in longest {
+        let Some(mut count) = present[index] else { continue };
+        while count > 0 {
+            let prefix = &rows[index].fixed[..count - 1];
+            let Some(shorter) = (0..rows.len()).find(|&other| {
+                other != index && present[other].is_some() && rows[other].tail.is_none() && rows[other].fixed == prefix
+            }) else { break };
+            present[shorter] = None;
+            count -= 1;
+        }
+        present[index] = Some(count);
+    }
+    rows.into_iter().zip(present).filter_map(|(row, present)| Some((row, present?))).collect()
 }
 
 /// The starts of a source's lines, to place many spans in it without rescanning it for each.
