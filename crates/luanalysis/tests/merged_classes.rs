@@ -151,7 +151,7 @@ fn a_field_declared_twice_alike_is_one_field() {
         ("main.lua", "---@shape Controller\n---@field reinterpret fun(color: string): void\n---@field reinterpret fun(color: string): void\n\n---@shape Card\n---@field color string\n---@field color number\n\n---@class Impl\n---@field reinterpret fun(color: string): void\n\n---@param controller Controller\nlocal function use(controller) controller.reinterpret('Red') end\n---@param impl Impl\n---@param card Card\nlocal function f(impl, card)\n    use(impl)\n    local color = card.color\nend\n"),
     ]);
     let report = text(&fixture.check());
-    assert!(report.contains("main.lua:5:11: error[LUA2032]: Duplicate declared property \"color\"."), "{report}");
+    assert!(report.contains("main.lua:7:11: error[TS2717]: Subsequent property declarations must have the same type. Property 'color' must be of type 'string', but here has type 'number'."), "{report}");
     assert!(report.contains("main.lua:18:11: color: string"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }

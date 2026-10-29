@@ -461,6 +461,23 @@ local function point(x, y)
 end
 ```
 
+A field written again as another function type declares an overload, as lua-language-server and
+EmmyLua Analyzer read it, so overloads need no implementation. They are tried in the order they
+are written, as an intersection's function types are, and as TypeScript tries an interface's.
+Another declaration of the class, or a `---@field Codec.encode fun(...)` in another file, adds
+overloads after them, in the order the declarations are.
+
+```lua
+---@class Codec
+---@field encode fun(value: string): string
+---@field encode fun(value: number): string
+---@field encode fun(value: string, width: integer): string
+```
+
+A field declared again with another type is reported there, and the first declaration is used
+(TypeScript's TS2717, and TS2687 for other modifiers). A field written again unchanged is the same
+field.
+
 ### Callable types
 
 A table whose metatable has `__call` is described with `@overload` on its class, and calls to
@@ -760,6 +777,24 @@ checked as code that runs: `local Hand` is the class `---@class Hand` declares, 
 nests through its parents' types, so `---@class ngx__req` on `ngx.req = {}` makes
 `function ngx.req.read_body() end` a member of `ngx__req`. `--library` makes every file in a
 path a declaration file, whatever its name.
+
+A function a declaration file defines again declares another overload, as a `.d.ts` file's
+function declarations do, so each overload keeps its own `---@param` and `---@return`
+descriptions. A global's definitions in several declaration files are its overloads too; the
+standard library's are not, and another declaration of one of its globals is checked against
+it. A definition's `---@overload`s are its own, and its head is their implementation signature,
+as in an implementation.
+
+```lua
+---@param text string the text to show
+---@return integer
+function notify(text) end
+
+---@param text string the text to show
+---@param color Color the text's color
+---@return integer
+function notify(text, color) end
+```
 
 A module that no module root provides is, as in Luanalysis v1 and LuaLS, the checked or library
 file whose path ends with the module's path under a template, the shortest such path first: with
@@ -1083,7 +1118,6 @@ other additions:
   (`---@class Key: integer`) is a name for that primitive, assignable to and from it.
 - Several `---@class` tags in one comment: the one named as the variable the statement
   assigns, or else the first, is that variable's class, and the others are declared alone.
-- Repeated `---@field f fun(...)` lines: the field's overloads.
 - `---@cast` of a field path (`---@cast obj.value +boolean`: a store of a `boolean` there is
   accepted to the end of the block); `--[[@cast -?]]` without a name, of the expression before
   it, also between a call and its next suffix (`a:f() --[[@cast -?]]:g()`), as `--[[@as T]]`

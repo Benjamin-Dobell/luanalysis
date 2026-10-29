@@ -29,6 +29,8 @@ impl Project {
         let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&self.0).args(["check", "--lua-version", "5.4"]).args(paths).output().unwrap();
         (String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap())
             .replace(&format!("{}{}", self.0.display(), std::path::MAIN_SEPARATOR), "")
+            // Paths as written, whichever separator the platform prints.
+            .replace(std::path::MAIN_SEPARATOR, "/")
     }
 }
 

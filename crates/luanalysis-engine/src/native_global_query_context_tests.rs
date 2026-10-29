@@ -172,7 +172,12 @@ impl NativeTypeProvider for GlobalContexts {
         Type::Number
     }
     fn return_cycle(&self, _: NativeFunctionKey) { panic!("the original return provider is not recursive") }
-    fn return_type_too_deep(&self, _: NativeFunctionKey) { panic!("the original return provider is finite") }
+    fn return_type_too_deep(&self, _: NativeFunctionKey) {
+        // Only the refused declaration chain is too deep. Where its refusal lands depends on the
+        // build: release frames are smaller, so the chain reaches the query depth limit before
+        // half the stack is in use, and the return that reads it is refused too.
+        assert_eq!(self.contract, Contract::DepthRefusal, "the original return provider is finite");
+    }
     fn contains_expression(&self, key: NativeExpressionKey) -> bool { key == expression() }
     fn check_expression(&self, key: NativeExpressionKey, expected: Option<&Type>, mode: NativeCheckMode, queries: &mut dyn TypeQueries) -> Type {
         let expected = expected.map(|ty| ValuePack::single(ty.clone()));

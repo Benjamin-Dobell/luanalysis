@@ -1,0 +1,71 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -217,6 +217,10 @@
+     CircularBase(NativeTypeDeclarationId),
+     InvalidBase { declaration: NativeTypeDeclarationId, index: usize, base: TypeId },
+     IncompatibleOverride { declaration: NativeTypeDeclarationId, member: NativeTypeMemberId, base: TypeId, expected: TypeId, actual: TypeId },
++    /// `Subsequent property declarations must have the same type`: a member declared again with
++    /// another type, `expected` the first declaration's and `actual` this one's; or, `modifiers`,
++    /// of the same type but another optionality or readonly modifier.
++    SubsequentProperty { declaration: NativeTypeDeclarationId, member: NativeTypeMemberId, expected: TypeId, actual: TypeId, modifiers: bool },
+     IncompatibleBase { declaration: NativeTypeDeclarationId, index: usize, base: TypeId, expected: TypeId, actual: TypeId },
+     TooDeep(NativeTypeDeclarationQuery),
+     UnsupportedKind { declaration: NativeTypeDeclarationId, kind: NativeTypeDeclarationKind },
+@@ -292,6 +296,9 @@
+     fn type_member_is_stored(&self, _: NativeTypeMemberId) -> bool { false }
+     /// Pure written callable members, with no runtime implementation or body.
+     fn type_member_signatures(&self, _: NativeTypeMemberId) -> Option<Vec<NativeSignatureId>> { None }
++    /// Whether the member's written type is a function type, or an intersection of them, whose
++    /// declarations of one key are overloads, as pure callable members' are.
++    fn type_member_is_function_type(&self, _: NativeTypeMemberId) -> bool { false }
+     /// Own declarations plus potential explicit-owner augmentations; the backend validates each
+     /// original owner candidate before publishing or inheriting its member origin.
+     fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
+@@ -1325,7 +1332,9 @@
+             let mut members: Vec<NativeObjectMember> = Vec::new();
+             for member in provider.type_declaration_members(reference.declaration) {
+                 let Some(metadata) = self.native_named_member_header(reference, member)? else { continue };
+-                if provider.type_member_signatures(member).is_some()
++                // As TypeScript merges an interface's method declarations, so a written function
++                // type declared again (`---@field f fun(...)` in another declaration) is an overload.
++                if (provider.type_member_signatures(member).is_some() || provider.type_member_is_function_type(member))
+                     && provider.type_member_origin(member) == crate::types::NativeTableFieldOrigin::Declared
+                     && let NativeTypeMemberKey::Fixed(key) = metadata.key
+                 {
+@@ -1337,7 +1346,7 @@
+                             && previous_metadata.readonly == metadata.readonly
+                             && previous_metadata.visibility == metadata.visibility
+                             && provider.type_member_origin(previous.member) == crate::types::NativeTableFieldOrigin::Declared
+-                            && provider.type_member_signatures(previous.member).is_some()
++                            && (provider.type_member_signatures(previous.member).is_some() || provider.type_member_is_function_type(previous.member))
+                     });
+                     if let Some(previous) = previous {
+                         if previous.member != member && !previous.overloads.contains(&member) { previous.overloads.push(member); }
+@@ -1706,12 +1715,20 @@
+                                 continue;
+                             }
+                             // As TypeScript merges declarations, an identical redeclaration is the
+-                            // same member; a different one is reported once, at its declaration,
+-                            // and the first is used.
+-                            let identical = previous.optional == field.optional && previous.readonly == field.readonly
+-                                && self.related(previous.value, field.value, Relation::Identity);
+-                            if identical || !validate { continue }
+-                            return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::DuplicateDeclaredField { key: field.key } })
++                            // same member; a different one is reported at its declaration, its type
++                            // (with the nil an optional one admits) and its modifiers apart, and the
++                            // first is used.
++                            if validate {
++                                let error = |modifiers| NativeNamedTypeError::SubsequentProperty { declaration, member: origin.member, expected: actual, actual: expected, modifiers };
++                                if !self.is_error_type(actual) && !self.is_error_type(expected) && !self.related(actual, expected, Relation::Identity) {
++                                    self.report_native_named(error(false));
++                                }
++                                let previous_visibility = provider.type_member_header(self, previous_origin.member).visibility;
++                                if previous.optional != field.optional || previous.readonly != field.readonly || previous_visibility != metadata.visibility {
++                                    self.report_native_named(error(true));
++                                }
++                            }
++                            continue;
+                         }
+                         let (index, base) = origin.via.unwrap();
+                         if previous_origin.via.is_none() && !self.native_object_member_written(previous_origin)? {

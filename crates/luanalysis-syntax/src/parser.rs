@@ -45,7 +45,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl 
     let diagnostic_suppressions = if options.emmylua { diagnostic_suppressions(source, &comments) } else { Vec::new() };
     for declaration in &mut parser.type_declarations {
         if options.emmylua { types::emmylua_primitive_class(declaration); }
-        types::emmylua_field_overloads(declaration, options.emmylua, &mut parser.diagnostics);
+        types::field_overloads(declaration);
     }
     File {
         statements,

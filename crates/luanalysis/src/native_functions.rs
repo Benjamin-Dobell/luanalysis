@@ -3033,6 +3033,9 @@ impl NativeTypeProvider for NativeRegistry {
     fn type_member_signatures(&self,key:luanalysis_engine::NativeTypeMemberKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> {
         self.doc_members.signature_keys(key,|id|self.doc_signature_key(id))
     }
+    fn type_member_is_function_type(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
+        self.named_member_is_function_type(key)
+    }
     fn type_member_origin(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
         if let Some(source)=self.runtime_tables.member(key) {return if source.annotation.is_some() {luanalysis_engine::TableFieldOrigin::Declared} else {luanalysis_engine::TableFieldOrigin::Inferred};}
         self.original_member_origin(key).unwrap_or(luanalysis_engine::TableFieldOrigin::Declared)

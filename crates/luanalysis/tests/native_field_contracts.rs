@@ -309,11 +309,12 @@ fn recursive_json_array_node_updates_validate_the_original_length_and_element_wr
 }
 
 #[test]
-fn direct_declared_duplicates_still_fail_and_genuinely_new_definition_fields_are_inferred() {
+fn direct_declared_duplicates_are_reported_and_genuinely_new_definition_fields_are_inferred() {
+    // As TypeScript merges declarations: reported at the later one, and the first is used.
     let duplicate = "---@alias Record {[3]:number,[3]:string}\n---@param value Record\nlocal function read(value) return value[3] end\n";
     let report = check(duplicate);
-    assert!(report.diagnostics.iter().any(|error| matches!(error.code, "LUA2032" | "TS2300")
-        && error.message.contains("Duplicate declared property 3")), "{:#?}", report.diagnostics);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2717"
+        && error.message == "Subsequent property declarations must have the same type. Property '3' must be of type 'number', but here has type 'string'."), "{:#?}", report.diagnostics);
     accepted(&duplicate.replacen("[3]:string", "[4]:string", 1));
 
     let constructor = "---@class Built\nlocal Built={}\nBuilt.count=1\n---@type number\nlocal checked=Built.count\n";

@@ -179,7 +179,8 @@ fn const_generics_new_functions_and_field_overloads() {
     let report = plain(source);
     assert!(report.contains("main.lua:1:13: error[LUA1001]: `---@generic const T` is EmmyLua Analyzer syntax (--emmylua-syntax)"), "{report}");
     assert!(report.contains("main.lua:5:7: boxed: { value: string }"), "{report}");
-    assert!(report.contains("main.lua:15:4: error[LUA1001]: a repeated `---@field` of a function, an overload, is EmmyLua Analyzer syntax (--emmylua-syntax)"), "{report}");
+    // Repeated function fields are overloads without the option too, as lua-language-server reads them.
+    assert!(report.contains("main.lua:19:7: s: string") && report.contains("main.lua:19:10: n: number"), "{report}");
 }
 
 #[test]

@@ -132,6 +132,7 @@ pub(crate) fn named_error_description(
             ("Type '{}' must resolve to a class or shape record schema before it can be a base type. A class without fields that extends a primitive is EmmyLua Analyzer syntax (--emmylua-syntax).".into(), vec![base.clone()]),
         InvalidBase { base, .. } => ("Type '{}' must resolve to a class or shape record schema before it can be a base type.".into(), vec![base.clone()]),
         IncompatibleOverride { actual, expected, .. } => ("Declared member type '{}' is not assignable to the inherited member type '{}'.".into(), vec![actual.clone(), expected.clone()]),
+        SubsequentProperty { expected, actual, .. } => ("Subsequent property declarations must have the same type: '{}', but here '{}'.".into(), vec![expected.clone(), actual.clone()]),
         IncompatibleBase { actual, expected, .. } => ("Inherited member or call signatures '{}' and '{}' conflict.".into(), vec![actual.clone(), expected.clone()]),
         TypeArgumentConstraint { actual, expected, .. } => ("Type '{}' does not satisfy constraint '{}'.".into(), vec![actual.clone(), expected.clone()]),
         UnknownOwner { name, .. } => (format!("Cannot find an object owner for '{name}'."), vec![]),

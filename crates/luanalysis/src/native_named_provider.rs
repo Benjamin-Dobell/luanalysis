@@ -523,6 +523,19 @@ impl NativeRegistry {
         if key.snapshot != self.snapshot { return None; }
         self.named.member(member_key(key)).map(|source| (source.field.span, true))
     }
+    /// Whether `key` is a `---@field` whose written type is a function type, or the intersection of
+    /// them that repeated function fields make: its declarations of one name are overloads.
+    pub(super) fn named_member_is_function_type(&self, key: NativeTypeMemberKey) -> bool {
+        fn function(ty: &luanalysis_syntax::TypeExpr) -> bool {
+            match &ty.kind {
+                luanalysis_syntax::TypeExprKind::Function(_) => true,
+                luanalysis_syntax::TypeExprKind::Parenthesized(inner) => function(inner),
+                luanalysis_syntax::TypeExprKind::Intersection(types) => types.iter().all(function),
+                _ => false,
+            }
+        }
+        key.snapshot == self.snapshot && self.named.member(member_key(key)).is_some_and(|source| function(&source.field.ty))
+    }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
         if let Some(header)=self.runtime_member_header(key) {return header;}
         if let Some(header)=self.doc_members.header(key) {return header;}
@@ -847,6 +860,27 @@ impl NativeRegistry {
             .unwrap_or_else(|| self.named_member_origin(key))
     }
     pub(super) fn named_declaration_error(&self, error: NamedTypeError) {
+        if let NamedTypeError::SubsequentProperty { member, expected, actual, modifiers, .. } = &error {
+            // At the later declaration's name, as TypeScript reports it.
+            let span = match self.named.member(member_key(*member)).map(|source| &source.field.key) {
+                Some(luanalysis_syntax::TypeFieldKey::Named(name)) => name.span,
+                _ => self.named_member_origin(*member),
+            };
+            let name = match self.named_member_header(*member).key {
+                luanalysis_engine::TypeMemberKeyRecipe::Fixed(luanalysis_engine::LuaKey::String(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+                luanalysis_engine::TypeMemberKeyRecipe::Fixed(luanalysis_engine::LuaKey::Integer(value)) => value.to_string(),
+                luanalysis_engine::TypeMemberKeyRecipe::Fixed(luanalysis_engine::LuaKey::Number(value)) => value.to_string(),
+                luanalysis_engine::TypeMemberKeyRecipe::Fixed(luanalysis_engine::LuaKey::Boolean(value)) => value.to_string(),
+                luanalysis_engine::TypeMemberKeyRecipe::Indexer { .. } => String::new(),
+            };
+            if *modifiers {
+                self.report.borrow_mut().diagnostics.push(crate::Diagnostic { code: "TS2687", span, message: format!("All declarations of '{name}' must have identical modifiers.") });
+            } else {
+                let template = format!("Subsequent property declarations must have the same type. Property '{name}' must be of type '{{}}', but here has type '{{}}'.");
+                self.report.borrow_mut().push_type_diagnostic("TS2717", span, template, &[expected, actual]);
+            }
+            return;
+        }
         let typed_origin = match &error {
             NamedTypeError::InvalidBase { declaration, index, .. } => Some(("TS2312", self.named_base_origin(*declaration, *index))),
             NamedTypeError::IncompatibleOverride { member, .. } => Some(("TS2416", self.named_member_type_origin(*member))),

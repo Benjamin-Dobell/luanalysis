@@ -249,17 +249,12 @@ fn call(queries: &mut dyn TypeQueries, callable: &Type, argument: Type) -> Type 
     assert!(called.errors.is_empty(), "{:#?}", called.errors);
     queries.pack_slot(&called.return_pack, 0)
 }
-fn duplicate(result: Result<Type, NamedTypeError>) {
-    assert!(
-        matches!(
-            result,
-            Err(NamedTypeError::Table {
-                error: TableError::DuplicateDeclaredField { .. },
-                ..
-            })
-        ),
-        "{result:#?}"
-    );
+/// Members that do not merge: as TypeScript merges declarations, the later is reported where it
+/// is declared and the declaration keeps the first.
+fn duplicate(provider: &Provider, result: Result<Type, NamedTypeError>) {
+    assert!(result.is_ok(), "{result:#?}");
+    let errors = provider.errors.borrow();
+    assert!(errors.iter().any(|error| matches!(error, NamedTypeError::SubsequentProperty { declaration: owner, .. } if *owner == declaration(0))), "{errors:#?}");
 }
 
 #[test]
@@ -366,11 +361,11 @@ fn mixed_pure_and_ordinary_callable_fields_remain_duplicate_declarations() {
                 provider.members[ordinary].signatures = None;
                 provider
             },
-            |_, queries| {
+            |provider, queries| {
                 // The conflict is reported at the declaration; uses read the first member.
                 let class = queries.named_declared_type(declaration(0)).unwrap();
                 assert!(queries.property_type(&class, "choose").is_some());
-                duplicate(queries.validate_named_declaration(declaration(0)));
+                duplicate(provider, queries.validate_named_declaration(declaration(0)));
             },
         );
     }
@@ -389,8 +384,8 @@ fn incompatible_optional_and_readonly_metadata_do_not_merge() {
                 }
                 provider
             },
-            |_, queries| {
-                duplicate(queries.validate_named_declaration(declaration(0)));
+            |provider, queries| {
+                duplicate(provider, queries.validate_named_declaration(declaration(0)));
             },
         );
     }
@@ -417,8 +412,8 @@ fn pure_members_of_another_visibility_do_not_merge() {
                 }
                 provider
             },
-            |_, queries| {
-                duplicate(queries.validate_named_declaration(declaration(0)));
+            |provider, queries| {
+                duplicate(provider, queries.validate_named_declaration(declaration(0)));
             },
         );
     }

@@ -405,6 +405,16 @@ impl NativeRegistry {
             }
             OriginalMemberValue::Function(key) => {
                 if self.source_role() == luanalysis_project::SourceRole::Declaration {
+                    // A declaration file's function definitions of one member are its overloads,
+                    // in the order they are written, as a global's are.
+                    let overloads: Vec<NativeFunctionKey> = self.members.inputs().iter()
+                        .filter(|other| other.owner == input.owner && other.key == input.key && matches!(other.origin, OriginalMemberOrigin::Method(_)))
+                        .filter_map(|other| match other.value { OriginalMemberValue::Function(function) => Some(function), _ => None })
+                        .collect();
+                    if overloads.len() > 1 && overloads.contains(key) {
+                        let parts: Vec<Type> = overloads.iter().filter_map(|&function| self.ambient_function_contract(function, queries)).collect();
+                        return if parts.is_empty() { queries.error_type() } else { Type::Intersection(parts) };
+                    }
                     return self.ambient_function_contract(*key, queries).unwrap_or_else(|| queries.error_type());
                 }
                 let value = Type::NativeFunction(*key);

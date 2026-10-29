@@ -558,6 +558,9 @@ pub trait NativeTypeProvider {
     fn type_member_activation(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> TypeMemberActivation { TypeMemberActivation::Active }
     /// Pure original callable members; no runtime implementation is implied.
     fn type_member_signatures(&self, _: NativeTypeMemberKey) -> Option<Vec<NativeSignatureKey>> { None }
+    /// Whether the member's written type is a function type, or an intersection of them: its
+    /// declarations of one key are overloads, in the order they are declared.
+    fn type_member_is_function_type(&self, _: NativeTypeMemberKey) -> bool { false }
     fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> { Vec::new() }
     fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey> { Vec::new() }
     /// Declared operator heads (`---@operator`), each taking the other operand.

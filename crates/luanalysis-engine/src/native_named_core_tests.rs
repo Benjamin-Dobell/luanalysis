@@ -794,7 +794,7 @@ fn modules_and_duplicate_definitions_remain_explicit_errors_and_a_private_member
                 ..Provider::default()
             }
         },
-        |_, q| {
+        |provider, q| {
             assert!(q.named_type_reference(declaration(0), &[]).is_ok());
             assert_eq!(
                 q.named_type_reference(declaration(1), &[]),
@@ -809,15 +809,11 @@ fn modules_and_duplicate_definitions_remain_explicit_errors_and_a_private_member
             let private = q.named_type_reference(declaration(4), &[]).unwrap();
             assert_eq!(q.property_type(&private, "secret"), Some(Type::Number));
             assert_eq!(q.member_visibility(&private, "secret"), vec![(TypeMemberVisibility::Private, declaration(4), member(0))]);
-            assert_eq!(
-                q.validate_named_declaration(declaration(5)),
-                Err(NamedTypeError::Table {
-                    declaration: declaration(5),
-                    error: TableError::DuplicateDeclaredField {
-                        key: LuaKey::Integer(1)
-                    }
-                })
-            );
+            // As TypeScript merges declarations: reported at the later one, and the first is used.
+            assert!(q.validate_named_declaration(declaration(5)).is_ok());
+            assert!(provider.errors.borrow().iter().any(|error| matches!(error,
+                NamedTypeError::SubsequentProperty { declaration: owner, modifiers: false, .. } if *owner == declaration(5))),
+                "{:#?}", provider.errors.borrow());
         },
     );
 }

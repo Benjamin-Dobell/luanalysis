@@ -728,10 +728,11 @@ fn unplaced(ty: &TypeExpr) -> String {
     text
 }
 
-/// EmmyLua Analyzer's repeated `---@field f fun(...)` lines, each a function: the field's
-/// overloads, the intersection of the function types, which a call resolves in order.
-/// Without `--emmylua-syntax` they are reported as that syntax.
-pub(crate) fn emmylua_field_overloads(declaration: &mut crate::NamedTypeDeclaration, emmylua: bool, diagnostics: &mut Vec<Diagnostic>) {
+/// Repeated `---@field f fun(...)` lines, each a function: the field's overloads, the
+/// intersection of the function types, which a call tries in the order they are written, as
+/// lua-language-server and EmmyLua Analyzer read them and as TypeScript resolves an interface's
+/// method overloads.
+pub(crate) fn field_overloads(declaration: &mut crate::NamedTypeDeclaration) {
     let NamedTypeDeclarationKind::Record { fields, .. } = &mut declaration.kind else { return };
     let function = |field: &FieldDeclaration| matches!(field.ty.kind, TypeExprKind::Function(_));
     let mut index = 0;
@@ -744,15 +745,6 @@ pub(crate) fn emmylua_field_overloads(declaration: &mut crate::NamedTypeDeclarat
         // A field repeated as it was is the field again, as Luanalysis always read it.
         let repeated = same.iter().skip(1).all(|&other| unplaced(&fields[other].ty) == unplaced(&fields[index].ty));
         if same.len() > 1 && !repeated && same.iter().all(|&other| function(&fields[other])) {
-            if !emmylua {
-                diagnostics.extend(same.iter().skip(1).map(|&other| Diagnostic {
-                    origin: crate::DiagnosticOrigin::Annotation,
-                    span: fields[other].span,
-                    message: "a repeated `---@field` of a function, an overload, is EmmyLua Analyzer syntax (--emmylua-syntax)".to_owned(),
-                }));
-                index += 1;
-                continue;
-            }
             let mut overloads = Vec::new();
             for &other in same.iter().skip(1).rev() { overloads.push(fields.remove(other).ty); }
             overloads.reverse();

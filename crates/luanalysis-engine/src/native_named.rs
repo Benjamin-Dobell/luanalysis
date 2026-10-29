@@ -166,6 +166,9 @@ pub enum NamedTypeError {
     CircularBase(NativeTypeDeclarationKey),
     InvalidBase { declaration: NativeTypeDeclarationKey, index: usize, base: Type },
     IncompatibleOverride { declaration: NativeTypeDeclarationKey, member: NativeTypeMemberKey, base: Type, expected: Type, actual: Type },
+    /// A member declared again with another type: `expected` the first declaration's, `actual`
+    /// this one's, which is not used; or, `modifiers`, of the same type with other modifiers.
+    SubsequentProperty { declaration: NativeTypeDeclarationKey, member: NativeTypeMemberKey, expected: Type, actual: Type, modifiers: bool },
     IncompatibleBase { declaration: NativeTypeDeclarationKey, index: usize, base: Type, expected: Type, actual: Type },
     TooDeep(NamedTypeQuery),
     UnsupportedKind(NativeTypeDeclarationKey, TypeDeclarationKind),
@@ -448,6 +451,9 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
             TypeMemberActivation::Inactive => Core::Inactive,
         }
     }
+    fn type_member_is_function_type(&self, key: NativeTypeMemberId) -> bool {
+        self.provider.type_member_is_function_type(source_member(key))
+    }
     fn type_member_signatures(&self, key: NativeTypeMemberId) -> Option<Vec<bun_sema::types::NativeSignatureId>> {
         self.provider.type_member_signatures(source_member(key))
             .map(|heads| heads.into_iter().map(super::core_signature_key).collect())
@@ -703,6 +709,7 @@ pub(super) fn export_error(
         }
         NativeNamedTypeError::InvalidBase { declaration, index, base } => NamedTypeError::InvalidBase { declaration: source_declaration(declaration), index, base: export_type(checker, handles, base) },
         NativeNamedTypeError::IncompatibleOverride { declaration, member, base, expected, actual } => NamedTypeError::IncompatibleOverride { declaration: source_declaration(declaration), member: source_member(member), base: export_type(checker, handles, base), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
+        NativeNamedTypeError::SubsequentProperty { declaration, member, expected, actual, modifiers } => NamedTypeError::SubsequentProperty { declaration: source_declaration(declaration), member: source_member(member), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual), modifiers },
         NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected, actual } => NamedTypeError::IncompatibleBase { declaration: source_declaration(declaration), index, base: export_type(checker, handles, base), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
         NativeNamedTypeError::TooDeep(query) => NamedTypeError::TooDeep(match query {
             Q::OwnerScope(key) => NamedTypeQuery::OwnerScope(source_declaration(key)),

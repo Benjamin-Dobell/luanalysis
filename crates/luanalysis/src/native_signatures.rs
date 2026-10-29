@@ -1155,6 +1155,17 @@ impl NativeSignatures {
             };
             let context = Some(NativeTypeContext::Function(key));
             let owner = SignatureOwner::Function(key);
+            // A function's `---@type fun(...)` is its head, a declaration of the function, not a
+            // function type of its own as the types written within it are.
+            if let Some(annotation) = &function.annotations.type_annotation
+                && let [ty] = annotation.types.as_slice()
+            {
+                let mut ty = ty.value_syntax();
+                while let TypeExprKind::Parenthesized(inner) = &ty.kind { ty = inner.value_syntax(); }
+                if let TypeExprKind::Function(signature) = &ty.kind {
+                    result.insert(owner, context, None, signature, signature.span, signature.span);
+                }
+            }
             for parameter in &function.annotations.params {
                 result.visit_type(owner, context, None, &parameter.ty);
             }
@@ -1445,9 +1456,13 @@ impl NativeSignatures {
                 .insert((ty.span.start, ty.span.end), signature);
         }
         match &ty.kind {
+            // A written function type is its own symbol, as TypeScript's function type literal
+            // is, not a declaration of its owner's: the overloads an intersection of them makes
+            // (`(fun(a: string): A) & (fun(a: number): B)`, repeated `---@field`s) are tried in
+            // the order they are written, where several sites of one symbol are tried last first.
             TypeExprKind::Function(signature) => {
                 self.insert(
-                    owner,
+                    SignatureOwner::Standalone,
                     context,
                     parent,
                     signature,

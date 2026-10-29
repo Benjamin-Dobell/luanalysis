@@ -885,6 +885,12 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/relate.rs",
 ])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-subsequent-properties.patch",
+    "reason": "Report a member declared again with another type, or other modifiers, at that declaration and keep the first, as TypeScript merges declarations (TS2717, TS2687), rather than failing the whole named type, as the merge's comment already described; and group a written function type's declarations of one key as overloads, as pure callable members are, when the provider says the member is one.",
+})
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 
