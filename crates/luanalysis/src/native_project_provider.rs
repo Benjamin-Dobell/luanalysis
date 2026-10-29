@@ -361,16 +361,18 @@ impl ProjectRegistry {
             .map(|file| (file.id, file.source.module_key()))
             .collect();
         let mut imports = HashMap::default();
+        // Each file's requests by their spans, the first edge of each, rather than every edge
+        // searched for every call.
+        let mut requests: HashMap<(FileId, usize, usize), &Dependency> = HashMap::default();
+        for edge in &dependencies {
+            requests.entry((edge.from, edge.request.span.start, edge.request.span.end)).or_insert(edge);
+        }
         for file in &files {
             if file.role == SourceRole::Declaration {
                 continue;
             }
             for call in file.source.module_calls() {
-                let dependency = dependencies.iter().find(|edge| {
-                    edge.from == file.id
-                        && edge.request.span.start == call.argument_span.start
-                        && edge.request.span.end == call.argument_span.end
-                });
+                let dependency = requests.get(&(file.id, call.argument_span.start, call.argument_span.end)).copied();
                 let outcome = if let Some(outcome) = classify_unresolved(&call) {
                     outcome
                 } else {
@@ -688,8 +690,10 @@ impl ProjectRegistry {
     fn check_roots_mode(&self, queries: &mut dyn TypeQueries, roots: &[FileId], owned_only: bool, scheduled: Option<&HashSet<FileId>>) -> Vec<FileCheckReport> {
         // Canonical scope identities must exist for every sibling extension
         // before any alias head can publish a class's captured outer mapper.
+        let setup = std::env::var_os("LUANALYSIS_PROFILE").is_some().then(std::time::Instant::now);
         for file in &self.files { file.source.prepare_documentation_scope_keys(queries); }
         for file in &self.files { file.source.validate_documentation_scope_owners(queries); }
+        if let Some(setup) = setup { eprintln!("luanalysis profile: documentation scopes for {} files={:.3}s", self.files.len(), setup.elapsed().as_secs_f64()); }
         // Setup visits original declaration candidates even when they are never
         // selected. Keep that baseline separate from later demand diagnostics.
         let mut baselines: Vec<_> = self.files.iter().map(|file| {

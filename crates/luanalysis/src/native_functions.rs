@@ -149,7 +149,11 @@ pub(super) struct NativeRegistry {
     globals: std::sync::Arc<globals::NativeGlobals>,
     project_globals: Option<std::rc::Rc<globals::ProjectGlobalIndex>>,
     project_modules: Option<std::rc::Rc<modules::ProjectModuleIndex>>,
-    pub(super) signatures: super::native_signatures::NativeSignatures,
+    pub(super) signatures: std::sync::Arc<super::native_signatures::NativeSignatures>,
+    /// The recipes its types started from (`SourceRecipes::type_scopes` and its kin).
+    type_scope_recipes: std::sync::Arc<Vec<TypeScopeRecipe>>,
+    named_scope_recipes: std::sync::Arc<Vec<super::native_named::NamedGenericScopeRecipe>>,
+    annotation_type_recipes: std::sync::Arc<Vec<luanalysis_syntax::AnnotationDeclaration>>,
     expressions: NativeExpressions,
     packs: std::sync::Arc<NativePacks>,
     flow: NativeFlowSources,
@@ -197,6 +201,13 @@ pub(crate) struct SourceRecipes {
     named: std::sync::Arc<NativeNamed>,
     expressions: std::sync::Arc<super::native_expressions::ExpressionRecipes>,
     flow: std::sync::Arc<super::native_flow::NativeFlowRecipes>,
+    /// The source's signatures, and the type parameter scopes and annotation types its registry's
+    /// types start from: each registry of this revision reads them rather than walking the
+    /// source again.
+    signatures: std::sync::Arc<super::native_signatures::NativeSignatures>,
+    type_scopes: std::sync::Arc<Vec<TypeScopeRecipe>>,
+    named_scopes: std::sync::Arc<Vec<super::native_named::NamedGenericScopeRecipe>>,
+    annotation_types: std::sync::Arc<Vec<luanalysis_syntax::AnnotationDeclaration>>,
     /// What a registry derives from these recipes alone, built by the first registry of this
     /// revision and shared by the later ones.
     derived: std::sync::Arc<std::sync::OnceLock<DerivedRecipes>>,
@@ -254,7 +265,14 @@ impl SourceRecipes {
         }
         let expressions = super::native_expressions::ExpressionRecipes::new(snapshot, file, &function_spans);
         let flow = NativeFlowSources::new_with_snapshot(file, bound, snapshot, &function_spans, identity.flow).shared_recipes();
+        let signatures = super::native_signatures::NativeSignatures::new(snapshot, file, &functions, &named);
+        let type_scopes = type_scope_recipes(snapshot, &functions, bound);
+        let named_scopes = named.declarations().iter().map(|source| source.generic_scope.clone()).chain(signatures.scopes(file)).collect();
         Self {
+            signatures: std::sync::Arc::new(signatures),
+            type_scopes: std::sync::Arc::new(type_scopes),
+            named_scopes: std::sync::Arc::new(named_scopes),
+            annotation_types: std::sync::Arc::new(luanalysis_syntax::annotation_types(file)),
             snapshot,
             functions: std::sync::Arc::new(functions),
             function_names: std::sync::Arc::new(function_names),
@@ -323,19 +341,13 @@ impl NativeRegistry {
         let snapshot = identity.source;
         let source = prepared.unwrap_or_else(|| SourceRecipes::new(&file, &bound, identity));
         assert_eq!(source.snapshot, snapshot, "prepared recipes belong to their original source identity");
-        let SourceRecipes { functions, function_names, declaration_functions, function_spans, declarations, named, expressions, flow, derived, .. } = source;
+        let SourceRecipes { functions, function_names, declaration_functions, function_spans, declarations, named, expressions, flow, signatures, type_scopes, named_scopes, annotation_types, derived, .. } = source;
         let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
-        let signatures=super::native_signatures::NativeSignatures::new(snapshot,&file,&functions,&named);
         let mut types = NativeTypes::new_with_named(
             snapshot,
-            type_scope_recipes(snapshot, &functions, &bound),
-            named
-                .declarations()
-                .iter()
-                .map(|source| source.generic_scope.clone())
-                .chain(signatures.scopes(&file))
-                .collect(),
-            luanalysis_syntax::annotation_types(&file),
+            (*type_scopes).clone(),
+            (*named_scopes).clone(),
+            (*annotation_types).clone(),
         );
         for (function,signature) in signatures.implementation_scopes(&functions) {
             types.attach_signature_scope(function,signature);
@@ -428,6 +440,9 @@ impl NativeRegistry {
             project_globals: None,
             project_modules: None,
             signatures,
+            type_scope_recipes: type_scopes,
+            named_scope_recipes: named_scopes,
+            annotation_type_recipes: annotation_types,
             expressions,
             packs,
             flow,
@@ -499,6 +514,10 @@ impl NativeRegistry {
             named: std::sync::Arc::clone(&self.named),
             expressions: self.expressions.recipes(),
             flow: self.flow.shared_recipes(),
+            signatures: std::sync::Arc::clone(&self.signatures),
+            type_scopes: std::sync::Arc::clone(&self.type_scope_recipes),
+            named_scopes: std::sync::Arc::clone(&self.named_scope_recipes),
+            annotation_types: std::sync::Arc::clone(&self.annotation_type_recipes),
             derived: std::sync::Arc::clone(&self.derived),
         }
     }

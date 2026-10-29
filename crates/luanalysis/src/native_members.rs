@@ -492,7 +492,8 @@ impl NativeRegistry {
                 }
             }
         }
-        scopes.sort_by_key(|(context, owner)| (format!("{context:?}"), owner.index));
+        // Each key is formatted once, not at every comparison.
+        scopes.sort_by_cached_key(|(context, owner)| (format!("{context:?}"), owner.index));
         scopes.dedup(); scopes
     }
 }

@@ -120,6 +120,16 @@ enum Resolution {
     Global(String),
 }
 
+/// One source to index: [`SymbolIndex::from_parts`].
+pub(crate) struct SymbolSource<'a> {
+    pub id: FileId,
+    pub path: &'a Path,
+    pub text: &'a str,
+    pub origin: &'a SourceOrigin,
+    pub role: SourceRole,
+    pub bound: &'a BoundFile,
+}
+
 /// The symbols of every file of a checked project.
 #[derive(Clone, Debug, Default)]
 pub struct SymbolIndex {
@@ -139,18 +149,25 @@ impl SymbolIndex {
 
     /// Indexes a query session's current sources without checking their bodies again.
     pub(crate) fn from_bound_sources<'a>(sources: impl IntoIterator<Item = (&'a SourceFile, &'a BoundFile)>) -> Self {
+        Self::from_parts(sources.into_iter().map(|(source, bound)| SymbolSource {
+            id: source.id, path: &source.path, text: &source.source, origin: &source.origin, role: source.role, bound,
+        }))
+    }
+
+    /// Indexes sources given by their parts.
+    pub(crate) fn from_parts<'a>(sources: impl IntoIterator<Item = SymbolSource<'a>>) -> Self {
         let mut index = Self::default();
-        for (source, bound) in sources {
+        for source in sources {
             let bundled = !matches!(source.origin, SourceOrigin::Filesystem);
             let library = bundled || source.role == SourceRole::Declaration;
-            let entries = index.file_entries(&source.source, bound);
+            let entries = index.file_entries(source.text, source.bound);
             for (position, entry) in entries.iter().enumerate() {
                 if let Key::Global(global) = entry.key {
                     index.global_occurrences[global].push((source.id, position));
                 }
             }
             index.files.insert(source.id, FileSymbols {
-                path: source.path.clone(), text: source.source.clone(),
+                path: source.path.to_path_buf(), text: source.text.to_owned(),
                 origin: source.origin.clone(), role: source.role, bundled, library, entries,
             });
         }

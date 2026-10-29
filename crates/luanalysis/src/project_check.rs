@@ -70,6 +70,12 @@ impl Cancellation {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Lets work that this stopped run again, as a language server's type descriptions do once a
+    /// newer edit has been checked.
+    pub(crate) fn reset(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Makes this the cancellation that work on this thread stops for (`unwind_if_cancelled`).
     pub(crate) fn enter(&self) {
         CURRENT_CANCELLATION.with(|current| *current.borrow_mut() = Some(self.clone()));
@@ -392,6 +398,7 @@ struct CheckRun {
     parallelism: usize,
     flow_prepare: std::time::Duration,
     checking: std::time::Duration,
+    signature_seconds: f64,
     factory_seconds: f64,
     factories: u64,
 }
@@ -445,9 +452,13 @@ fn run_checks(
         }
         registry
     };
+    let signature_nanos = AtomicU64::new(0);
     let signed = |registry: &crate::native_functions::project_provider::ProjectRegistry, queries: &mut dyn luanalysis_engine::TypeQueries, files: &[FileId]| -> Vec<(FileId, u64)> {
         if !signatures { return Vec::new(); }
-        files.iter().map(|&file| (file, registry.file_signature(queries, file))).collect()
+        let started = Instant::now();
+        let signed = files.iter().map(|&file| (file, registry.file_signature(queries, file))).collect();
+        signature_nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        signed
     };
     let checking_started = Instant::now();
     let (reports, signed, execution) = if workers == 1 {
@@ -504,6 +515,7 @@ fn run_checks(
         parallelism: capacity,
         flow_prepare,
         checking: checking_started.elapsed(),
+        signature_seconds: signature_nanos.load(Ordering::Relaxed) as f64 / 1_000_000_000.0,
         factory_seconds: factory_nanos.load(Ordering::Relaxed) as f64 / 1_000_000_000.0,
         factories: factories.load(Ordering::Relaxed),
     }
@@ -536,6 +548,8 @@ pub(crate) struct IncrementalState {
 struct IncrementalFile {
     revision: u64,
     report: CheckReport,
+    /// Whether `report` records its bindings' and expressions' types (`describe_incrementally`).
+    described: bool,
     signature: Option<u64>,
     names: std::sync::Arc<crate::affected::FileNames>,
 }
@@ -565,9 +579,12 @@ pub(crate) fn check_project_incrementally(
     workspace: &mut crate::incremental::ProjectWorkspace,
 ) -> ProjectCheckReport {
     options.cancellation.enter();
+    let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
+    let started = Instant::now();
     workspace.set_parse_options(options.parse_options());
     let mut state = workspace.take_incremental_state();
     let mut prepared = prepare_program(&mut project, &options, workspace);
+    let prepare_elapsed = started.elapsed();
     let key = IncrementalState::key(&project, &options);
     let path = |file: FileId| project.file(file).map(|source| source.path.clone()).expect("a program file");
     let names: HashMap<FileId, std::sync::Arc<crate::affected::FileNames>> = prepared.sources.iter().map(|(&file, snapshot)| {
@@ -579,6 +596,8 @@ pub(crate) fn check_project_incrementally(
         (file, names)
     }).collect();
     let roots = program_roots(&project);
+    let names_elapsed = started.elapsed();
+    let mut round_profile: Vec<String> = Vec::new();
     let whole = state.key.as_deref() != Some(key.as_str());
     let mut checked: HashMap<FileId, FileCheckReport> = HashMap::default();
     let mut checked_count = 0;
@@ -625,6 +644,9 @@ pub(crate) fn check_project_incrementally(
                 break;
             }
             let run = run_checks(&project, &mut prepared, &pending, true, true, &options, workspace);
+            if profile {
+                round_profile.push(format!("{} files: factory={:.3}s checking={:.3}s (signatures {:.3}s) flows={:.3}s", pending.len(), run.factory_seconds, run.checking.as_secs_f64(), run.signature_seconds, run.flow_prepare.as_secs_f64()));
+            }
             checked_count += pending.len();
             parallelism = parallelism.max(run.parallelism);
             let mut affected: Vec<FileId> = Vec::new();
@@ -647,14 +669,19 @@ pub(crate) fn check_project_incrementally(
             pending = affected.into_iter().filter(|file| !checked.contains_key(file)).collect();
         }
     }
+    let rounds_elapsed = started.elapsed();
     // Every file not checked again keeps the report of the check before.
     let mut files = std::mem::take(&mut prepared.files);
     let unprepared: HashSet<FileId> = files.iter().map(|file| file.file).collect();
+    let mut reused: HashSet<FileId> = HashSet::default();
     for &file in &roots {
         if unprepared.contains(&file) { continue; }
         let report = match checked.remove(&file) {
             Some(report) => report,
-            None => FileCheckReport { file, report: state.files.get(&path(file)).map(|known| known.report.clone()).unwrap_or_default() },
+            None => {
+                reused.insert(file);
+                FileCheckReport { file, report: state.files.get(&path(file)).map(|known| known.report.clone()).unwrap_or_default() }
+            }
         };
         files.push(report);
     }
@@ -665,17 +692,25 @@ pub(crate) fn check_project_incrementally(
     for report in &files {
         let Some(snapshot) = prepared.sources.get(&report.file) else { continue };
         let file = path(report.file);
-        let signature = signatures.get(&report.file).copied()
-            .or_else(|| state.files.get(&file).filter(|known| known.revision == snapshot.revision()).and_then(|known| known.signature));
+        let kept = state.files.get(&file).filter(|known| known.revision == snapshot.revision());
+        let signature = signatures.get(&report.file).copied().or_else(|| kept.and_then(|known| known.signature));
+        let described = if reused.contains(&report.file) { kept.is_some_and(|known| known.described) } else { options.describe_types };
         next.files.insert(file, IncrementalFile {
             revision: snapshot.revision(),
             report: report.report.clone(),
+            described,
             signature,
             names: std::sync::Arc::clone(&names[&report.file]),
         });
     }
     state = next;
     workspace.put_incremental_state(state);
+    if profile {
+        let total = started.elapsed();
+        eprintln!("luanalysis profile: incremental whole={whole} prepare={:.3}s names={:.3}s rounds={:.3}s assemble={:.3}s total={:.3}s {round_profile:?}",
+            prepare_elapsed.as_secs_f64(), (names_elapsed - prepare_elapsed).as_secs_f64(), (rounds_elapsed - names_elapsed).as_secs_f64(),
+            (total - rounds_elapsed).as_secs_f64(), total.as_secs_f64());
+    }
     ProjectCheckReport {
         project,
         files,
@@ -683,6 +718,68 @@ pub(crate) fn check_project_incrementally(
         environment_errors: prepared.environment_errors,
         execution,
         planned_parallelism: parallelism,
+    }
+}
+
+/// Records, for hover, the types of the bindings and expressions of the files at `paths` that the
+/// last incremental check of `project` left without them: a language server publishes an edit's
+/// diagnostics first and describes its open documents' types after, as tsserver computes a hover
+/// only when asked. The reports this returns carry only those files; the incremental state keeps
+/// their types, beside the diagnostics it had.
+pub(crate) fn describe_incrementally(
+    mut project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
+    paths: &[std::path::PathBuf],
+) -> ProjectCheckReport {
+    options.cancellation.enter();
+    let mut prepared = prepare_program(&mut project, &options, workspace);
+    // The state stays in the workspace while it is described: a newer edit that stops the
+    // description unwinds without it.
+    let files: Vec<FileId> = {
+        let state = workspace.incremental_state();
+        // A source with syntax errors is checked from the tree its parser recovers, so it has types
+        // too; one with no tree has none.
+        paths.iter().filter_map(|path| project.file_by_path(path)).filter(|file| {
+            prepared.sources.get(&file.id).is_some_and(|snapshot| {
+                snapshot.bound().is_some()
+                    && state.files.get(&file.path).is_some_and(|known| !known.described && known.revision == snapshot.revision())
+            })
+        }).map(|file| file.id).collect()
+    };
+    if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
+        let state = workspace.incremental_state();
+        for path in paths {
+            let file = project.file_by_path(path);
+            let known = file.and_then(|file| state.files.get(&file.path));
+            eprintln!("luanalysis profile: describe {} in_project={} unparsed={} known={} described={:?} revision={:?}/{:?}", path.display(), file.is_some(),
+                file.is_some_and(|file| prepared.unparsed.contains(&file.id)), known.is_some(), known.map(|known| known.described),
+                known.map(|known| known.revision), file.and_then(|file| prepared.sources.get(&file.id)).map(|snapshot| snapshot.revision()));
+        }
+    }
+    let mut reports = Vec::new();
+    if !files.is_empty() {
+        let run = run_checks(&project, &mut prepared, &files, true, false, &options, workspace);
+        if !options.cancellation.is_cancelled() {
+            let state = workspace.incremental_state_mut();
+            for report in run.reports.into_iter().filter(|report| files.contains(&report.file)) {
+                let path = project.file(report.file).expect("a program file").path.clone();
+                if let Some(known) = state.files.get_mut(&path) {
+                    known.report.bindings = report.report.bindings.clone();
+                    known.report.types = report.report.types.clone();
+                    known.described = true;
+                }
+                reports.push(report);
+            }
+        }
+    }
+    ProjectCheckReport {
+        project,
+        files: reports,
+        standard_library_files: prepared.standard_library_files,
+        environment_errors: prepared.environment_errors,
+        execution: None,
+        planned_parallelism: 1,
     }
 }
 

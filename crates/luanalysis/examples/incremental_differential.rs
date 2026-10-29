@@ -90,6 +90,7 @@ fn main() {
                 let overlays: HashMap<PathBuf, String> = overlay.into_iter().map(|text| (path.clone(), text)).collect();
                 let started = Instant::now();
                 let project = load(&mut incremental, &overlays);
+                if std::env::var_os("LUANALYSIS_PROFILE").is_some() { eprintln!("luanalysis profile: load={:.3}s", started.elapsed().as_secs_f64()); }
                 let report = incremental.check_project_incrementally(project, options.clone());
                 let incremental_elapsed = started.elapsed().as_secs_f64();
                 let mut whole = ProjectWorkspace::new();

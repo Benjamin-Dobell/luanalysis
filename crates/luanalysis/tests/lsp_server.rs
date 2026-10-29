@@ -173,6 +173,43 @@ fn diagnostics_follow_unsaved_edits_and_clear_when_fixed() {
 }
 
 #[test]
+fn a_watching_client_reports_changes_on_disk_and_others_are_rediscovered_at_each_check() {
+    for watching in [true, false] {
+        let root = fixture();
+        let util = root.join("util.lua");
+        fs::write(&util, "local M = {}\n---@param x number\nfunction M.double(x) return x * 2 end\nreturn M\n").unwrap();
+        let main = root.join("main.lua");
+        let text = "local util = require('util')\nreturn util.double('x')\n";
+        fs::write(&main, text).unwrap();
+        let mut server = Server::start(&["--no-stdlib", "--stdlib", "require"]);
+        let capabilities = if watching { r#"{"workspace":{"didChangeWatchedFiles":{"dynamicRegistration":true}}}"# } else { "{}" };
+        server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{}","capabilities":{capabilities}}}}}"#, uri(&root)));
+        server.wait(|message| message.contains(r#""id":1"#));
+        server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+        if watching {
+            // The server asks a client that can watch files to report changes to its sources.
+            let registration = server.wait(|message| message.contains("client/registerCapability"));
+            assert!(registration.contains("workspace/didChangeWatchedFiles") && registration.contains(r#""globPattern":"**/*.lua""#), "{registration}");
+        }
+        server.open(&main, text);
+        server.diagnostics(&main, |message| message.contains("TS2345"));
+        // An edit is checked with what it requires as it is on disk now.
+        fs::write(&util, "local M = {}\n---@param x string\nfunction M.double(x) return x .. x end\nreturn M\n").unwrap();
+        if watching {
+            // The client reports the change; until then, edits reuse what was loaded.
+            server.send(&format!(r#"{{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{{"changes":[{{"uri":"{}","type":2}}]}}}}"#, uri(&util)));
+        }
+        server.change(&main, 2, "local util = require('util')\nreturn util.double('y')\n");
+        server.diagnostics(&main, |message| message.contains(r#""version":2"#) && message.contains(r#""diagnostics":[]"#));
+        // Edits that reuse the loaded project still check the document's new text.
+        server.change(&main, 3, "local util = require('util')\nreturn util.double(1)\n");
+        server.diagnostics(&main, |message| message.contains(r#""version":3"#) && message.contains("TS2345"));
+        server.finish();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn hover_and_definition_answer_at_utf16_positions() {
     let root = fixture();
     let util = root.join("util.lua");
@@ -793,10 +830,17 @@ fn an_open_declaration_file_is_a_declaration() {
     server.initialize(&root);
     server.open(&hand, stub);
     server.open(&main, source);
-    let published = server.diagnostics(&main, |message| message.contains("TS2322"));
+    // A result is published once, in no particular order among the files.
+    let (mut checked, mut declared) = (None, None);
+    while checked.is_none() || declared.is_none() {
+        let published = server.wait(|message| message.contains("textDocument/publishDiagnostics"));
+        if published.contains(&uri(&main)) && published.contains("TS2322") { checked = Some(published) }
+        else if published.contains(&uri(&hand)) { declared = Some(published) }
+    }
+    let published = checked.unwrap();
     assert!(published.contains("is not assignable to type 'number'"), "{published}");
     // Its stubs are neither a nil value nor bodies that should return.
-    let published = server.diagnostics(&hand, |_| true);
+    let published = declared.unwrap();
     assert!(!published.contains("TS7053") && !published.contains("TS2355") && !published.contains("conflict"), "{published}");
     server.finish();
     fs::remove_dir_all(root).unwrap();

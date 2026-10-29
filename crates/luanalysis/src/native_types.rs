@@ -12,12 +12,14 @@ use luanalysis_engine::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::Cell;
 use std::rc::Rc;
 
+#[derive(Clone)]
 pub(super) struct TypeParameterRecipe {
     pub name: Name,
     pub constraint: Option<TypeExpr>,
     pub default: Option<TypeExpr>,
 }
 
+#[derive(Clone)]
 pub(super) struct TypeScopeRecipe {
     pub owner: NativeFunctionKey,
     pub parent: Option<NativeFunctionKey>,

@@ -257,9 +257,28 @@ impl ProjectWorkspace {
         crate::project_check::check_project_incrementally(project, options, self)
     }
 
+    /// Records the types of the open documents at `paths` that the last incremental check left
+    /// without them (`describe_incrementally`).
+    pub fn describe_incrementally(
+        &mut self,
+        project: Project,
+        options: crate::project_check::ProjectCheckOptions,
+        paths: &[std::path::PathBuf],
+    ) -> crate::project_check::ProjectCheckReport {
+        crate::project_check::describe_incrementally(project, options, self, paths)
+    }
+
     /// How many files the last incremental check checked, its others keeping their reports.
     pub fn last_incremental_checked(&self) -> usize {
         self.incremental.checked
+    }
+
+    pub(crate) fn incremental_state(&self) -> &crate::project_check::IncrementalState {
+        &self.incremental
+    }
+
+    pub(crate) fn incremental_state_mut(&mut self) -> &mut crate::project_check::IncrementalState {
+        &mut self.incremental
     }
 
     pub(crate) fn take_incremental_state(&mut self) -> crate::project_check::IncrementalState {
