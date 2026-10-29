@@ -621,6 +621,12 @@ impl ProjectRegistry {
             members.sort_by(|left, right| left.0.cmp(&right.0));
             for (name, member) in members {
                 text.push_str("\n  ");
+                // Where a member may be accessed is part of what other files see of it.
+                for (visibility, ..) in queries.member_visibility(ty, &name) {
+                    if visibility != luanalysis_engine::TypeMemberVisibility::Public {
+                        text.push_str(&format!("{visibility:?} "));
+                    }
+                }
                 text.push_str(&name);
                 text.push_str(": ");
                 text.push_str(&crate::describe_diagnostic_type(&member, queries));

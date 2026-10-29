@@ -715,6 +715,9 @@ fn incremental_checks_redo_only_what_an_edit_can_affect_and_match_cold_checks() 
     // A body edit in the class's file checks only that file.
     fixture.file("c.lua", "---@class Point\n---@field x number\n---@field y number\nlocal Point = {}\nlocal unused = 2\nreturn Point\n");
     assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), modules()), 1);
+    // A field made private reaches the file that reads it, where it is no longer accessible.
+    fixture.file("c.lua", "---@class Point\n---@field x number\n---@field private y number\nlocal Point = {}\nlocal unused = 2\nreturn Point\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
     // Other options check everything again.
     assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), ProjectCheckOptions { no_unsafe_any: true, ..modules() }), all);
 }
