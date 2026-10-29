@@ -31,6 +31,7 @@ pub mod flow;
 pub mod formatting;
 pub mod cli;
 pub mod incremental;
+mod affected;
 mod json;
 mod language_version;
 mod luarc;
@@ -1590,7 +1591,7 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
     describe_native_mode(ty, engine, stack, false)
 }
 
-fn describe_diagnostic_type(ty: &Type, engine: &mut dyn TypeQueries) -> String {
+pub(crate) fn describe_diagnostic_type(ty: &Type, engine: &mut dyn TypeQueries) -> String {
     describe_native_mode(ty, engine, &mut Vec::new(), true)
 }
 
@@ -1822,6 +1823,11 @@ fn describe_native_function_parts(
         .map(|pack| describe_native_pack(&pack, engine, stack, diagnostic))
         .unwrap_or_else(|| describe_native_mode(&function.returns, engine, stack, diagnostic));
     (parameters, returns)
+}
+
+/// A result pack as a diagnostic prints it.
+pub(crate) fn describe_result_pack(pack: &luanalysis_engine::ValuePack, engine: &mut dyn TypeQueries) -> String {
+    describe_native_pack(pack, engine, &mut Vec::new(), true)
 }
 
 fn describe_native_pack(

@@ -2281,7 +2281,7 @@ fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut Pro
     let project = Project::load_plan_with_overlays(&resolver, with_documents(&discovery.plan, &job.overlays), &job.overlays, |source| {
         workspace.static_require_requests(source)
     });
-    Ok(workspace.check_project(project, options))
+    Ok(workspace.check_project_incrementally(project, options))
 }
 
 /// The workspace's inputs and every open `.lua` or `.ttslua` document, including one outside

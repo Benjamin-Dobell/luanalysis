@@ -610,6 +610,53 @@ impl ProjectRegistry {
         self.modules.required_files.borrow().clone()
     }
 
+    /// What `file` exposes to the other files, as TypeScript's builder compares a file's emitted
+    /// declarations: its module's results, the globals it declares and the types it declares, each
+    /// printed with its members. An edit that leaves it unchanged changes no other file's check.
+    pub(crate) fn file_signature(&self, queries: &mut dyn TypeQueries, file: FileId) -> u64 {
+        use std::hash::{Hash, Hasher};
+        fn described(ty: &Type, queries: &mut dyn TypeQueries, text: &mut String) {
+            text.push_str(&crate::describe_diagnostic_type(ty, queries));
+            let mut members = queries.type_members(ty);
+            members.sort_by(|left, right| left.0.cmp(&right.0));
+            for (name, member) in members {
+                text.push_str("\n  ");
+                text.push_str(&name);
+                text.push_str(": ");
+                text.push_str(&crate::describe_diagnostic_type(&member, queries));
+            }
+            text.push('\n');
+        }
+        let Some(registry) = self.files.iter().find(|candidate| candidate.id == file) else { return 0 };
+        let source = &registry.source;
+        let mut text = String::new();
+        if registry.role == SourceRole::Implementation {
+            let pack = source.module_result_pack(queries);
+            text.push_str(&crate::describe_result_pack(&pack, queries));
+            text.push('\n');
+            if let luanalysis_engine::PackInspection::Alternatives(rows) = queries.inspect_pack_view(&pack) {
+                for row in rows {
+                    for slot in row.fixed { described(&slot.ty, queries, &mut text); }
+                }
+            }
+        }
+        for declaration in &source.globals.declarations {
+            text.push_str(&declaration.name.text);
+            text.push_str(" = ");
+            if let Ok(ty) = queries.value_declaration_type(declaration.key) { described(&ty, queries, &mut text); }
+        }
+        for key in source.named_declaration_keys() {
+            let header = self.declaration_header_metadata(key);
+            text.push_str(&header.name);
+            text.push_str(" : ");
+            let arguments: Vec<_> = header.parameters.iter().map(|&parameter| Type::NativeTypeParameter(parameter)).collect();
+            if let Ok(ty) = queries.named_type_reference(key, &arguments) { described(&ty, queries, &mut text); }
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub(crate) fn check_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {
         self.check_roots_mode(queries, roots, false, None)
     }

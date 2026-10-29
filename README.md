@@ -751,7 +751,11 @@ runs a language server over stdio, for any editor with a language server client.
 options of `check`, and without paths it checks the editor's workspace. It provides:
 
 * Diagnostics as you type, and inspections: unreachable code, conditions that are always true or
-  false, comparisons that can never match, unused names.
+  false, comparisons that can never match, unused names. After an edit, the server checks
+  again only the edited files, as TypeScript's builder does. Then it checks the files that use
+  something an edit changed: a module's results, a global, or a type and its members. It keeps
+  going while what those files expose changes too. Every other file keeps its diagnostics,
+  which stay correct.
 * Hover, with a name's type and what its doc comments say, for values and for type names in
   annotations.
 * Completion of names, members, and in annotations, tags and types, with documentation. A function
@@ -936,6 +940,18 @@ CPU time includes user and system time. Both checkers receive `script/`, `test/`
 and the four root Lua files. LuaLS uses its repository configuration with Lua 5.4 and
 `lua/` (a symlink to `script/`) and `make/` excluded, so it checks those same 434 files.
 The checkers report different diagnostics. Other development work was running on the machine.
+
+Diagnostics after an edit, from the change to the new diagnostics, are measured by
+`docs/emmylua-comparison/bench/lsp_bench.py`. Each edit adds or removes a type error at the end
+of the file, and the figures are medians of ten edits (29 October 2026):
+
+| Project, edited file | Whole check | Edit to diagnostics |
+| --- | --- | --- |
+| lua-language-server, `script/files.lua` (999 lines) | 1.5 s | 0.42 s |
+| Prototype Inertia, `src/model/CardBehavior.ttslua` (2,522 lines) | 6.1 s | 1.33 s |
+
+An edit that changes what a widely used module or class exposes checks its users as well, and
+costs up to one whole check.
 
 Member completions in a 1,546-line Prototype Inertia file, with the buffer changed before
 every request and background checking active:

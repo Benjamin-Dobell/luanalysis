@@ -217,6 +217,8 @@ struct PreparedProgram {
     /// The sources with syntax errors, which report only those.
     unparsed: HashSet<FileId>,
     version_diagnostics: HashMap<FileId, Vec<Diagnostic>>,
+    /// Each prepared source's retained snapshot, by file.
+    sources: HashMap<FileId, std::sync::Arc<crate::incremental::SourceSnapshot>>,
 }
 
 fn prepare_program(
@@ -242,7 +244,9 @@ fn prepare_program(
     // on it, but reports only its syntax errors, as tsc reports no semantic errors with them.
     let mut unparsed = HashSet::default();
     let mut version_diagnostics = HashMap::default();
+    let mut sources = HashMap::default();
     for source in workspace.prepare_registered_sources(project).sources {
+        sources.insert(source.id, std::sync::Arc::clone(&source.snapshot));
         let parsed = source.snapshot.syntax();
         if parsed.has_lua_syntax_errors() { unparsed.insert(source.id); }
         let diagnostics = crate::language_version::diagnostics(parsed, source.snapshot.source(), options.environment);
@@ -293,7 +297,7 @@ fn prepare_program(
         selection.profile,
         options.overload_mode,
     ).with_no_implicit_any(options.no_implicit_any).with_prepared_sources(prepared);
-    PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors, unparsed, version_diagnostics }
+    PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors, unparsed, version_diagnostics, sources }
 }
 
 /// Runs `query` in one native session over the project, as one checking task runs, for the
@@ -337,11 +341,35 @@ pub(crate) fn check_project_with_workspace(
     let started = Instant::now();
     options.cancellation.enter();
     workspace.set_parse_options(options.parse_options());
-    let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors, unparsed, mut version_diagnostics } =
-        prepare_program(&mut project, &options, workspace);
-    // As in Bun, the program is every file the load reached: explicit inputs and
-    // the targets of their syntactic require calls. Each is checked once, by one
-    // task, whether or not the checker later proves the call's loader.
+    let mut prepared = prepare_program(&mut project, &options, workspace);
+    let roots = program_roots(&project);
+    if profile {
+        for &file in &roots { eprintln!("luanalysis profile: file_id={} path={}", file.index, project.file(file).unwrap().path.display()); }
+    }
+    let source_prepare = started.elapsed();
+    let run = run_checks(&project, &mut prepared, &roots, false, false, &options, workspace);
+    if profile {
+        eprintln!("luanalysis profile: source_prepare={:.6}s flow_prepare={:.6}s checking={:.6}s registry_factory_sum={:.6}s factories={} execution={:?}",
+            source_prepare.as_secs_f64(), run.flow_prepare.as_secs_f64(), run.checking.as_secs_f64(),
+            run.factory_seconds, run.factories, run.execution);
+    }
+    let mut files = std::mem::take(&mut prepared.files);
+    files.extend(run.reports);
+    finish_reports(&mut files, &mut prepared);
+    ProjectCheckReport {
+        project,
+        files,
+        standard_library_files: prepared.standard_library_files,
+        environment_errors: prepared.environment_errors,
+        execution: run.execution,
+        planned_parallelism: run.parallelism,
+    }
+}
+
+/// As in Bun, the program is every file the load reached: explicit inputs and the targets of
+/// their syntactic require calls. Each is checked once, by one task, whether or not the checker
+/// later proves the call's loader.
+fn program_roots(project: &Project) -> Vec<FileId> {
     let mut roots: Vec<_> = project
         .entries
         .iter()
@@ -350,6 +378,35 @@ pub(crate) fn check_project_with_workspace(
         .collect();
     let explicit: HashSet<FileId> = roots.iter().copied().collect();
     roots.extend(project.files.iter().map(|file| file.id).filter(|file| !explicit.contains(file)));
+    roots
+}
+
+/// What checking a program's roots found.
+struct CheckRun {
+    reports: Vec<FileCheckReport>,
+    /// Each checked root's signature, when asked for (`ProjectRegistry::file_signature`).
+    signatures: HashMap<FileId, u64>,
+    execution: Option<NativeTaskRunStats>,
+    parallelism: usize,
+    flow_prepare: std::time::Duration,
+    checking: std::time::Duration,
+    factory_seconds: f64,
+    factories: u64,
+}
+
+/// Checks `roots` in one native session, or in planned parallel tasks that each check the roots
+/// they own. `owned` checks only the roots' bodies, the rest of the program being read as each
+/// root needs it; otherwise one session also checks the files the roots require.
+fn run_checks(
+    project: &Project,
+    prepared: &mut PreparedProgram,
+    roots: &[FileId],
+    owned: bool,
+    signatures: bool,
+    options: &ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
+) -> CheckRun {
+    let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let requested = NonZeroUsize::new(options.jobs)
         .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN));
     // One task per worker, a measured deviation from Bun's warm-up and chunk plan.
@@ -359,15 +416,16 @@ pub(crate) fn check_project_with_workspace(
     // task repeats that work. On Prototype Inertia Bun's plan took 4.1 to 4.6 s
     // wall at 4 and 10 workers, against 2.2 s for this plan and 3.7 s serially.
     let capacity = requested.get().min(roots.len()).max(1);
-    let tasks = pool_tasks(roots.len(), &|index| source_costs[&roots[index]], capacity);
+    let source_costs = &prepared.source_costs;
+    let tasks = pool_tasks(roots.len(), &|index| source_costs.get(&roots[index]).copied().unwrap_or(1), capacity);
     let workers = tasks.len().max(1);
-    let source_prepare = started.elapsed();
     let flow_started = Instant::now();
     if workers > 1 {
-        snapshot.prepare_shared_flows();
-        workspace.retain_sources(&revisions, snapshot.prepared_sources().clone());
+        prepared.snapshot.prepare_shared_flows();
+        workspace.retain_sources(&prepared.revisions, prepared.snapshot.prepared_sources().clone());
     }
     let flow_prepare = flow_started.elapsed();
+    let snapshot = &prepared.snapshot;
     let factory_nanos = AtomicU64::new(0);
     let factories = AtomicU64::new(0);
     let make_registry = |_| {
@@ -385,20 +443,22 @@ pub(crate) fn check_project_with_workspace(
         }
         registry
     };
-    if profile {
-        for &file in &roots { eprintln!("luanalysis profile: file_id={} path={}", file.index, project.file(file).unwrap().path.display()); }
-    }
+    let signed = |registry: &crate::native_functions::project_provider::ProjectRegistry, queries: &mut dyn luanalysis_engine::TypeQueries, files: &[FileId]| -> Vec<(FileId, u64)> {
+        if !signatures { return Vec::new(); }
+        files.iter().map(|&file| (file, registry.file_signature(queries, file))).collect()
+    };
     let checking_started = Instant::now();
-    let (checked, execution) = if workers == 1 {
-        let (checked, flows) = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(
+    let (reports, signed, execution) = if workers == 1 {
+        let ((reports, signed), flows) = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(
             || make_registry(0),
             |registry, queries| {
                 let flows = registry.source_recipes();
-                (registry.check_roots(queries, &roots), flows)
+                let reports = if owned { registry.check_owned_roots(queries, roots) } else { registry.check_roots(queries, roots) };
+                ((reports, signed(registry, queries, roots)), flows)
             },
         );
-        workspace.retain_sources(&revisions, flows);
-        (checked, None)
+        workspace.retain_sources(&prepared.revisions, flows);
+        (reports, signed, None)
     } else {
         // Each task checks only the files it owns, as a Bun task checks its
         // files: every file is planned, so each body is checked by one task.
@@ -406,7 +466,7 @@ pub(crate) fn check_project_with_workspace(
             .map(|task| task.into_iter().map(|index| roots[index]).collect())
             .collect();
         let batch_costs: Vec<usize> = batches.iter()
-            .map(|batch| batch.iter().map(|file| source_costs[file]).sum())
+            .map(|batch| batch.iter().map(|file| source_costs.get(file).copied().unwrap_or(1)).sum())
             .collect();
         let steps = vec![(0..batches.len()).collect::<Vec<_>>()];
         let run = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_task_plan_by_cost_report(
@@ -424,32 +484,203 @@ pub(crate) fn check_project_with_workspace(
                     }).collect();
                     eprintln!("luanalysis profile: job={job} elapsed={:.6}s files={names:?}", started.elapsed().as_secs_f64());
                 }
-                reports
+                (reports, signed(registry, queries, &batches[job]))
             },
         );
-        (merge_reports(run.results.into_iter().flatten().collect()), Some(run.stats))
+        let mut reports = Vec::new();
+        let mut signed = Vec::new();
+        for (job_reports, job_signed) in run.results {
+            reports.extend(job_reports);
+            signed.extend(job_signed);
+        }
+        (merge_reports(reports), signed, Some(run.stats))
     };
-    if profile {
-        eprintln!("luanalysis profile: source_prepare={:.6}s flow_prepare={:.6}s checking={:.6}s registry_factory_sum={:.6}s factories={} execution={execution:?}",
-            source_prepare.as_secs_f64(), flow_prepare.as_secs_f64(), checking_started.elapsed().as_secs_f64(),
-            factory_nanos.load(Ordering::Relaxed) as f64 / 1_000_000_000.0, factories.load(Ordering::Relaxed));
+    CheckRun {
+        reports,
+        signatures: signed.into_iter().collect(),
+        execution,
+        parallelism: capacity,
+        flow_prepare,
+        checking: checking_started.elapsed(),
+        factory_seconds: factory_nanos.load(Ordering::Relaxed) as f64 / 1_000_000_000.0,
+        factories: factories.load(Ordering::Relaxed),
     }
-    files.extend(checked);
-    for file in files.iter_mut().filter(|file| unparsed.contains(&file.file)) {
+}
+
+/// A source with syntax errors reports only those, and its language version's, as tsc reports no
+/// semantic errors with them; reports are in program order.
+fn finish_reports(files: &mut Vec<FileCheckReport>, prepared: &mut PreparedProgram) {
+    for file in files.iter_mut().filter(|file| prepared.unparsed.contains(&file.file)) {
         file.report.diagnostics.retain(|diagnostic| diagnostic.code == "LUA1001");
-        if let Some(diagnostics) = version_diagnostics.remove(&file.file) {
+        if let Some(diagnostics) = prepared.version_diagnostics.remove(&file.file) {
             file.report.diagnostics.extend(diagnostics);
             file.report.diagnostics.sort_by_key(|diagnostic| (diagnostic.span.start, diagnostic.span.end));
         }
     }
     files.sort_by_key(|file| file.file.index);
+}
+
+/// What a language server keeps from one check for the next, as TypeScript's builder keeps each
+/// file's version and signature: by path, each file's source revision, report, signature and the
+/// names it shares, and the options and file set they hold for.
+#[derive(Default)]
+pub(crate) struct IncrementalState {
+    key: Option<String>,
+    files: HashMap<std::path::PathBuf, IncrementalFile>,
+    /// How many files the check that made this state checked.
+    pub(crate) checked: usize,
+}
+
+struct IncrementalFile {
+    revision: u64,
+    report: CheckReport,
+    signature: Option<u64>,
+    names: std::sync::Arc<crate::affected::FileNames>,
+}
+
+impl IncrementalState {
+    /// What every check of this workspace must agree on: the options it checks with and the files
+    /// it loads, in their roles. A change checks the whole program.
+    fn key(project: &Project, options: &ProjectCheckOptions) -> String {
+        let mut files: Vec<_> = project.files.iter()
+            .map(|file| format!("{}|{:?}|{}|{}", file.path.display(), file.role, project.entries.contains(&file.id), project.libraries.contains(&file.id)))
+            .collect();
+        files.sort();
+        format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}\n{}",
+            options.loader_policy, options.environment, options.standard_library, options.overload_mode, options.parse_options(),
+            options.no_implicit_any, options.no_unsafe_any, options.strict_nil, options.assume_unknown_standard_effects,
+            options.describe_types, options.inspections, options.emmylua_syntax, options.decay_optionals, files.join("\n"))
+    }
+}
+
+/// Checks `project` again after edits, as TypeScript's builder does: only the changed files, then
+/// the files that depend on one whose signature (what it exposes to others) changed, and so on
+/// while signatures change. Every other file keeps the report of the check before. A first check,
+/// or one with other options or files, checks the whole program.
+pub(crate) fn check_project_incrementally(
+    mut project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
+) -> ProjectCheckReport {
+    options.cancellation.enter();
+    workspace.set_parse_options(options.parse_options());
+    let mut state = workspace.take_incremental_state();
+    let mut prepared = prepare_program(&mut project, &options, workspace);
+    let key = IncrementalState::key(&project, &options);
+    let path = |file: FileId| project.file(file).map(|source| source.path.clone()).expect("a program file");
+    let names: HashMap<FileId, std::sync::Arc<crate::affected::FileNames>> = prepared.sources.iter().map(|(&file, snapshot)| {
+        let known = state.files.get(&path(file)).filter(|known| known.revision == snapshot.revision());
+        // A source with syntax errors that could not be bound shares no names.
+        let names = known.map(|known| std::sync::Arc::clone(&known.names)).unwrap_or_else(|| {
+            std::sync::Arc::new(snapshot.bound().map(|bound| crate::affected::FileNames::of(snapshot.syntax(), bound, snapshot.source())).unwrap_or_default())
+        });
+        (file, names)
+    }).collect();
+    let roots = program_roots(&project);
+    let whole = state.key.as_deref() != Some(key.as_str());
+    let mut checked: HashMap<FileId, FileCheckReport> = HashMap::default();
+    let mut checked_count = 0;
+    let mut signatures: HashMap<FileId, u64> = HashMap::default();
+    let mut execution = None;
+    let mut parallelism = 1;
+    if whole {
+        let run = run_checks(&project, &mut prepared, &roots, false, true, &options, workspace);
+        checked_count = roots.len();
+        signatures = run.signatures;
+        execution = run.execution;
+        parallelism = run.parallelism;
+        checked.extend(run.reports.into_iter().map(|report| (report.file, report)));
+    } else {
+        let changed: Vec<FileId> = roots.iter().copied().filter(|&file| {
+            let revision = prepared.sources.get(&file).map(|snapshot| snapshot.revision());
+            state.files.get(&path(file)).is_none_or(|known| Some(known.revision) != revision || known.signature.is_none())
+        }).collect();
+        let requirers = |file: FileId| -> Vec<FileId> {
+            project.dependencies.iter()
+                .filter(|dependency| matches!(dependency.outcome, luanalysis_project::DependencyOutcome::Resolved(target) if target == file))
+                .map(|dependency| dependency.from)
+                .collect()
+        };
+        let costs = prepared.source_costs.clone();
+        let cost = |file: &FileId| costs.get(file).copied().unwrap_or(1);
+        let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
+        let total: usize = roots.iter().map(cost).sum();
+        let mut pending = changed;
+        while !pending.is_empty() && !options.cancellation.is_cancelled() {
+            // Once checking again would cost half the program, one whole check is cheaper than
+            // following the edit round by round, each in a session of its own.
+            let spent: usize = pending.iter().chain(checked.keys()).map(cost).sum();
+            if profile {
+                eprintln!("luanalysis profile: incremental round: {} files, cost {spent} of {total}: {:?}", pending.len(),
+                    pending.iter().take(8).map(|&file| path(file).file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>());
+            }
+            if 2 * spent >= total {
+                let run = run_checks(&project, &mut prepared, &roots, false, true, &options, workspace);
+                checked_count += roots.len();
+                parallelism = parallelism.max(run.parallelism);
+                signatures = run.signatures;
+                checked = run.reports.into_iter().map(|report| (report.file, report)).collect();
+                break;
+            }
+            let run = run_checks(&project, &mut prepared, &pending, true, true, &options, workspace);
+            checked_count += pending.len();
+            parallelism = parallelism.max(run.parallelism);
+            let mut affected: Vec<FileId> = Vec::new();
+            for &file in &pending {
+                let signature = run.signatures.get(&file).copied();
+                let known = state.files.get(&path(file));
+                let reshaped = known.is_none_or(|known| known.signature != signature);
+                if signature.is_some() { signatures.insert(file, signature.unwrap()); }
+                if !reshaped { continue; }
+                // What it shared before and now: a name it no longer touches affects its users too.
+                let mut touched = names[&file].touched.clone();
+                if let Some(known) = known { touched.extend(known.names.touched.iter().cloned()); }
+                if profile { eprintln!("luanalysis profile: {} reshaped; touches {:?}", path(file).display(), touched); }
+                affected.extend(requirers(file));
+                affected.extend(roots.iter().copied().filter(|&other| other != file && names.get(&other).is_some_and(|names| names.depends_on(&touched))));
+            }
+            checked.extend(run.reports.into_iter().filter(|report| pending.contains(&report.file)).map(|report| (report.file, report)));
+            affected.sort_by_key(|file| file.index);
+            affected.dedup();
+            pending = affected.into_iter().filter(|file| !checked.contains_key(file)).collect();
+        }
+    }
+    // Every file not checked again keeps the report of the check before.
+    let mut files = std::mem::take(&mut prepared.files);
+    let unprepared: HashSet<FileId> = files.iter().map(|file| file.file).collect();
+    for &file in &roots {
+        if unprepared.contains(&file) { continue; }
+        let report = match checked.remove(&file) {
+            Some(report) => report,
+            None => FileCheckReport { file, report: state.files.get(&path(file)).map(|known| known.report.clone()).unwrap_or_default() },
+        };
+        files.push(report);
+    }
+    files.extend(checked.into_values().filter(|report| !roots.contains(&report.file)));
+    finish_reports(&mut files, &mut prepared);
+    let cancelled = options.cancellation.is_cancelled();
+    let mut next = IncrementalState { key: (!cancelled).then_some(key), files: HashMap::default(), checked: checked_count };
+    for report in &files {
+        let Some(snapshot) = prepared.sources.get(&report.file) else { continue };
+        let file = path(report.file);
+        let signature = signatures.get(&report.file).copied()
+            .or_else(|| state.files.get(&file).filter(|known| known.revision == snapshot.revision()).and_then(|known| known.signature));
+        next.files.insert(file, IncrementalFile {
+            revision: snapshot.revision(),
+            report: report.report.clone(),
+            signature,
+            names: std::sync::Arc::clone(&names[&report.file]),
+        });
+    }
+    state = next;
+    workspace.put_incremental_state(state);
     ProjectCheckReport {
         project,
         files,
-        standard_library_files,
-        environment_errors,
+        standard_library_files: prepared.standard_library_files,
+        environment_errors: prepared.environment_errors,
         execution,
-        planned_parallelism: capacity,
+        planned_parallelism: parallelism,
     }
 }
 

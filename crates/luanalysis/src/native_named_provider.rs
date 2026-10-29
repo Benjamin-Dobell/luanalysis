@@ -980,6 +980,11 @@ impl NativeRegistry {
         self.report.borrow_mut().diagnostics.extend(diagnostics);
     }
 
+    /// The named types this source declares, in order.
+    pub(crate) fn named_declaration_keys(&self) -> Vec<NativeTypeDeclarationKey> {
+        self.named.declarations().iter().map(|source| declaration(source.key)).collect()
+    }
+
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
         self.check_type_parameter_defaults(queries);
         self.prepare_documentation_scopes(queries);

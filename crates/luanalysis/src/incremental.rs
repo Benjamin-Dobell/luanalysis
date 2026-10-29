@@ -131,6 +131,8 @@ pub struct ProjectWorkspace {
     shared: Option<Arc<SharedSources>>,
     /// How its sources' annotations are read; a snapshot read otherwise is parsed again.
     parse_options: luanalysis_syntax::ParseOptions,
+    /// What the last incremental check found, for the next (`check_project_incrementally`).
+    incremental: crate::project_check::IncrementalState,
 }
 
 /// The source revisions and recipes that several workspaces share. A revision is kept while a
@@ -243,6 +245,29 @@ impl ProjectWorkspace {
         options: crate::project_check::ProjectCheckOptions,
     ) -> crate::project_check::ProjectCheckReport {
         crate::project_check::check_project_with_workspace(project, options, self)
+    }
+
+    /// Checks `project` again as an editor does, checking only what its edits since this
+    /// workspace's last incremental check can affect (`check_project_incrementally`).
+    pub fn check_project_incrementally(
+        &mut self,
+        project: Project,
+        options: crate::project_check::ProjectCheckOptions,
+    ) -> crate::project_check::ProjectCheckReport {
+        crate::project_check::check_project_incrementally(project, options, self)
+    }
+
+    /// How many files the last incremental check checked, its others keeping their reports.
+    pub fn last_incremental_checked(&self) -> usize {
+        self.incremental.checked
+    }
+
+    pub(crate) fn take_incremental_state(&mut self) -> crate::project_check::IncrementalState {
+        std::mem::take(&mut self.incremental)
+    }
+
+    pub(crate) fn put_incremental_state(&mut self, state: crate::project_check::IncrementalState) {
+        self.incremental = state;
     }
 
     /// Releases retained source inputs. Existing prepared snapshots remain

@@ -61,6 +61,18 @@ impl Fixture {
         self.compare_with_resolver(workspace, &self.resolver(), plan, options)
     }
 
+    /// An incremental check of `plan` after the edits on disk matches a cold check; the number of
+    /// files it checked.
+    fn compare_incrementally(&self, workspace: &mut ProjectWorkspace, plan: ProjectLoadPlan, options: ProjectCheckOptions) -> usize {
+        let resolver = self.resolver();
+        let warm = Project::load_plan(&resolver, plan.clone(), |source| workspace.static_require_requests(source));
+        let cold = Project::load_plan(&resolver, plan, static_require_requests);
+        let warm = workspace.check_project_incrementally(warm, options.clone());
+        let cold = check_project_with_options(cold, options);
+        assert_eq!(normalized(&warm), normalized(&cold));
+        workspace.last_incremental_checked()
+    }
+
     fn compare_with_resolver(
         &self,
         workspace: &mut ProjectWorkspace,
@@ -667,4 +679,42 @@ fn declaration_resource_identity_is_part_of_the_preparation_key() {
         "{stats:?}"
     );
     clean(&check("resource-two", "---@alias Count number\n").0);
+}
+
+#[test]
+fn incremental_checks_redo_only_what_an_edit_can_affect_and_match_cold_checks() {
+    let fixture = Fixture::new();
+    fixture.file("m.lua", "local M = {}\n---@return number\nfunction M.size() return 1 end\nreturn M\n");
+    fixture.file("a.lua", "local m = require('m')\n---@type number\nlocal n = m.size()\nlocal function private() return n end\nreturn private\n");
+    fixture.file("g.lua", "Shared = { count = 1 }\n");
+    fixture.file("b.lua", "local c = Shared.count\n");
+    fixture.file("c.lua", "---@class Point\n---@field x number\nlocal Point = {}\nreturn Point\n");
+    fixture.file("d.lua", "---@type Point\nlocal p = { x = 1 }\nlocal y = p.y\n");
+    let entries = ["a.lua", "b.lua", "c.lua", "d.lua", "g.lua", "m.lua"];
+    let plan = || fixture.plan(&entries, &[]);
+    let mut workspace = ProjectWorkspace::new();
+    // The first check checks every file, the standard declarations' included.
+    let all = fixture.compare_incrementally(&mut workspace, plan(), modules());
+    assert!(all >= entries.len(), "{all}");
+    // Nothing changed: nothing is checked again.
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), modules()), 0);
+    // An edit no other file can see checks only its file.
+    fixture.file("a.lua", "local m = require('m')\n---@type number\nlocal n = m.size()\nlocal function private() return n + 1 end\nreturn private\n");
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), modules()), 1);
+    // A module's export changes for the file that requires it.
+    fixture.file("m.lua", "local M = {}\n---@return string\nfunction M.size() return '1' end\nreturn M\n");
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), modules()), 2);
+    // A global's removal reaches the file that reads it, and its return.
+    fixture.file("g.lua", "local unshared = 1\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
+    fixture.file("g.lua", "Shared = { count = 1 }\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
+    // A class's new field reaches the file that uses the class.
+    fixture.file("c.lua", "---@class Point\n---@field x number\n---@field y number\nlocal Point = {}\nreturn Point\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
+    // A body edit in the class's file checks only that file.
+    fixture.file("c.lua", "---@class Point\n---@field x number\n---@field y number\nlocal Point = {}\nlocal unused = 2\nreturn Point\n");
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), modules()), 1);
+    // Other options check everything again.
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), ProjectCheckOptions { no_unsafe_any: true, ..modules() }), all);
 }
