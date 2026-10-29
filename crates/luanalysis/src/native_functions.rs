@@ -189,9 +189,19 @@ pub(super) struct NativeRegistry {
 
 /// What a registry builds from one source revision alone: its functions and declarations, named
 /// declarations, expressions and flow recipes. They hold no type and no session state, so every
-/// session over the same revision and identity shares them (`ProjectWorkspace`).
+/// session over the same revision and identity shares them (`ProjectWorkspace`). They are one
+/// `Arc`: each session passes every source's recipes along, and a source whose registry it
+/// never builds then costs it one reference rather than one per part.
 #[derive(Clone)]
-pub(crate) struct SourceRecipes {
+pub(crate) struct SourceRecipes(std::sync::Arc<SourceRecipeParts>);
+
+impl std::ops::Deref for SourceRecipes {
+    type Target = SourceRecipeParts;
+    fn deref(&self) -> &SourceRecipeParts { &self.0 }
+}
+
+#[derive(Clone)]
+pub(crate) struct SourceRecipeParts {
     snapshot: u64,
     functions: std::sync::Arc<Vec<luanalysis_syntax::SharedFunction>>,
     function_names: std::sync::Arc<Vec<Option<Name>>>,
@@ -269,7 +279,7 @@ impl SourceRecipes {
         let signatures = super::native_signatures::NativeSignatures::new(snapshot, file, &functions, &named);
         let type_scopes = type_scope_recipes(snapshot, &functions, bound);
         let named_scopes = named.declarations().iter().map(|source| source.generic_scope.clone()).chain(signatures.scopes(file)).collect();
-        Self {
+        Self(std::sync::Arc::new(SourceRecipeParts {
             signatures: std::sync::Arc::new(signatures),
             type_scopes: std::sync::Arc::new(type_scopes),
             named_scopes: std::sync::Arc::new(named_scopes),
@@ -284,7 +294,12 @@ impl SourceRecipes {
             expressions: std::sync::Arc::new(expressions),
             flow,
             derived: std::sync::Arc::default(),
-        }
+        }))
+    }
+
+    /// Its flow recipes, to change before a registry takes them.
+    pub(super) fn flow_mut(&mut self) -> &mut std::sync::Arc<super::native_flow::NativeFlowRecipes> {
+        &mut std::sync::Arc::make_mut(&mut self.0).flow
     }
 
     #[cfg(test)]
@@ -330,7 +345,9 @@ impl NativeRegistry {
     }
 
     fn new_with_identity(file: std::sync::Arc<File>, bound: std::sync::Arc<BoundFile>, identity: project_provider::SourceRecipeIdentity) -> Self {
-        Self::new_with_identity_and_flow(file, bound, identity, None)
+        let mut registry = Self::new_with_identity_and_flow(file, bound, identity, None);
+        registry.complete_standalone();
+        registry
     }
 
     fn new_with_identity_and_flow(
@@ -339,18 +356,24 @@ impl NativeRegistry {
         identity: project_provider::SourceRecipeIdentity,
         prepared: Option<SourceRecipes>,
     ) -> Self {
-        let snapshot = identity.source;
-        let source = prepared.unwrap_or_else(|| SourceRecipes::new(&file, &bound, identity));
-        assert_eq!(source.snapshot, snapshot, "prepared recipes belong to their original source identity");
-        let SourceRecipes { functions, function_names, declaration_functions, function_spans, declarations, named, expressions, flow, signatures, type_scopes, named_scopes, annotation_types, derived, .. } = source;
-        let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
+        let recipes = prepared.unwrap_or_else(|| SourceRecipes::new(&file, &bound, identity));
+        let types = Self::seed_types(&file, &bound, &recipes);
+        Self::from_seed(file, bound, identity, recipes, types)
+    }
+
+    /// The types of a source revision, with its signatures', classes' and methods' scopes: what a
+    /// project merges of every source before it builds any source's registry. It builds the
+    /// revision's derived recipes too, from which its methods' scopes are read.
+    pub(super) fn seed_types(file: &std::sync::Arc<File>, bound: &std::sync::Arc<BoundFile>, recipes: &SourceRecipes) -> NativeTypes {
+        let snapshot = recipes.snapshot;
+        let (functions, function_spans, named) = (&recipes.functions, &recipes.function_spans, &recipes.named);
         let mut types = NativeTypes::new_with_named(
             snapshot,
-            (*type_scopes).clone(),
-            (*named_scopes).clone(),
-            (*annotation_types).clone(),
+            (*recipes.type_scopes).clone(),
+            (*recipes.named_scopes).clone(),
+            (*recipes.annotation_types).clone(),
         );
-        for (function,signature) in signatures.implementation_scopes(&functions) {
+        for (function,signature) in recipes.signatures.implementation_scopes(functions) {
             types.attach_signature_scope(function,signature);
         }
         // Semantic self identities are allocated only after all original
@@ -362,19 +385,18 @@ impl NativeRegistry {
                 types.register_self_parameter(source.key, source.syntax.name.span);
             }
         }
-        let expressions = NativeExpressions::from_recipes(expressions);
-        let flow = NativeFlowSources::from_shared_recipes(flow);
-        assert_eq!(flow.program.snapshot, identity.flow, "prepared flow belongs to its original source recipe");
-        let derived_recipes = derived.get_or_init(|| {
-            let metatables = metatables::NativeMetatables::new(&expressions, &functions, &bound, &named);
-            let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types, &metatables);
-            let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
+        let derived_recipes = recipes.derived.get_or_init(|| {
+            let expressions = NativeExpressions::from_recipes(std::sync::Arc::clone(&recipes.expressions));
+            let flow = NativeFlowSources::from_shared_recipes(std::sync::Arc::clone(&recipes.flow));
+            let metatables = metatables::NativeMetatables::new(&expressions, functions, bound, named);
+            let methods = methods::NativeMethods::new(snapshot, file, functions, function_spans, bound, named, &types, &metatables);
+            let packs = NativePacks::new(snapshot, file, function_spans, &|expression| {
                 expressions.key_for_span(expression.span)
             });
-            let runtime_tables = super::native_runtime_tables::NativeRuntimeTables::new(&file, &expressions, &flow).recipes();
-            let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
+            let runtime_tables = super::native_runtime_tables::NativeRuntimeTables::new(file, &expressions, &flow).recipes();
+            let globals = globals::NativeGlobals::new(snapshot, file, bound, function_spans, &expressions, named.next_member_index());
             DerivedRecipes {
-                module_calls: crate::module_requests::require_calls(&file, &bound),
+                module_calls: crate::module_requests::require_calls(file, bound),
                 metatables: std::sync::Arc::new(metatables),
                 methods: std::sync::Arc::new(methods),
                 packs: std::sync::Arc::new(packs),
@@ -382,12 +404,31 @@ impl NativeRegistry {
                 globals: std::sync::Arc::new(globals),
             }
         });
-        let metatables = std::sync::Arc::clone(&derived_recipes.metatables);
-        let methods = std::sync::Arc::clone(&derived_recipes.methods);
-        for method in methods.sources() {
+        for method in derived_recipes.methods.sources() {
             if method.contextual_owner.is_none() && method.owner_application.is_none()
                 && let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
         }
+        types
+    }
+
+    /// The registry of a source revision whose types `seed_types` built.
+    pub(super) fn from_seed(
+        file: std::sync::Arc<File>,
+        bound: std::sync::Arc<BoundFile>,
+        identity: project_provider::SourceRecipeIdentity,
+        source: SourceRecipes,
+        types: NativeTypes,
+    ) -> Self {
+        let snapshot = identity.source;
+        assert_eq!(source.snapshot, snapshot, "prepared recipes belong to their original source identity");
+        let SourceRecipeParts { functions, function_names, declaration_functions, function_spans, declarations, named, expressions, flow, signatures, type_scopes, named_scopes, annotation_types, derived, .. } = std::sync::Arc::unwrap_or_clone(source.0);
+        let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
+        let expressions = NativeExpressions::from_recipes(expressions);
+        let flow = NativeFlowSources::from_shared_recipes(flow);
+        assert_eq!(flow.program.snapshot, identity.flow, "prepared flow belongs to its original source recipe");
+        let derived_recipes = derived.get().expect("a seeded revision has its derived recipes");
+        let metatables = std::sync::Arc::clone(&derived_recipes.metatables);
+        let methods = std::sync::Arc::clone(&derived_recipes.methods);
         let packs = std::sync::Arc::clone(&derived_recipes.packs);
         let runtime_tables = super::native_runtime_tables::NativeRuntimeTables::from_recipes(std::sync::Arc::clone(&derived_recipes.runtime_tables));
         let globals = std::sync::Arc::clone(&derived_recipes.globals);
@@ -403,7 +444,7 @@ impl NativeRegistry {
             .diagnostics
             .extend(types.diagnostics().iter().cloned());
         report.diagnostics.extend(signatures.diagnostics.iter().cloned());
-        let mut registry = Self {
+        let registry = Self {
             snapshot,
             source_role: luanalysis_project::SourceRole::Implementation,
             overload_mode: crate::OverloadMode::default(),
@@ -463,12 +504,18 @@ impl NativeRegistry {
             deferred_constraints: RefCell::new(Vec::new()),
             deferred_constraint_spans: RefCell::new(HashSet::default()),
         };
-        registry.rebuild_original_members();
-        registry.attach_documentation_signature_owners();
-        registry.project_globals = Some(std::rc::Rc::new(globals::ProjectGlobalIndex::new(
-            luanalysis_engine::NativeEnvironmentKey { snapshot, index: 0 }, &[&registry],
-        )));
         registry
+    }
+
+    /// What a registry outside any project derives alone: its members, its documentation's
+    /// owners and a global index of its own. A project derives them for every source with the
+    /// project's names and globals (`ProjectRegistry`).
+    fn complete_standalone(&mut self) {
+        self.rebuild_original_members();
+        self.attach_documentation_signature_owners();
+        self.project_globals = Some(std::rc::Rc::new(globals::ProjectGlobalIndex::new(
+            luanalysis_engine::NativeEnvironmentKey { snapshot: self.snapshot, index: 0 }, &[&*self],
+        )));
     }
 
     /// Whether an expression's type cannot depend on its expected type,
@@ -505,7 +552,7 @@ impl NativeRegistry {
     }
     /// This registry's source recipes, for a later session over the same revision.
     pub(super) fn source_recipes(&self) -> SourceRecipes {
-        SourceRecipes {
+        SourceRecipes(std::sync::Arc::new(SourceRecipeParts {
             snapshot: self.snapshot,
             functions: std::sync::Arc::clone(&self.functions),
             function_names: std::sync::Arc::clone(&self.function_names),
@@ -520,7 +567,7 @@ impl NativeRegistry {
             named_scopes: std::sync::Arc::clone(&self.named_scope_recipes),
             annotation_types: std::sync::Arc::clone(&self.annotation_type_recipes),
             derived: std::sync::Arc::clone(&self.derived),
-        }
+        }))
     }
     pub(crate) fn binding_function_owner(&self,binding:BindingId)->Option<NativeFunctionKey> {self.flow.binding_function_owner(binding)}
 
@@ -1309,10 +1356,6 @@ impl NativeRegistry {
     pub(crate) fn has_shape_attachment(&self, binding: BindingId) -> bool {
         self.shape_for_binding(binding).is_some()
     }
-    pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
-        self.flow.seed_original_global_reference_keys(names);
-    }
-
     pub(super) fn flow_sources(&self) -> &NativeFlowSources { &self.flow }
 
     pub(super) fn publish_binding(&self, binding: BindingId, value: &Binding) {

@@ -200,11 +200,140 @@ impl ProjectNamedIndex {
     }
 }
 
+/// One source of a project. Its registry is built when a check first reads it, as TypeScript's
+/// checker resolves a declaration only when asked: a check of one edited file reads few of a
+/// project's sources (two of 445 in EmmyLua Analyzer's checker tests, 50 of 446 in
+/// lua-language-server's sources), and building every one was most of an edit's work. What the
+/// project's indexes read of every source comes from its revision's recipes and types instead.
 struct FileRegistry {
     id: FileId,
     role: SourceRole,
     standard_library: Option<StandardLibrarySource>,
-    source: NativeRegistry,
+    syntax: Arc<File>,
+    bound: Arc<BoundFile>,
+    identity: SourceRecipeIdentity,
+    named: Arc<crate::native_named::NativeNamed>,
+    functions: Arc<Vec<luanalysis_syntax::SharedFunction>>,
+    derived: Arc<std::sync::OnceLock<super::DerivedRecipes>>,
+    environment_replacements: (u8, bool),
+    /// Its recipes, and its types from which the project's scopes were merged, until its
+    /// registry takes them. A source that declares no named type adds no scope, and its types
+    /// wait for its registry when its derived recipes are known.
+    seed: RefCell<Option<(super::SourceRecipes, Option<super::NativeTypes>)>>,
+    /// Whether its members may extend another source's types (documentation members, applied
+    /// owners, stores on a global class), which a project reads of every source whenever a type's
+    /// members are asked for: its registry is built with the project's.
+    applies_members: bool,
+    /// Whether the project's merged scopes reach its function or signature scopes, which another
+    /// source can then read before its registry is built.
+    shares_member_scopes: bool,
+    /// Boxed, as most sources' registries are never built.
+    built: std::cell::OnceCell<Box<NativeRegistry>>,
+    /// What building its registry reported of it alone (its types', signatures' and duplicate
+    /// declarations' diagnostics), with which a check's report of it begins.
+    baseline: RefCell<CheckReport>,
+}
+
+impl FileRegistry {
+    fn snapshot(&self) -> u64 { self.identity.source }
+    fn derived(&self) -> &super::DerivedRecipes { self.derived.get().expect("a seeded revision has its derived recipes") }
+    fn globals(&self) -> &super::globals::NativeGlobals { &self.derived().globals }
+    /// Its registry, if one has been built.
+    fn built(&self) -> Option<&NativeRegistry> { self.built.get().map(|source| &**source) }
+    /// Its registry, built now if nothing has read it yet.
+    fn source(&self, project: &ProjectRegistry) -> &NativeRegistry {
+        self.built.get_or_init(|| {
+            let build = || {
+                let mut source = Box::new(self.build_members(project));
+                self.finish(&mut source, project);
+                source
+            };
+            // What only its registry reads is attached as it is built: no query can have read it.
+            if self.shares_member_scopes { build() } else { crate::native_types::unobserved(build) }
+        })
+    }
+    /// Its registry with the project's settings, names and globals, and its members.
+    fn build_members(&self, project: &ProjectRegistry) -> NativeRegistry {
+        crate::project_check::unwind_if_cancelled();
+        let (recipes, types) = self.seed.borrow_mut().take().expect("a source's registry is built once");
+        let types = types.unwrap_or_else(|| {
+            let mut types = NativeRegistry::seed_types(&self.syntax, &self.bound, &recipes);
+            types.share_original_scopes(Rc::clone(&project.scopes));
+            types
+        });
+        let mut source = NativeRegistry::from_seed(Arc::clone(&self.syntax), Arc::clone(&self.bound), self.identity, recipes, types);
+        source.set_overload_mode(project.overload_mode);
+        source.set_no_implicit_any(project.no_implicit_any);
+        source.set_source_role(self.role);
+        source.set_inspections(project.inspections);
+        source.set_no_unsafe_any(project.no_unsafe_any);
+        source.set_cancellation(&project.cancellation);
+        source.set_project_names(Rc::clone(&project.names));
+        source.attach_documentation_signature_owners();
+        source.rebuild_documentation_members();
+        // Library-global augmentation candidates are available only once every original
+        // declaration has joined the selected namespace.
+        source.project_globals = Some(Rc::clone(&project.globals));
+        source.rebuild_original_members();
+        debug_assert!(
+            self.applies_members || source.doc_members.keys().next().is_none() && source.members.applied_members().next().is_none(),
+            "a source whose members extend other sources' types is built with the project",
+        );
+        source
+    }
+    /// The project's standard capabilities, modules and duplicate names, given to the registry
+    /// last; what building it reported becomes its baseline.
+    fn finish(&self, source: &mut NativeRegistry, project: &ProjectRegistry) {
+        let standard = &project.standard_environment;
+        source.flow.set_original_require_capability(standard.require_operation.is_some());
+        source.flow.set_require_needs_declaration(project.full_lua);
+        for kind in [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread] {
+            source.flow.set_opaque_runtime_type_enabled(kind, standard.runtime_type_declaration(kind).is_some());
+        }
+        source.set_project_names(Rc::clone(&project.names));
+        source.project_modules = Some(Rc::clone(&project.modules));
+        source.project_globals = Some(Rc::clone(&project.globals));
+        if let Some(capability) = standard.type_operation {
+            source.set_original_type_operation(capability);
+        } else {
+            source.set_legacy_builtin_policy(project.legacy_builtins);
+        }
+        if project.full_lua {
+            for &declaration in &standard.rejected_assert_declarations {
+                if declaration.snapshot == source.snapshot {
+                    source.reject_untrusted_standard_assert(declaration);
+                }
+            }
+        }
+        for declaration in source.named.declarations() {
+            if project.names.candidates(&declaration.syntax.name.text).len() > 1 {
+                source.report.borrow_mut().diagnostics.push(Diagnostic {
+                    code: "TS2300",
+                    span: declaration.syntax.name.span,
+                    message: format!("Duplicate identifier '{}'.", declaration.syntax.name.text),
+                });
+            }
+        }
+        *self.baseline.borrow_mut() = source.take_report();
+    }
+    /// Whether the project's standard environment reads its registry: the builtin, base and
+    /// string libraries' capabilities, and `require`'s wherever it is declared.
+    fn declares_standard_capabilities(&self) -> bool {
+        matches!(self.standard_library, Some(StandardLibrarySource::Builtin | StandardLibrarySource::Base | StandardLibrarySource::String))
+            || self.globals().declarations.iter().any(|declaration| declaration.namespace.is_none() && declaration.name.text == "require")
+    }
+}
+
+impl super::globals::GlobalIndexSource for FileRegistry {
+    fn index_globals(&self) -> &super::globals::NativeGlobals { self.globals() }
+    fn index_role(&self) -> SourceRole { self.role }
+    fn index_environment_replacements(&self) -> (u8, bool) { self.environment_replacements }
+    fn index_bound(&self) -> &BoundFile { &self.bound }
+    fn index_named(&self) -> &crate::native_named::NativeNamed { &self.named }
+    fn index_function(&self, key: NativeFunctionKey) -> &luanalysis_syntax::Function {
+        assert_eq!(key.snapshot, self.snapshot(), "foreign or missing native Lua function identity");
+        &self.functions[key.index as usize]
+    }
 }
 
 pub(crate) struct ProjectRegistry {
@@ -215,6 +344,8 @@ pub(crate) struct ProjectRegistry {
     globals: Rc<super::globals::ProjectGlobalIndex>,
     standard_environment: super::standard::ProjectStandardEnvironment,
     modules: Rc<ProjectModuleIndex>,
+    /// Every source's named types' scopes, which each source's types see.
+    scopes: Rc<crate::native_types::OriginalTypeScopes>,
     header_metadata: RefCell<super::named_provider::SourceHeaderMetadata>,
     /// Whether reports describe binding and expression types. Diagnostics never
     /// depend on it; only callers that print or query types need them.
@@ -223,27 +354,39 @@ pub(crate) struct ProjectRegistry {
     global_names: Vec<Vec<u8>>,
     /// Stops a check in progress: files not yet begun are skipped.
     cancellation: crate::project_check::Cancellation,
+    // What each source's registry is given when it is built.
+    overload_mode: crate::OverloadMode,
+    no_implicit_any: bool,
+    inspections: bool,
+    no_unsafe_any: bool,
+    legacy_builtins: crate::builtins::LegacyBuiltinPolicy,
+    full_lua: bool,
 }
 
 impl ProjectRegistry {
     /// Each source's flow recipes, for a later session over the same revisions.
     pub(crate) fn source_recipes(&self) -> PreparedSources {
         PreparedSources {
-            recipes: self.files.iter().map(|file| Some(file.source.source_recipes())).collect(),
+            recipes: self.files.iter().map(|file| Some(match file.built() {
+                Some(source) => source.source_recipes(),
+                None => file.seed.borrow().as_ref().expect("an unbuilt source keeps its recipes").0.clone(),
+            })).collect(),
             names: self.global_names.clone(),
         }
     }
 
     pub(crate) fn set_describe_types(&mut self, describe: bool) { self.describe_types = describe; }
     pub(crate) fn set_inspections(&mut self, enabled: bool) {
-        for file in &mut self.files { file.source.set_inspections(enabled); }
+        self.inspections = enabled;
+        for source in self.files.iter_mut().filter_map(|file| file.built.get_mut()) { source.set_inspections(enabled); }
     }
     pub(crate) fn set_no_unsafe_any(&mut self, enabled: bool) {
-        for file in &mut self.files { file.source.set_no_unsafe_any(enabled); }
+        self.no_unsafe_any = enabled;
+        for source in self.files.iter_mut().filter_map(|file| file.built.get_mut()) { source.set_no_unsafe_any(enabled); }
     }
     pub(crate) fn set_cancellation(&mut self, cancellation: &crate::project_check::Cancellation) {
         self.cancellation = cancellation.clone();
-        for file in &mut self.files { file.source.set_cancellation(cancellation); }
+        for source in self.files.iter_mut().filter_map(|file| file.built.get_mut()) { source.set_cancellation(cancellation); }
     }
     pub(crate) fn set_standard_environment_assumptions(&mut self, enabled: bool) {
         self.standard_environment.assume_unknown_effects &= enabled;
@@ -311,13 +454,15 @@ impl ProjectRegistry {
             .enumerate()
             .map(|(index, input)| {
                 crate::project_check::unwind_if_cancelled();
-                let mut source = NativeRegistry::new_with_identity_and_flow(input.syntax, input.bound, identities[index], prepared(index));
-                source.set_overload_mode(overload_mode);
-                source.set_no_implicit_any(no_implicit_any);
-                source.set_source_role(input.role);
-                assert!(snapshots.insert(source.snapshot, index).is_none());
-                assert!(flow_snapshots.insert(source.iterator_sources().program.snapshot, index).is_none());
-                for declaration in source.named.declarations() {
+                let identity = identities[index];
+                let recipes = prepared(index).unwrap_or_else(|| super::SourceRecipes::new(&input.syntax, &input.bound, identity));
+                // Only a named declaration has a scope the project merges. Building a source's
+                // types builds its derived recipes too.
+                let scoped = !recipes.named.declarations().is_empty() || recipes.derived.get().is_none();
+                let types = scoped.then(|| NativeRegistry::seed_types(&input.syntax, &input.bound, &recipes));
+                assert!(snapshots.insert(identity.source, index).is_none());
+                assert!(flow_snapshots.insert(identity.flow, index).is_none());
+                for declaration in recipes.named.declarations() {
                     let key = NativeTypeDeclarationKey { snapshot: declaration.key.snapshot, index: declaration.key.index };
                     names.names.entry(declaration.syntax.name.text.clone()).or_default().push(key);
                     if input.standard_library == Some(crate::standard_environment::StandardLibrarySource::Utility) { utilities.insert(key); }
@@ -326,28 +471,47 @@ impl ProjectRegistry {
                         if input.role == SourceRole::Declaration { declared.insert(key); }
                     }
                 }
+                let environment_replacements = super::NativeFlowSources::from_shared_recipes(Arc::clone(&recipes.flow)).environment_replacements();
                 FileRegistry {
                     id: input.id,
                     role: input.role,
                     standard_library: input.standard_library,
-                    source,
+                    syntax: input.syntax,
+                    bound: input.bound,
+                    identity,
+                    named: Arc::clone(&recipes.named),
+                    functions: Arc::clone(&recipes.functions),
+                    derived: Arc::clone(&recipes.derived),
+                    environment_replacements,
+                    seed: RefCell::new(Some((recipes, types))),
+                    applies_members: false,
+                    shares_member_scopes: false,
+                    built: std::cell::OnceCell::new(),
+                    baseline: RefCell::default(),
                 }
             })
             .collect();
         names.merge_classes(&classes, &declared);
         names.yield_utilities(&utilities);
         // Every source sees every other's scopes, merged once for all of them.
-        let original_scopes: Vec<_> = files.iter().map(|file| file.source.types.original_scopes()).collect();
-        let shared = Rc::new(crate::native_types::OriginalTypeScopes::merge(&original_scopes));
-        for file in &mut files { file.source.types.share_original_scopes(Rc::clone(&shared)); }
-        for file in &files { names.result_pack_aliases.extend(file.source.source_result_pack_alias_recipes()); }
-        let names = Rc::new(names);
-        for file in &mut files {
-            file.source.set_project_names(Rc::clone(&names));
-            file.source.attach_documentation_signature_owners();
-            file.source.rebuild_documentation_members();
+        let mut original_scopes = Vec::new();
+        let seeds: Vec<_> = files.iter_mut().filter_map(|file| {
+            let (recipes, types) = file.seed.get_mut().as_mut().expect("a seeded source");
+            let types = types.as_mut()?;
+            let scopes = types.original_scopes();
+            file.shares_member_scopes = scopes.reach_member_scopes();
+            original_scopes.push(scopes);
+            Some((&*recipes, types))
+        }).collect();
+        let shared = Rc::new(crate::native_types::OriginalTypeScopes::merge(original_scopes));
+        for (recipes, types) in seeds {
+            types.share_original_scopes(Rc::clone(&shared));
+            names.result_pack_aliases.extend(crate::native_signatures::AliasRecipeSource {
+                types, signatures: &recipes.signatures, named: &recipes.named,
+            }.recipes());
         }
-        let globals = Rc::new(super::globals::ProjectGlobalIndex::new(environment, &files.iter().map(|file| &file.source).collect::<Vec<_>>()));
+        let names = Rc::new(names);
+        let globals = Rc::new(super::globals::ProjectGlobalIndex::new(environment, &files.iter().map(|file| file as &dyn super::globals::GlobalIndexSource).collect::<Vec<_>>()));
         let original_names: Vec<_> = globals.bindings().into_iter().map(|(name, _)| name).collect();
         if let Some(inputs) = rebuild
             && prepared_flows.names != original_names
@@ -358,11 +522,20 @@ impl ProjectRegistry {
             );
         }
         for (index, file) in files.iter_mut().enumerate() {
-            if prepared(index).is_none() { file.source.seed_original_global_reference_keys(&original_names); }
+            if prepared(index).is_some() { continue; }
+            let (recipes, _) = file.seed.get_mut().as_mut().expect("a seeded source");
+            super::NativeFlowSources::seed_recipe_global_reference_keys(recipes.flow_mut(), &original_names);
+        }
+        for file in &mut files {
+            let implementation = file.role == SourceRole::Implementation;
+            file.applies_members = file.syntax.function_declarations.iter().any(|declaration| !declaration.invalid_owner && declaration.owner.is_some())
+                || file.derived().methods.may_apply_members(implementation, &file.bound, |name, member| {
+                    globals.binding(name).is_some_and(|binding| !globals.declares_member(binding, member) && !globals.named_owners(binding).is_empty())
+                });
         }
         let modules_by_file: HashMap<_, _> = files
             .iter()
-            .map(|file| (file.id, file.source.module_key()))
+            .map(|file| (file.id, NativeModuleKey { snapshot: file.snapshot(), index: 0 }))
             .collect();
         let mut imports = HashMap::default();
         // Each file's requests by their spans, the first edge of each, rather than every edge
@@ -375,9 +548,9 @@ impl ProjectRegistry {
             if file.role == SourceRole::Declaration {
                 continue;
             }
-            for call in file.source.module_calls() {
+            for call in &file.derived().module_calls {
                 let dependency = requests.get(&(file.id, call.argument_span.start, call.argument_span.end)).copied();
-                let outcome = if let Some(outcome) = classify_unresolved(&call) {
+                let outcome = if let Some(outcome) = classify_unresolved(call) {
                     outcome
                 } else {
                     match dependency.map(|edge|&edge.outcome) {
@@ -391,7 +564,7 @@ impl ProjectRegistry {
                 // Source-host requests are candidates. Publish a missing module
                 // only after the original callee retains require provenance.
                 imports.insert(
-                    (file.source.snapshot, call.span.start, call.span.end),
+                    (file.snapshot(), call.span.start, call.span.end),
                     ImportRecipe {
                         argument_span: call.argument_span,
                         target: dependency.and_then(|edge| match edge.outcome {
@@ -411,77 +584,76 @@ impl ProjectRegistry {
         // Keep the historical type fallback separate from selected standard
         // capabilities. The minimal project loader has its own declaration;
         // that source does not grant type or other standard operations.
-        let legacy_type_replaced = environment_profile == StandardEnvironmentProfile::LegacyMinimal && files.iter().any(|file| file.role == SourceRole::Implementation && file.source.bound.has_modified_type_intrinsic());
+        let legacy_type_replaced = environment_profile == StandardEnvironmentProfile::LegacyMinimal && files.iter().any(|file| file.role == SourceRole::Implementation && file.bound.has_modified_type_intrinsic());
         let legacy_builtins = if environment_profile != StandardEnvironmentProfile::LegacyMinimal || legacy_type_replaced {
             crate::builtins::LegacyBuiltinPolicy::Disabled
         } else {
             crate::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
         };
-        // Every original registry receives the shared selected namespace before
-        // immutable capability ownership is inspected.
-        for file in &mut files {
-            file.source.project_globals = Some(Rc::clone(&globals));
-            // Library-global augmentation candidates are available only once
-            // every original declaration has joined the selected namespace.
-            file.source.rebuild_original_members();
-        }
-        let standard_environment = super::standard::ProjectStandardEnvironment::new(
-            environment_profile,
-            files.iter().filter_map(|file| file.standard_library.map(|kind| (kind, &file.source))),
-        );
-        for file in &mut files {
-            file.source.flow.set_original_require_capability(standard_environment.require_operation.is_some());
-            file.source.flow.set_require_needs_declaration(environment_profile.is_full_lua());
-            for kind in [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread] {
-                file.source.flow.set_opaque_runtime_type_enabled(
-                    kind, standard_environment.runtime_type_declaration(kind).is_some(),
-                );
-            }
-            file.source.set_project_names(Rc::clone(&names));
-            file.source.project_modules = Some(Rc::clone(&modules));
-            file.source.project_globals = Some(Rc::clone(&globals));
-            if let Some(capability) = standard_environment.type_operation {
-                file.source.set_original_type_operation(capability);
-            } else {
-                file.source.set_legacy_builtin_policy(legacy_builtins);
-            }
-            if environment_profile.is_full_lua() {
-                for &declaration in &standard_environment.rejected_assert_declarations {
-                    if declaration.snapshot == file.source.snapshot {
-                        file.source.reject_untrusted_standard_assert(declaration);
-                    }
-                }
-            }
-            for declaration in file.source.named.declarations() {
-                if names.candidates(&declaration.syntax.name.text).len() > 1 {
-                    file.source
-                        .report
-                        .borrow_mut()
-                        .diagnostics
-                        .push(Diagnostic {
-                            code: "TS2300",
-                            span: declaration.syntax.name.span,
-                            message: format!(
-                                "Duplicate identifier '{}'.",
-                                declaration.syntax.name.text
-                            ),
-                        });
-                }
-            }
-        }
-        Self {
+        let mut registry = Self {
             files,
             snapshots,
             flow_snapshots,
             names,
             globals,
-            standard_environment,
+            standard_environment: super::standard::ProjectStandardEnvironment::new(environment_profile, std::iter::empty()),
             modules,
+            scopes: shared,
             header_metadata: RefCell::new(super::named_provider::SourceHeaderMetadata::default()),
             describe_types: true,
             global_names: original_names,
             cancellation: crate::project_check::Cancellation::default(),
+            overload_mode,
+            no_implicit_any,
+            inspections: false,
+            no_unsafe_any: false,
+            legacy_builtins,
+            full_lua: environment_profile.is_full_lua(),
+        };
+        // The registries the project reads whether or not a check does: those whose members
+        // extend other sources' types, and the standard libraries' whose capabilities every
+        // registry is given.
+        let selected_standard = environment_profile.is_selected_standard();
+        for file in &registry.files {
+            let standard = selected_standard && file.role == SourceRole::Declaration
+                && file.standard_library.is_some() && file.declares_standard_capabilities();
+            if !file.applies_members && !standard { continue; }
+            let source = Box::new(file.build_members(&registry));
+            assert!(file.built.set(source).is_ok(), "a source's registry is built once");
         }
+        let standard_environment = super::standard::ProjectStandardEnvironment::new(
+            environment_profile,
+            registry.files.iter().filter_map(|file| Some((file.standard_library?, file.built()?))),
+        );
+        registry.standard_environment = standard_environment;
+        // What finishing a registry gives its flow is given to every source's recipes now, so
+        // that recipes a later session reuses are shared by the registries built from them.
+        let standard = &registry.standard_environment;
+        let type_operation = standard.type_operation.is_some();
+        let legacy_type = registry.legacy_builtins == crate::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
+            && registry.globals.binding("type").is_none();
+        let capabilities = |file: &FileRegistry| crate::native_flow::FlowCapabilities {
+            require: standard.require_operation.is_some(),
+            require_needs_declaration: registry.full_lua,
+            runtime_type: type_operation || legacy_type && !file.bound.has_modified_type_intrinsic(),
+            userdata: standard.runtime_type_declaration(NativeOpaqueRuntimeKind::Userdata).is_some(),
+            thread: standard.runtime_type_declaration(NativeOpaqueRuntimeKind::Thread).is_some(),
+        };
+        for file in &registry.files {
+            let given = capabilities(file);
+            // Recipes another session shares are changed only when they lack these.
+            if let Some((recipes, _)) = file.seed.borrow_mut().as_mut()
+                && super::NativeFlowSources::recipe_capabilities(&recipes.flow) != given
+            {
+                super::NativeFlowSources::give_recipe_capabilities(recipes.flow_mut(), given);
+            }
+        }
+        for index in 0..registry.files.len() {
+            let Some(mut source) = registry.files[index].built.take() else { continue };
+            registry.files[index].finish(&mut source, &registry);
+            assert!(registry.files[index].built.set(source).is_ok(), "a source's registry is built once");
+        }
+        registry
     }
 
     fn header_metadata_revisions(&self) -> [u64; 1] {
@@ -511,8 +683,9 @@ impl ProjectRegistry {
         let named=crate::native_named::NativeNamedKey {snapshot:key.snapshot,index:key.index};
         if owner.named_metadata().declaration(named).is_none() {return header;}
         let mut used=crate::collections::HashSet::default();
-        for file in &self.files {
-            file.source.doc_members.dependencies(named,&mut used,|id|file.source.doc_signature_key(id),|signature|file.source.signature_outer_keys(signature));
+        // Only a source built with the project has documentation members (`applies_members`).
+        for source in self.built_sources() {
+            source.doc_members.dependencies(named,&mut used,|id|source.doc_signature_key(id),|signature|source.signature_outer_keys(signature));
         }
         header.outer_parameters.extend(owner.types.outer_parameters_in_context(crate::native_named::NativeTypeContext::NamedType(named),&used));
         header.outer_parameters.sort_by_key(|key|(key.snapshot,key.index));
@@ -523,7 +696,12 @@ impl ProjectRegistry {
     fn owner_if(&self, snapshot: u64) -> Option<&NativeRegistry> {
         self.snapshots
             .get(&snapshot)
-            .map(|&index| &self.files[index].source)
+            .map(|&index| self.files[index].source(self))
+    }
+
+    /// The registries built so far: only they hold what a check has read or found.
+    fn built_sources(&self) -> impl Iterator<Item = &NativeRegistry> {
+        self.files.iter().filter_map(FileRegistry::built)
     }
 
     fn owner(&self, snapshot: u64) -> &NativeRegistry {
@@ -534,25 +712,25 @@ impl ProjectRegistry {
     /// Ready documentation members (`---@function Owner.member`) for queries made outside a check,
     /// as a language service's are: checking a file's declarations prepares its own.
     pub(crate) fn prepare_documentation_members(&self, queries: &mut dyn TypeQueries) {
-        for file in &self.files { file.source.prepare_documentation_scopes(queries); }
+        for source in self.built_sources() { source.prepare_documentation_scopes(queries); }
     }
     /// Where a native function's syntax is, whose documentation describes it.
     pub(crate) fn function_site(&self, key: luanalysis_engine::NativeFunctionKey) -> Option<(FileId, luanalysis_syntax::Span)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
-        Some((file.id, file.source.function(key).span))
+        Some((file.id, file.source(self).function(key).span))
     }
     /// Where a signature is written, and whether its site is inside a documentation tag rather
     /// than an ambient function statement.
     pub(crate) fn signature_site(&self, key: luanalysis_engine::NativeSignatureKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
-        let signature = file.source.signatures.get(key);
+        let signature = file.source(self).signatures.get(key);
         Some((file.id, signature.span, signature.ambient_function.is_none()))
     }
     /// Where a named type's name is declared: in its own declaration and those merged into it.
     pub(crate) fn type_declaration_sites(&self, key: NativeTypeDeclarationKey) -> Vec<(FileId, luanalysis_syntax::Span)> {
         std::iter::once(key).chain(self.names.merged_into(key).iter().copied()).filter_map(|key| {
             let file = &self.files[*self.snapshots.get(&key.snapshot)?];
-            let source = file.source.named.declaration(crate::native_named::NativeNamedKey { snapshot: key.snapshot, index: key.index })?;
+            let source = file.named.declaration(crate::native_named::NativeNamedKey { snapshot: key.snapshot, index: key.index })?;
             Some((file.id, source.syntax.name.span))
         }).collect()
     }
@@ -561,8 +739,8 @@ impl ProjectRegistry {
     /// name, key and declaring statement. Function declarations are the library's own.
     pub(crate) fn ambient_values(&self) -> Vec<(FileId, String, luanalysis_engine::NativeValueDeclarationKey, luanalysis_syntax::Span)> {
         self.files.iter()
-            .filter(|file| file.source.source_role() == SourceRole::Declaration)
-            .flat_map(|file| file.source.globals.declarations.iter()
+            .filter(|file| file.role == SourceRole::Declaration)
+            .flat_map(|file| file.globals().declarations.iter()
                 .filter(|source| source.annotation.is_some() && source.function.is_none() && source.documentation_function.is_none() && source.namespace.is_none())
                 .map(|source| (file.id, source.name.text.clone(), source.key, source.statement)))
             .collect()
@@ -570,10 +748,10 @@ impl ProjectRegistry {
     /// Where the global `name` is declared: each declaration's file, its statement or its
     /// `---@function` tag, and whether that is a tag.
     pub(crate) fn global_sites(&self, name: &str) -> Vec<(FileId, luanalysis_syntax::Span, bool)> {
-        self.files.iter().flat_map(|file| file.source.globals.declarations.iter()
+        self.files.iter().flat_map(|file| file.globals().declarations.iter()
             .filter(|source| source.namespace.is_none() && source.name.text == name)
             .map(|source| match source.documentation_function
-                .and_then(|id| file.source.syntax().function_declarations.iter().find(|declaration| declaration.id == id))
+                .and_then(|id| file.syntax.function_declarations.iter().find(|declaration| declaration.id == id))
             {
                 Some(declaration) => (file.id, declaration.span, true),
                 None => (file.id, source.statement, false),
@@ -583,7 +761,7 @@ impl ProjectRegistry {
     /// Where the constructor of runtime table `key` declares its field `name`.
     pub(crate) fn runtime_table_field_site(&self, key: NativeTypeDeclarationKey, name: &str) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
-        Some((file.id, file.source.runtime_table_field_site(key, name)?, false))
+        Some((file.id, file.source(self).runtime_table_field_site(key, name)?, false))
     }
     /// The project's globals by name, with the required parameters of each one a function
     /// declaration declares (and whether it takes more), from declarations alone: unlike the
@@ -594,7 +772,7 @@ impl ProjectRegistry {
             let Ok(name) = String::from_utf8(name) else { continue };
             let parameters = self.globals.declarations(binding).into_iter().find_map(|key| {
                 let file = &self.files[*self.snapshots.get(&key.snapshot)?];
-                file.source.global_function_parameters(key, queries)
+                file.source(self).global_function_parameters(key, queries)
             });
             globals.push((name, parameters));
         }
@@ -603,12 +781,12 @@ impl ProjectRegistry {
     /// Where a member is declared: its file, its span, and whether that is a documentation tag.
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
-        let (span, tag) = file.source.member_site(key)?;
+        let (span, tag) = file.source(self).member_site(key)?;
         Some((file.id, span, tag))
     }
     /// The checker registry of one source, for the language service.
     pub(crate) fn source(&self, file: FileId) -> Option<&NativeRegistry> {
-        self.files.iter().find(|registry| registry.id == file).map(|registry| &registry.source)
+        self.files.iter().find(|registry| registry.id == file).map(|registry| registry.source(self))
     }
 
     #[cfg(test)]
@@ -640,7 +818,7 @@ impl ProjectRegistry {
             text.push('\n');
         }
         let Some(registry) = self.files.iter().find(|candidate| candidate.id == file) else { return 0 };
-        let source = &registry.source;
+        let source = registry.source(self);
         let mut text = String::new();
         if registry.role == SourceRole::Implementation {
             let pack = source.module_result_pack(queries);
@@ -695,20 +873,33 @@ impl ProjectRegistry {
         // Canonical scope identities must exist for every sibling extension
         // before any alias head can publish a class's captured outer mapper.
         let setup = std::env::var_os("LUANALYSIS_PROFILE").is_some().then(std::time::Instant::now);
-        for file in &self.files { file.source.prepare_documentation_scope_keys(queries); }
-        for file in &self.files { file.source.validate_documentation_scope_owners(queries); }
-        if let Some(setup) = setup { eprintln!("luanalysis profile: documentation scopes for {} files={:.3}s", self.files.len(), setup.elapsed().as_secs_f64()); }
+        // Only a source built with the project has documentation members (`applies_members`).
+        for source in self.built_sources() { source.prepare_documentation_scope_keys(queries); }
+        for source in self.built_sources() { source.validate_documentation_scope_owners(queries); }
+        if let Some(setup) = setup { eprintln!("luanalysis profile: documentation scopes for {} files={:.3}s", self.built_sources().count(), setup.elapsed().as_secs_f64()); }
+        // A check's roots are built before any is checked, as every registry once was: one
+        // built while another is checked attaches its scopes, and the headers cached before are
+        // computed again.
+        let roots_set: HashSet<_> = roots.iter().copied().collect();
+        for file in self.files.iter().filter(|file| roots_set.contains(&file.id)) { file.source(self); }
         // Setup visits original declaration candidates even when they are never
-        // selected. Keep that baseline separate from later demand diagnostics.
-        let mut baselines: Vec<_> = self.files.iter().map(|file| {
-            if owned_only { file.source.take_report() } else { CheckReport::default() }
+        // selected. Keep that baseline separate from later demand diagnostics. A
+        // registry built later keeps its own (`FileRegistry::baseline`), and one
+        // checked without ownership begins its report with it.
+        let mut baselines: Vec<_> = self.files.iter().map(|file| match file.built() {
+            Some(source) if owned_only => {
+                let mut baseline = file.baseline.take();
+                baseline.append(source.take_report());
+                baseline
+            }
+            _ => CheckReport::default(),
         }).collect();
         // Candidate registration establishes every identity/name, but only
         // explicit roots and proven original require targets schedule checks.
         self.modules.required_files.borrow_mut().extend(roots.iter().copied());
         let mut checked = HashSet::default();
         let mut emitted = HashSet::default();
-        let owned: HashSet<_> = roots.iter().copied().collect();
+        let owned = roots_set;
         let selected = |file: FileId| {
             owned.contains(&file) || self.modules.required_files.borrow().contains(&file)
                 && (!owned_only || scheduled.is_some_and(|scheduled| !scheduled.contains(&file)))
@@ -729,19 +920,21 @@ impl ProjectRegistry {
                 }
                 let started = profile.then(std::time::Instant::now);
                 unresolved_reported = false;
-                file.source.check_named_declarations(queries);
-                file.source.check_global_declarations(queries);
-                file.source.check_module_requests(queries);
-                file.source.report_unused_declarations();
-                file.source.report_shadowed_declarations();
-                file.source.report_shadowed_generic_parameters();
-                file.source.report_reserved_field_names();
+                let source = file.source(self);
+                if !owned_only { source.report.borrow_mut().append(file.baseline.take()); }
+                source.check_named_declarations(queries);
+                source.check_global_declarations(queries);
+                source.check_module_requests(queries);
+                source.report_unused_declarations();
+                source.report_shadowed_declarations();
+                source.report_shadowed_generic_parameters();
+                source.report_reserved_field_names();
                 if file.role == SourceRole::Implementation {
-                    let mut checker = file.source.checker(queries);
-                    checker.flow_at = Some(file.source.flow_entry(None, None));
-                    checker.statements(file.source.statements());
+                    let mut checker = source.checker(queries);
+                    checker.flow_at = Some(source.flow_entry(None, None));
+                    checker.statements(source.statements());
                     reports[index].report.append(checker.report);
-                    file.source.check_all_bodies(queries);
+                    source.check_all_bodies(queries);
                 }
                 if let Some(started) = started {
                     eprintln!("luanalysis profile: file_id={} checked={:.6}s", file.id.index, started.elapsed().as_secs_f64());
@@ -751,18 +944,27 @@ impl ProjectRegistry {
             for (index, file) in self.files.iter().enumerate() {
                 // A task checks the bodies of its own sources only, as a Bun task checks its files:
                 // another source's bodies are checked once, by the task that owns it.
+                // A registry not built has checked nothing, so it has nothing to retry.
+                let Some(source) = file.built() else { continue };
                 let started = profile.then(std::time::Instant::now);
-                if owned_only && file.role == SourceRole::Implementation && selected(file.id) { file.source.check_selected_bodies(queries); }
-                if owned_only || checked.contains(&index) { published |= file.source.retry_contextual_owner_validations(queries); }
+                if owned_only && file.role == SourceRole::Implementation && selected(file.id) { source.check_selected_bodies(queries); }
+                if owned_only || checked.contains(&index) { published |= source.retry_contextual_owner_validations(queries); }
                 if let Some(started) = started.filter(|started| started.elapsed().as_secs_f64() >= 0.05) {
                     eprintln!("luanalysis profile: file_id={} bodies_and_retries={:.6}s", file.id.index, started.elapsed().as_secs_f64());
                 }
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
                 if !owned_only && !checked.contains(&index) { continue; }
-                file.source.check_unread_annotation_pieces(queries);
-                file.source.check_deferred_constraints(queries);
-                let mut pending = file.source.take_report();
+                // A registry not built has nothing to settle. A required source is reported
+                // all the same, with what building it reports.
+                let source = match file.built() {
+                    Some(source) => source,
+                    None if owned_only && self.modules.required_files.borrow().contains(&file.id) => file.source(self),
+                    None => continue,
+                };
+                source.check_unread_annotation_pieces(queries);
+                source.check_deferred_constraints(queries);
+                let mut pending = source.take_report();
                 if !self.describe_types { pending.discard_types(); }
                 // The drain loop runs to a fixed point: only new information
                 // keeps it alive. A body checked again on a later pass can
@@ -785,6 +987,7 @@ impl ProjectRegistry {
                     && emitted.insert(index)
                 {
                     report.report.append(std::mem::take(&mut baselines[index]));
+                    report.report.append(file.baseline.take());
                     if !self.describe_types { report.report.discard_types(); }
                 }
                 if owned_only && !emitted.contains(&index) { continue; }
@@ -810,7 +1013,7 @@ impl ProjectRegistry {
                 if described { continue; }
                 if owned_only && !unresolved_reported {
                     for (index, file) in self.files.iter().enumerate() {
-                        if checked.contains(&index) { file.source.report_unresolved_contextual_owners(); }
+                        if checked.contains(&index) { file.source(self).report_unresolved_contextual_owners(); }
                     }
                     unresolved_reported = true;
                     continue;
@@ -820,10 +1023,11 @@ impl ProjectRegistry {
         }
         for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
             if !checked.contains(&index) && !(owned_only && emitted.contains(&index)) { continue; }
+            let source = file.source(self);
             if !owned_only {
-                file.source.report_unresolved_contextual_owners();
-                file.source.check_deferred_constraints(queries);
-                let mut pending = file.source.take_report();
+                source.report_unresolved_contextual_owners();
+                source.check_deferred_constraints(queries);
+                let mut pending = source.take_report();
                 // As in the drain loop: types are described only when printed.
                 if self.describe_types {
                     pending.render_until(queries, &|| self.cancellation.is_cancelled());
@@ -833,7 +1037,7 @@ impl ProjectRegistry {
                 report.report.append(pending);
                 report.report.render_diagnostics(queries);
             }
-            let syntax = file.source.syntax();
+            let syntax = &*file.syntax;
             report.report.diagnostics.retain(|diagnostic| !syntax.suppresses(diagnostic.code, diagnostic.span.start));
             report.report.diagnostics.sort_by(|left, right| {
                 (left.span.start, left.span.end, left.code, &left.message).cmp(&(
@@ -856,7 +1060,7 @@ impl ProjectRegistry {
             report.report.types.dedup();
             report.report.imports.sort_by_key(|span| (span.start, span.end));
             report.report.imports.dedup();
-            report.report.bound = Some(file.source.bound_arc());
+            report.report.bound = Some(Arc::clone(&file.bound));
         }
         reports = reports.into_iter().enumerate().filter_map(|(index, report)| {
             (self.modules.required_files.borrow().contains(&report.file) || owned_only && emitted.contains(&index))
@@ -979,7 +1183,7 @@ impl NativeTypeProvider for ProjectRegistry {
             .get(&key.snapshot)
             .expect("original module snapshot")];
         NativeModuleHeader {
-            role: match file.source.source_role() {
+            role: match file.role {
                 SourceRole::Implementation => ModuleSourceRole::Implementation,
                 SourceRole::Declaration => ModuleSourceRole::Declaration,
             },
@@ -1070,7 +1274,7 @@ impl NativeTypeProvider for ProjectRegistry {
     fn runtime_table_constructor_owner(&self,key:NativeTypeDeclarationKey)->Option<NativeFunctionKey> {self.owner(key.snapshot).runtime_table_constructor_owner(key)}
     fn runtime_table_seed(&self,key:NativeTypeDeclarationKey,queries:&mut dyn TypeQueries)->Option<Type> {self.owner(key.snapshot).runtime_table_seed(key,queries)}
     fn runtime_store_receiver(&self,key:luanalysis_engine::NativeFlowKey,queries:&mut dyn TypeQueries)->Option<Type> {
-        self.files.iter().find(|file|file.source.iterator_sources().program.snapshot==key.graph.snapshot)?.source.runtime_store_receiver(key,queries)
+        self.files[*self.flow_snapshots.get(&key.graph.snapshot)?].source(self).runtime_store_receiver(key,queries)
     }
     fn type_member_signatures(&self,key:NativeTypeMemberKey)->Option<Vec<NativeSignatureKey>> {
         self.owner(key.snapshot).type_member_signatures(key)
@@ -1136,12 +1340,11 @@ impl NativeTypeProvider for ProjectRegistry {
         // Applicability, aliases, specialized owners and canonical object
         // ownership are resolved by the backend, not by source name matching.
         for file in &self.files {
-            if file.source.snapshot == key.snapshot {
+            if file.snapshot() == key.snapshot {
                 continue;
             }
             members.extend(
-                file.source
-                    .named
+                file.named
                     .augmentations()
                     .iter()
                     .flat_map(|augmentation| {
@@ -1154,8 +1357,12 @@ impl NativeTypeProvider for ProjectRegistry {
                             })
                     }),
             );
-            members.extend(file.source.doc_members.keys());
-            members.extend(file.source.members.applied_members());
+            // Only a source built with the project documents or applies members
+            // (`applies_members`).
+            if let Some(source) = file.built() {
+                members.extend(source.doc_members.keys());
+                members.extend(source.members.applied_members());
+            }
         }
         members
     }
@@ -1352,7 +1559,7 @@ mod tests {
         ]);
         let owner = provider.names.candidates("Owner")[0];
         let named = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
-        let source = &provider.files[1].source;
+        let source = provider.files[1].source(&provider);
         let signature = source.doc_signature_key(source.file.function_declarations[0].id).unwrap();
         let context = Some(NativeTypeContext::Signature(signature));
         let TypeNameResolution::Parameter(parameter) = source.types.resolve_name_in_context(context, "T") else {
@@ -1435,7 +1642,7 @@ mod tests {
                     ProjectRegistry::new_with_environment(vec![library, input(1, source)], Vec::new(), NativeLoaderPolicy::Lua54StandardFile, StandardEnvironmentProfile::Lua54)
                 },
                 |provider, queries| {
-                    let registry = &provider.files[1].source;
+                    let registry = provider.files[1].source(&provider);
                     for (prefix, name, expected) in [
                         ("original=", "cap", selected),
                         ("replaced=", "cap", false),
@@ -1460,8 +1667,8 @@ mod tests {
         Engine::new().with_native_provider(
             move || ProjectRegistry::new(vec![input(0, source), input(1, source)]),
             |provider, queries| {
-                let first = provider.files[0].source.key(0);
-                let second = provider.files[1].source.key(0);
+                let first = provider.files[0].source(&provider).key(0);
+                let second = provider.files[1].source(&provider).key(0);
                 assert_eq!(first.index, second.index);
                 assert_ne!(first.snapshot, second.snapshot);
                 assert!(provider.contains_function(first));
@@ -1485,8 +1692,8 @@ mod tests {
                     assert!(!queries.is_assignable(&string, &Type::Number));
                 }
                 assert!(matches!(queries.pack_slot(&numeric_pack, 2), Type::Nil));
-                let one = provider.files[0].source.types.own_parameters(first)[0];
-                let two = provider.files[1].source.types.own_parameters(second)[0];
+                let one = provider.files[0].source(&provider).types.own_parameters(first)[0];
+                let two = provider.files[1].source(&provider).types.own_parameters(second)[0];
                 assert_eq!(one.index, two.index);
                 assert_ne!(one.snapshot, two.snapshot);
                 assert_eq!(
@@ -1508,7 +1715,7 @@ mod tests {
         Engine::new().with_native_provider(
             move || ProjectRegistry::new(vec![input(0, callee), input(1, caller)]),
             |provider, queries| {
-                let source = &provider.files[1].source;
+                let source = provider.files[1].source(&provider);
                 let luanalysis_syntax::StmtKind::Local { values, .. } =
                     &source.statements()[0].kind
                 else {
@@ -1523,7 +1730,7 @@ mod tests {
                     .map(|argument| source.expression_key(argument))
                     .collect();
                 let result = queries.call_expression_native(
-                    &Type::NativeFunction(provider.files[0].source.key(0)),
+                    &Type::NativeFunction(provider.files[0].source(&provider).key(0)),
                     source.expression_key(expression),
                     &arguments,
                     &[],
@@ -1533,7 +1740,7 @@ mod tests {
                 assert!(queries.is_assignable(&result.return_type, &Type::Number));
                 assert!(!queries.is_assignable(&result.return_type, &Type::String));
                 assert!(source.take_report().diagnostics.is_empty());
-                let callee_source = &provider.files[0].source;
+                let callee_source = provider.files[0].source(&provider);
                 let luanalysis_syntax::StmtKind::Return(returned) =
                     &callee_source.functions[0].body[0].kind
                 else {
@@ -1550,9 +1757,9 @@ mod tests {
     #[test]
     fn aggregate_validation_rejects_foreign_snapshots_and_local_index_overflow() {
         let provider = ProjectRegistry::new(vec![input(0, "local function first() return 1 end")]);
-        let key = provider.files[0].source.key(0);
+        let key = provider.files[0].source(&provider).key(0);
         let foreign = ProjectRegistry::new(vec![input(0, "local function second() return 1 end")]);
-        assert!(!provider.contains_function(foreign.files[0].source.key(0)));
+        assert!(!provider.contains_function(foreign.files[0].source(&foreign).key(0)));
         assert!(!provider.contains_function(NativeFunctionKey {
             index: u32::MAX,
             ..key
@@ -1576,7 +1783,7 @@ mod tests {
     fn recipe_fingerprint(provider: &ProjectRegistry) -> Vec<String> {
         let mut keys = vec![format!("{:?}", provider.globals.bindings())];
         for file in &provider.files {
-            let source = &file.source;
+            let source = file.source(provider);
             keys.push(format!("{:?}:{:?}", file.id, source.module_key()));
             keys.extend(source.functions.iter().map(|function| format!("{:?}", source.key_for(function))));
             keys.extend(source.expressions.sources().map(|(key, expression)| format!("{key:?}:{:?}", expression.expression.span)));
@@ -1630,7 +1837,7 @@ mod tests {
                 let barrier = &barrier;
                 scope.spawn(move || {
                     let registry = snapshot.worker_registry();
-                    let source = &registry.files[0].source;
+                    let source = registry.files[0].source(&registry);
                     barrier.wait();
                     source.report.borrow_mut().diagnostics.push(Diagnostic {
                         code: "TASK-LOCAL", span: source.file.span, message: task.to_string(),
@@ -1650,7 +1857,7 @@ mod tests {
             for task in tasks { assert_eq!(task.join().unwrap(), expected); }
         });
         let clean = snapshot.worker_registry();
-        assert!(clean.files[0].source.checked_bodies.borrow().is_empty());
+        assert!(clean.files[0].source(&clean).checked_bodies.borrow().is_empty());
         assert!(clean.required_files().is_empty());
     }
 
@@ -1695,7 +1902,7 @@ mod tests {
             let reports = provider.check_owned_roots(queries, &[root]);
             assert!(provider.required_files().contains(&dependency), "native loader provenance schedules the dependency");
             assert!(!provider.required_files().contains(&provider.files[3].id));
-            assert!(provider.files[1].source.checked_bodies.borrow().is_empty());
+            assert!(provider.files[1].source(&provider).checked_bodies.borrow().is_empty());
             assert!(reports.iter().all(|file| file.report.diagnostics.iter()
                 .all(|diagnostic| !diagnostic.message.contains("missingDependencyValue"))));
             assert!(reports.iter().all(|file| file.file != provider.files[3].id));
@@ -1715,7 +1922,7 @@ mod tests {
                 if dependency_scheduled { scheduled.insert(dependency); }
                 let reports = provider.check_scheduled_roots(queries, &[root], &scheduled);
                 assert!(provider.required_files().contains(&dependency));
-                assert_eq!(provider.files[1].source.checked_bodies.borrow().is_empty(), dependency_scheduled);
+                assert_eq!(provider.files[1].source(&provider).checked_bodies.borrow().is_empty(), dependency_scheduled);
                 assert_eq!(reports.iter().any(|file| file.file == dependency && file.report.diagnostics.iter()
                     .any(|diagnostic| diagnostic.message.contains("missingDependencyValue"))), !dependency_scheduled);
                 assert!(!provider.required_files().contains(&provider.files[3].id));
@@ -1736,7 +1943,7 @@ mod tests {
             assert!(foreign.report.diagnostics.iter().any(|diagnostic|
                 diagnostic.code == "TS2304" && diagnostic.message.contains("MissingForeignType")));
             assert!(foreign.report.diagnostics.iter().all(|diagnostic| !diagnostic.message.contains("missingUnusedValue")));
-            assert!(provider.files[1].source.checked_bodies.borrow().is_empty());
+            assert!(provider.files[1].source(&provider).checked_bodies.borrow().is_empty());
             assert!(foreign.report.pending_bindings.is_empty() && foreign.report.pending_types.is_empty()
                 && foreign.report.pending_diagnostics.is_empty());
             assert!(!provider.required_files().contains(&provider.files[1].id),

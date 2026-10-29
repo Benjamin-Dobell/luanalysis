@@ -50,6 +50,7 @@ impl NativeRegistry {
     pub(crate) fn has_module_index(&self) -> bool {
         self.project_modules.is_some()
     }
+    #[cfg(test)]
     pub(crate) fn module_key(&self) -> NativeModuleKey {
         NativeModuleKey {
             snapshot: self.snapshot,

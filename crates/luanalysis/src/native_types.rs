@@ -63,6 +63,8 @@ thread_local! {
     /// is unchanged exactly when none of their revisions changed: a merged
     /// metadata view is validated in O(1) instead of comparing every file's.
     static METADATA_CLOCK: Cell<u64> = const { Cell::new(0) };
+    /// While a registry no query has read is built (`unobserved`).
+    static UNOBSERVED: Cell<u32> = const { Cell::new(0) };
 }
 
 pub(super) fn metadata_clock() -> u64 {
@@ -70,7 +72,22 @@ pub(super) fn metadata_clock() -> u64 {
 }
 
 pub(super) fn advance_metadata_clock() {
+    if UNOBSERVED.get() > 0 { return; }
     METADATA_CLOCK.set(METADATA_CLOCK.get().checked_add(1).expect("original metadata clock fits u64"));
+}
+
+/// Runs `build` without advancing the metadata clock: for building a source's registry that no
+/// query can have read, as no metadata cached before can have read its scopes. A project builds
+/// a registry when a check first reads it, and advancing the clock would compute every header
+/// cached until then again.
+pub(super) fn unobserved<R>(build: impl FnOnce() -> R) -> R {
+    struct Observed;
+    impl Drop for Observed {
+        fn drop(&mut self) { UNOBSERVED.set(UNOBSERVED.get() - 1); }
+    }
+    UNOBSERVED.set(UNOBSERVED.get() + 1);
+    let _observed = Observed;
+    build()
 }
 
 pub(super) struct NativeTypes {
@@ -157,14 +174,20 @@ impl AnnotationSource {
 pub(super) struct OriginalTypeScopes(HashMap<NativeTypeContext,TypeScope>, Vec<Rc<Cell<u64>>>);
 
 impl OriginalTypeScopes {
+    /// Whether they reach a scope other than a named type's (a class declared in a function has
+    /// the function's scope as its parent), through which another source can read its source's
+    /// function and signature scopes.
+    pub(super) fn reach_member_scopes(&self) -> bool {
+        self.0.keys().any(|owner| !matches!(owner, NativeTypeContext::NamedType(_)))
+    }
     /// The scopes of every one of `sources`, the first's of an owner first, and their epochs.
-    pub(super) fn merge<'a>(sources: impl IntoIterator<Item = &'a OriginalTypeScopes>) -> Self {
+    pub(super) fn merge(sources: impl IntoIterator<Item = OriginalTypeScopes>) -> Self {
         let mut merged = OriginalTypeScopes(HashMap::default(), Vec::new());
         let mut epochs = HashSet::default();
         for source in sources {
-            for (&owner, scope) in &source.0 { merged.0.entry(owner).or_insert_with(|| scope.clone()); }
-            for epoch in &source.1 {
-                if epochs.insert(Rc::as_ptr(epoch)) { merged.1.push(Rc::clone(epoch)); }
+            for (owner, scope) in source.0 { merged.0.entry(owner).or_insert(scope); }
+            for epoch in source.1 {
+                if epochs.insert(Rc::as_ptr(&epoch)) { merged.1.push(epoch); }
             }
         }
         merged
@@ -221,7 +244,7 @@ impl NativeTypes {
     }
     #[cfg(test)]
     pub(super) fn import_original_scopes(&mut self, metadata: &OriginalTypeScopes) {
-        let merged = OriginalTypeScopes::merge(self.imported.iter().map(|imported| &**imported).chain([metadata]));
+        let merged = OriginalTypeScopes::merge(self.imported.iter().map(|imported| (**imported).clone()).chain([metadata.clone()]));
         self.share_original_scopes(Rc::new(merged));
     }
     /// Sees `imported`, the scopes of a project's sources merged once for all of them, behind

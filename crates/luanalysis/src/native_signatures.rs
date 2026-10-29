@@ -235,165 +235,12 @@ impl super::Checker<'_> {
 impl NativeRegistry {
     /// Retain source binding identities while following callable aliases. The
     /// native core still owns type expansion, constraints and pack inference.
-    pub(super) fn source_result_pack_alias_recipes(
-        &self,
-    ) -> HashMap<NativeTypeDeclarationKey, ResultPackAliasRecipe> {
-        self.named_metadata()
-            .declarations()
-            .iter()
-            .filter_map(|source| {
-                let NamedTypeDeclarationKind::Alias { target } = &source.syntax.kind else {
-                    return None;
-                };
-                let context = NativeTypeContext::NamedType(source.key);
-                Some((
-                    NativeTypeDeclarationKey {
-                        snapshot: source.key.snapshot,
-                        index: source.key.index,
-                    },
-                    ResultPackAliasRecipe {
-                        parameters: self.types.own_parameters_in_context(context),
-                        target: self.result_pack_source_type(Some(context), target),
-                    },
-                ))
-            })
-            .collect()
+    pub(super) fn source_result_pack_alias_recipes(&self) -> HashMap<NativeTypeDeclarationKey, ResultPackAliasRecipe> {
+        AliasRecipeSource { types: &self.types, signatures: &self.signatures, named: self.named_metadata() }.recipes()
     }
 
-    fn result_pack_source_type(
-        &self,
-        context: Option<NativeTypeContext>,
-        ty: &TypeExpr,
-    ) -> ResultPackSourceType {
-        let ty = ty.value_syntax();
-        match &ty.kind {
-            TypeExprKind::Named(name)
-                if matches!(
-                    name.as_str(),
-                    "any"
-                        | "unknown"
-                        | "never"
-                        | "nil"
-                        | "boolean"
-                        | "number"
-                        | "integer"
-                        | "string"
-                        | "void"
-                        | "table"
-                        | "function"
-                ) =>
-            {
-                ResultPackSourceType::Parts(Vec::new())
-            }
-            TypeExprKind::Named(name) => match self.types.resolve_name_in_context(context, name) {
-                super::native_types::TypeNameResolution::Parameter(key) => {
-                    ResultPackSourceType::Parameter(key)
-                }
-                _ => ResultPackSourceType::Alias {
-                    name: name.clone(),
-                    arguments: Vec::new(),
-                },
-            },
-            TypeExprKind::Generic { base, args, .. } => {
-                let arguments: Vec<_> = args
-                    .iter()
-                    .map(|ty| self.result_pack_source_type(context, ty))
-                    .collect();
-                if base.text == "table" {
-                    return ResultPackSourceType::Parts(arguments);
-                }
-                match self.types.resolve_name_in_context(context, &base.text) {
-                    super::native_types::TypeNameResolution::Parameter(key) => {
-                        let mut parts = vec![ResultPackSourceType::Parameter(key)];
-                        parts.extend(arguments);
-                        ResultPackSourceType::Parts(parts)
-                    }
-                    _ => ResultPackSourceType::Alias {
-                        name: base.text.clone(),
-                        arguments,
-                    },
-                }
-            }
-            TypeExprKind::Parenthesized(inner) => self.result_pack_source_type(context, inner),
-            TypeExprKind::Function(function) => {
-                let context = self
-                    .signature_key_for(function.span)
-                    .map(NativeTypeContext::Signature)
-                    .or(context);
-                ResultPackSourceType::Callable {
-                    constraints: function
-                        .generics
-                        .iter()
-                        .filter_map(|parameter| parameter.constraint.as_ref())
-                        .map(|ty| self.result_pack_source_type(context, ty))
-                        .collect(),
-                    parameters: function
-                        .params
-                        .iter()
-                        .filter_map(|parameter| parameter.ty.as_ref())
-                        .chain(function.vararg.iter().map(|parameter| &parameter.ty))
-                        .map(|ty| self.result_pack_source_type(context, ty))
-                        .collect(),
-                    returns: function
-                        .returns
-                        .iter()
-                        .map(|ty| self.result_pack_source_type(context, ty))
-                        .collect(),
-                    scalar_row: function.returns.len() != 1
-                        || function
-                            .packs
-                            .as_ref()
-                            .is_some_and(|packs| packs.alternatives.len() != 1),
-                    homogeneous_last: function.packs.as_ref().is_some_and(|packs| {
-                        packs.alternatives.iter().any(|row| {
-                            row.variadic
-                                .is_some_and(|tail| tail.type_index + 1 == function.returns.len())
-                        })
-                    }),
-                }
-            }
-            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => {
-                ResultPackSourceType::Parts(
-                    types
-                        .iter()
-                        .map(|ty| self.result_pack_source_type(context, ty))
-                        .collect(),
-                )
-            }
-            TypeExprKind::Array { element, .. }
-            | TypeExprKind::TypePredicate { ty: Some(element), .. }
-            | TypeExprKind::KeyOf(element) => {
-                ResultPackSourceType::Parts(vec![self.result_pack_source_type(context, element)])
-            }
-            TypeExprKind::IndexedAccess { object, index } => ResultPackSourceType::Parts(vec![
-                self.result_pack_source_type(context, object),
-                self.result_pack_source_type(context, index),
-            ]),
-            TypeExprKind::Record(fields) => {
-                let mut parts = Vec::new();
-                for field in fields {
-                    parts.push(self.result_pack_source_type(context, &field.ty));
-                    if let TypeFieldKey::Indexed(key) = &field.key {
-                        parts.push(self.result_pack_source_type(context, key));
-                    }
-                }
-                ResultPackSourceType::Parts(parts)
-            }
-            TypeExprKind::TemplateLiteral { types, .. } => {
-                ResultPackSourceType::Parts(types.iter().map(|ty| self.result_pack_source_type(context, ty)).collect())
-            }
-            TypeExprKind::Conditional { check, extends, yes, no } => {
-                ResultPackSourceType::Parts([check, extends, yes, no].iter().map(|ty| self.result_pack_source_type(context, ty)).collect())
-            }
-            TypeExprKind::Mapped(mapped) => ResultPackSourceType::Parts(
-                [&mapped.constraint].into_iter().chain(&mapped.name).chain([&mapped.ty])
-                    .map(|ty| self.result_pack_source_type(context, ty)).collect(),
-            ),
-            TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
-            | TypeExprKind::TypeQuery(_) | TypeExprKind::Infer { .. } | TypeExprKind::Error => {
-                ResultPackSourceType::Parts(Vec::new())
-            }
-        }
+    fn result_pack_source_type(&self, context: Option<NativeTypeContext>, ty: &TypeExpr) -> ResultPackSourceType {
+        AliasRecipeSource { types: &self.types, signatures: &self.signatures, named: self.named_metadata() }.source_type(context, ty)
     }
 
     /// A free producer introduces a physical result sequence. Scalar
@@ -1748,5 +1595,179 @@ fn native_operator(operator: luanalysis_syntax::LuaOperator) -> luanalysis_engin
         Lua::Length => Native::Length,
         Lua::Less => Native::Less,
         Lua::LessEqual => Native::LessEqual,
+    }
+}
+
+
+/// What a source's result-pack alias recipes are read from: its types, signatures and named
+/// declarations, which a project reads of every source before it builds the source's registry.
+pub(super) struct AliasRecipeSource<'a> {
+    pub types: &'a super::native_types::NativeTypes,
+    pub signatures: &'a NativeSignatures,
+    pub named: &'a crate::native_named::NativeNamed,
+}
+
+impl AliasRecipeSource<'_> {
+    /// Retain source binding identities while following callable aliases. The
+    /// native core still owns type expansion, constraints and pack inference.
+    pub(super) fn recipes(
+        &self,
+    ) -> HashMap<NativeTypeDeclarationKey, ResultPackAliasRecipe> {
+        self.named
+            .declarations()
+            .iter()
+            .filter_map(|source| {
+                let NamedTypeDeclarationKind::Alias { target } = &source.syntax.kind else {
+                    return None;
+                };
+                let context = NativeTypeContext::NamedType(source.key);
+                Some((
+                    NativeTypeDeclarationKey {
+                        snapshot: source.key.snapshot,
+                        index: source.key.index,
+                    },
+                    ResultPackAliasRecipe {
+                        parameters: self.types.own_parameters_in_context(context),
+                        target: self.source_type(Some(context), target),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    fn source_type(
+        &self,
+        context: Option<NativeTypeContext>,
+        ty: &TypeExpr,
+    ) -> ResultPackSourceType {
+        let ty = ty.value_syntax();
+        match &ty.kind {
+            TypeExprKind::Named(name)
+                if matches!(
+                    name.as_str(),
+                    "any"
+                        | "unknown"
+                        | "never"
+                        | "nil"
+                        | "boolean"
+                        | "number"
+                        | "integer"
+                        | "string"
+                        | "void"
+                        | "table"
+                        | "function"
+                ) =>
+            {
+                ResultPackSourceType::Parts(Vec::new())
+            }
+            TypeExprKind::Named(name) => match self.types.resolve_name_in_context(context, name) {
+                super::native_types::TypeNameResolution::Parameter(key) => {
+                    ResultPackSourceType::Parameter(key)
+                }
+                _ => ResultPackSourceType::Alias {
+                    name: name.clone(),
+                    arguments: Vec::new(),
+                },
+            },
+            TypeExprKind::Generic { base, args, .. } => {
+                let arguments: Vec<_> = args
+                    .iter()
+                    .map(|ty| self.source_type(context, ty))
+                    .collect();
+                if base.text == "table" {
+                    return ResultPackSourceType::Parts(arguments);
+                }
+                match self.types.resolve_name_in_context(context, &base.text) {
+                    super::native_types::TypeNameResolution::Parameter(key) => {
+                        let mut parts = vec![ResultPackSourceType::Parameter(key)];
+                        parts.extend(arguments);
+                        ResultPackSourceType::Parts(parts)
+                    }
+                    _ => ResultPackSourceType::Alias {
+                        name: base.text.clone(),
+                        arguments,
+                    },
+                }
+            }
+            TypeExprKind::Parenthesized(inner) => self.source_type(context, inner),
+            TypeExprKind::Function(function) => {
+                let context = self
+                    .signatures.key_for(function.span)
+                    .map(NativeTypeContext::Signature)
+                    .or(context);
+                ResultPackSourceType::Callable {
+                    constraints: function
+                        .generics
+                        .iter()
+                        .filter_map(|parameter| parameter.constraint.as_ref())
+                        .map(|ty| self.source_type(context, ty))
+                        .collect(),
+                    parameters: function
+                        .params
+                        .iter()
+                        .filter_map(|parameter| parameter.ty.as_ref())
+                        .chain(function.vararg.iter().map(|parameter| &parameter.ty))
+                        .map(|ty| self.source_type(context, ty))
+                        .collect(),
+                    returns: function
+                        .returns
+                        .iter()
+                        .map(|ty| self.source_type(context, ty))
+                        .collect(),
+                    scalar_row: function.returns.len() != 1
+                        || function
+                            .packs
+                            .as_ref()
+                            .is_some_and(|packs| packs.alternatives.len() != 1),
+                    homogeneous_last: function.packs.as_ref().is_some_and(|packs| {
+                        packs.alternatives.iter().any(|row| {
+                            row.variadic
+                                .is_some_and(|tail| tail.type_index + 1 == function.returns.len())
+                        })
+                    }),
+                }
+            }
+            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => {
+                ResultPackSourceType::Parts(
+                    types
+                        .iter()
+                        .map(|ty| self.source_type(context, ty))
+                        .collect(),
+                )
+            }
+            TypeExprKind::Array { element, .. }
+            | TypeExprKind::TypePredicate { ty: Some(element), .. }
+            | TypeExprKind::KeyOf(element) => {
+                ResultPackSourceType::Parts(vec![self.source_type(context, element)])
+            }
+            TypeExprKind::IndexedAccess { object, index } => ResultPackSourceType::Parts(vec![
+                self.source_type(context, object),
+                self.source_type(context, index),
+            ]),
+            TypeExprKind::Record(fields) => {
+                let mut parts = Vec::new();
+                for field in fields {
+                    parts.push(self.source_type(context, &field.ty));
+                    if let TypeFieldKey::Indexed(key) = &field.key {
+                        parts.push(self.source_type(context, key));
+                    }
+                }
+                ResultPackSourceType::Parts(parts)
+            }
+            TypeExprKind::TemplateLiteral { types, .. } => {
+                ResultPackSourceType::Parts(types.iter().map(|ty| self.source_type(context, ty)).collect())
+            }
+            TypeExprKind::Conditional { check, extends, yes, no } => {
+                ResultPackSourceType::Parts([check, extends, yes, no].iter().map(|ty| self.source_type(context, ty)).collect())
+            }
+            TypeExprKind::Mapped(mapped) => ResultPackSourceType::Parts(
+                [&mapped.constraint].into_iter().chain(&mapped.name).chain([&mapped.ty])
+                    .map(|ty| self.source_type(context, ty)).collect(),
+            ),
+            TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
+            | TypeExprKind::TypeQuery(_) | TypeExprKind::Infer { .. } | TypeExprKind::Error => {
+                ResultPackSourceType::Parts(Vec::new())
+            }
+        }
     }
 }

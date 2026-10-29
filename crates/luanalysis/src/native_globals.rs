@@ -289,7 +289,7 @@ pub(crate) struct ProjectGlobalIndex {
 }
 
 impl ProjectGlobalIndex {
-    pub(super) fn new(environment: NativeEnvironmentKey, sources: &[&NativeRegistry]) -> Self {
+    pub(super) fn new(environment: NativeEnvironmentKey, sources: &[&dyn GlobalIndexSource]) -> Self {
         let mut by_name = BTreeMap::<String, Vec<NativeValueDeclarationKey>>::new();
         let mut named_by_name = BTreeMap::<String, Vec<NativeTypeDeclarationKey>>::new();
         let mut members_by_name = BTreeMap::<String, Vec<LuaKey>>::new();
@@ -299,32 +299,32 @@ impl ProjectGlobalIndex {
         // A global assigned at the top level of any file is declared there; assignments inside
         // functions declare only the globals nothing declares at top level.
         let top_level: HashSet<&str> = sources.iter()
-            .flat_map(|source| source.globals.declarations.iter())
+            .flat_map(|source| source.index_globals().declarations.iter())
             .filter(|declaration| !declaration.nested && declaration.namespace.is_none())
             .map(|declaration| declaration.name.text.as_str())
             .collect();
         for source in sources {
-            if source.source_role() != SourceRole::Declaration {
-                let (names, loader) = source.flow.environment_replacements();
-                replaced_standard_names |= source.bound.replaced_standard_names() | names;
-                loader_mutated |= loader || !source.bound.module_environment_mutations().is_empty();
+            if source.index_role() != SourceRole::Declaration {
+                let (names, loader) = source.index_environment_replacements();
+                replaced_standard_names |= source.index_bound().replaced_standard_names() | names;
+                loader_mutated |= loader || !source.index_bound().module_environment_mutations().is_empty();
             }
             let mut introduced = HashSet::default();
-            for declaration in &source.globals.declarations {
+            for declaration in &source.index_globals().declarations {
                 if declaration.namespace.is_some() || declaration.nested && top_level.contains(declaration.name.text.as_str()) {
                     continue;
                 }
-                let explicit = source.is_global_contract_owner(declaration);
+                let explicit = global_contract_owner(*source, declaration);
                 let first = introduced.insert(&declaration.name.text);
                 if !explicit && !first {
                     continue;
                 }
-                if source.source_role() == SourceRole::Declaration || declaration.documentation_function.is_some() {
+                if source.index_role() == SourceRole::Declaration || declaration.documentation_function.is_some() {
                     declaration_owners.insert(declaration.key);
                 }
-                if source.source_role() == SourceRole::Declaration
-                    && let Some(owner) = source.global_attached_type(declaration)
-                    && let Some(named) = source.named.declarations().iter().find(|named| {
+                if source.index_role() == SourceRole::Declaration
+                    && let Some(owner) = attached_type(source.index_named(), declaration)
+                    && let Some(named) = source.index_named().declarations().iter().find(|named| {
                         named.key.snapshot == owner.snapshot && named.key.index == owner.index
                             && matches!(named.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record {
                                 flavor: luanalysis_syntax::NamedRecordKind::Class, ..
@@ -334,7 +334,7 @@ impl ProjectGlobalIndex {
                     named_by_name.entry(declaration.name.text.clone()).or_default().push(owner);
                     let members = members_by_name.entry(declaration.name.text.clone()).or_default();
                     for &member in &named.members {
-                        let field = &source.named.member(member).expect("original declared field").field;
+                        let field = &source.index_named().member(member).expect("original declared field").field;
                         let key = match &field.key {
                             luanalysis_syntax::TypeFieldKey::Named(name) => Some(LuaKey::String(name.text.as_bytes().to_vec())),
                             luanalysis_syntax::TypeFieldKey::Indexed(ty) => crate::native_tables::literal_type_key(ty),
@@ -342,7 +342,7 @@ impl ProjectGlobalIndex {
                         };
                         if let Some(key) = key { members.push(key); }
                     }
-                    members.extend(source.globals.declarations.iter().filter_map(|member| {
+                    members.extend(source.index_globals().declarations.iter().filter_map(|member| {
                         let target = member.namespace.as_ref()?;
                         (target.root.text == declaration.name.text && target.path.len() == 1)
                             .then(|| LuaKey::String(member.name.text.as_bytes().to_vec()))
@@ -422,19 +422,62 @@ impl ProjectGlobalIndex {
     }
 }
 
-impl NativeRegistry {
-    fn is_global_contract_owner(&self, source: &GlobalDeclarationSource) -> bool {
-        source.documentation_function.is_some() || self.source_role() == SourceRole::Declaration
-            || source.annotation.is_some()
-            || self.global_attached_type(source).is_some()
-            || source.function.is_some_and(|key| {
-                let annotations = &self.function(key).annotations;
-                annotations.type_annotation.is_some()
-                    || !annotations.params.is_empty()
-                    || annotations.returns.is_some()
-                    || annotations.vararg.is_some()
-            })
+/// What the project's global index reads of a source: its recipes and syntax, which a project
+/// reads of every source, and never a checking session's state. A source's registry gives it, as
+/// does a source whose registry the project has not built (`ProjectRegistry`).
+pub(super) trait GlobalIndexSource {
+    fn index_globals(&self) -> &NativeGlobals;
+    fn index_role(&self) -> SourceRole;
+    fn index_environment_replacements(&self) -> (u8, bool);
+    fn index_bound(&self) -> &BoundFile;
+    fn index_named(&self) -> &crate::native_named::NativeNamed;
+    fn index_function(&self, key: NativeFunctionKey) -> &luanalysis_syntax::Function;
+}
+
+impl GlobalIndexSource for NativeRegistry {
+    fn index_globals(&self) -> &NativeGlobals { &self.globals }
+    fn index_role(&self) -> SourceRole { self.source_role() }
+    fn index_environment_replacements(&self) -> (u8, bool) { self.flow.environment_replacements() }
+    fn index_bound(&self) -> &BoundFile { &self.bound }
+    fn index_named(&self) -> &crate::native_named::NativeNamed { &self.named }
+    fn index_function(&self, key: NativeFunctionKey) -> &luanalysis_syntax::Function { self.function(key) }
+}
+
+/// Whether a global declaration's source writes its contract, rather than assigning a value.
+fn global_contract_owner(owner: &dyn GlobalIndexSource, source: &GlobalDeclarationSource) -> bool {
+    source.documentation_function.is_some() || owner.index_role() == SourceRole::Declaration
+        || source.annotation.is_some()
+        || attached_type(owner.index_named(), source).is_some()
+        || source.function.is_some_and(|key| {
+            let annotations = &owner.index_function(key).annotations;
+            annotations.type_annotation.is_some()
+                || !annotations.params.is_empty()
+                || annotations.returns.is_some()
+                || annotations.vararg.is_some()
+        })
+}
+
+/// The class or shape a global declaration's statement attaches, as its type.
+fn attached_type(named: &crate::native_named::NativeNamed, source: &GlobalDeclarationSource) -> Option<NativeTypeDeclarationKey> {
+    // A class or shape names the table the statement assigns. An alias, as `---@enum X`
+    // above `X = { ... }` is (`typeof X[keyof typeof X]`), is a type of its own, as above a
+    // local; taking it as the global's type would make the global its own type.
+    let mut attached = named
+        .declarations()
+        .iter()
+        .filter(|named| named.syntax.attachment == Some(source.statement)
+            && !matches!(named.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Alias { .. }));
+    let declaration = attached.next()?;
+    if attached.next().is_some() || !declaration.syntax.generics.is_empty() {
+        return None;
     }
+    Some(NativeTypeDeclarationKey {
+        snapshot: declaration.key.snapshot,
+        index: declaration.key.index,
+    })
+}
+
+impl NativeRegistry {
     /// The required parameters of the function a global declaration declares (and whether it
     /// takes more), from its signature alone: no function body or value is inferred.
     pub(super) fn global_function_parameters(&self, key: NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<(Vec<String>, bool)> {
@@ -487,23 +530,7 @@ impl NativeRegistry {
         &self,
         source: &GlobalDeclarationSource,
     ) -> Option<NativeTypeDeclarationKey> {
-        // A class or shape names the table the statement assigns. An alias, as `---@enum X`
-        // above `X = { ... }` is (`typeof X[keyof typeof X]`), is a type of its own, as above a
-        // local; taking it as the global's type would make the global its own type.
-        let mut attached = self
-            .named
-            .declarations()
-            .iter()
-            .filter(|named| named.syntax.attachment == Some(source.statement)
-                && !matches!(named.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Alias { .. }));
-        let declaration = attached.next()?;
-        if attached.next().is_some() || !declaration.syntax.generics.is_empty() {
-            return None;
-        }
-        Some(NativeTypeDeclarationKey {
-            snapshot: declaration.key.snapshot,
-            index: declaration.key.index,
-        })
+        attached_type(&self.named, source)
     }
     pub(super) fn is_ambient_global_attachment(&self, span: Span) -> bool {
         self.source_role() == SourceRole::Declaration

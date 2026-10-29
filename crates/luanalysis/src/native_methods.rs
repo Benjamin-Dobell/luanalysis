@@ -272,6 +272,19 @@ impl NativeMethods {
             })
         }).collect()
     }
+    /// Whether a source's members may extend a type through an application of it (`---@type
+    /// Box<string>` above a local whose fields are stored) or through a global the project
+    /// declares as a class (`function string.trim(s)`): what the project reads of the source
+    /// whenever a type's members are asked for. `global_class` says whether the project declares
+    /// a global as a class without declaring the member. A superset of the members
+    /// `NativeMembers::applied_members` finds.
+    pub(super) fn may_apply_members(&self, implementation: bool, bound: &BoundFile, global_class: impl Fn(&str, &LuaKey) -> bool) -> bool {
+        self.sources().any(|method| method.owner_application.is_some()
+            || implementation && method.class_owner.is_none() && method.contextual_owner.is_none()
+                && matches!(&method.receiver.kind, ExprKind::Name(name)
+                    if bound.binding_at(name.span.start).is_none() && global_class(&name.text, &method.member)))
+            || implementation && self.fields.iter().any(|field| field.owner_application.is_some())
+    }
     pub(super) fn original_assignment_members(&self, expressions: &super::NativeExpressions) -> Vec<OriginalMemberInput> {
         self.fields.iter().map(|field| {
             let expression = expressions.key_for_span(field.value);

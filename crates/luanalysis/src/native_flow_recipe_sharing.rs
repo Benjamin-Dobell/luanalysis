@@ -56,7 +56,7 @@ fn snapshot() -> ProjectRegistrySnapshot {
 fn fingerprint(provider: &ProjectRegistry) -> Vec<String> {
     let mut result = Vec::new();
     for file in &provider.files {
-        let source = &file.source;
+        let source = file.source(provider);
         result.push(format!("{:?}:{:?}", file.id, source.module_key()));
         result.extend(
             source
@@ -104,7 +104,7 @@ fn prepared_worker_flows_share_original_storage_and_preserve_all_source_keys() {
     let recipes: Vec<_> = prepared
         .files
         .iter()
-        .map(|file| file.source.flow.shared_recipes())
+        .map(|file| file.source(&prepared).flow.shared_recipes())
         .collect();
     let barrier = std::sync::Barrier::new(4);
     std::thread::scope(|scope| {
@@ -119,8 +119,8 @@ fn prepared_worker_flows_share_original_storage_and_preserve_all_source_keys() {
                     barrier.wait();
                     assert_eq!(fingerprint(&registry), *expected);
                     for (file, original) in registry.files.iter().zip(recipes) {
-                        assert!(Arc::ptr_eq(&file.source.flow.shared_recipes(), original));
-                        assert_eq!(file.source.flow.context_state_counts(), (0, 0, 0));
+                        assert!(Arc::ptr_eq(&file.source(&registry).flow.shared_recipes(), original));
+                        assert_eq!(file.source(&registry).flow.context_state_counts(), (0, 0, 0));
                     }
                 })
             })
@@ -146,8 +146,9 @@ fn prepared_global_keys_and_identical_profile_setters_do_not_copy_original_stora
     assert!(names.iter().any(|name| name == b"require"));
     assert!(names.iter().any(|name| name == b"type"));
     let expected = fingerprint(&worker);
-    for file in &mut worker.files {
-        let flow = &mut file.source.flow;
+    for index in 0..worker.files.len() {
+        worker.files[index].source(&worker);
+        let flow = &mut worker.files[index].built.get_mut().expect("a built source").flow;
         let before = flow.shared_recipes();
         assert!(flow.has_original_require_capability());
         // The selected full profile supplies these exact original capabilities.
@@ -177,18 +178,16 @@ fn prepared_global_keys_and_identical_profile_setters_do_not_copy_original_stora
 fn real_capture_contexts_and_ancestry_remain_worker_local_across_sessions() {
     let mut snapshot = snapshot();
     snapshot.prepare_shared_flows();
-    let original = snapshot.worker_registry().files[0]
-        .source
-        .flow
-        .shared_recipes();
+    let worker = snapshot.worker_registry();
+    let original = worker.files[0].source(&worker).flow.shared_recipes();
     for _ in 0..2 {
         Engine::new().with_native_provider(
             || snapshot.worker_registry(),
             |first, queries| {
                 let second = snapshot.worker_registry();
-                let first_source = &first.files[0].source;
+                let first_source = first.files[0].source(first);
                 let first_flow = &first_source.flow;
-                let second_flow = &second.files[0].source.flow;
+                let second_flow = &second.files[0].source(&second).flow;
                 assert!(Arc::ptr_eq(&original, &first_flow.shared_recipes()));
                 assert!(Arc::ptr_eq(&original, &second_flow.shared_recipes()));
                 assert_eq!(first_flow.context_state_counts(), (0, 0, 0));
@@ -257,12 +256,7 @@ fn real_capture_contexts_and_ancestry_remain_worker_local_across_sessions() {
         );
         // Only original recipes cross the session boundary; each next provider
         // must start without handles, contexts, or ancestry from the prior run.
-        assert_eq!(
-            snapshot.worker_registry().files[0]
-                .source
-                .flow
-                .context_state_counts(),
-            (0, 0, 0)
-        );
+        let worker = snapshot.worker_registry();
+        assert_eq!(worker.files[0].source(&worker).flow.context_state_counts(), (0, 0, 0));
     }
 }

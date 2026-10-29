@@ -203,6 +203,16 @@ pub(super) struct NativeFlowRecipes {
     call_writes: std::sync::OnceLock<call_writes::CallWrites>,
 }
 
+/// What a project gives a revision's flow of its standard environment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct FlowCapabilities {
+    pub require: bool,
+    pub require_needs_declaration: bool,
+    pub runtime_type: bool,
+    pub userdata: bool,
+    pub thread: bool,
+}
+
 pub(super) struct NativeFlowSources {
     recipes: Arc<NativeFlowRecipes>,
     contexts: RefCell<FlowContexts>,
@@ -226,14 +236,42 @@ impl NativeFlowSources {
 
     /// Project setup imports original global declaration names as canonical
     /// addresses. It creates no expression, flow node, value or declaration.
+    #[cfg(test)]
     pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
-        let recipes = Arc::make_mut(&mut self.recipes);
+        Self::seed_recipe_global_reference_keys(&mut self.recipes, names);
+    }
+    /// As `seed_original_global_reference_keys`, on a revision's recipes before a registry takes
+    /// them.
+    pub(super) fn seed_recipe_global_reference_keys(recipes: &mut Arc<NativeFlowRecipes>, names: &[Vec<u8>]) {
+        let recipes = Arc::make_mut(recipes);
         for name in names {
             let path = vec![flow::Key::String(name.clone())];
             for root in [flow::ReferenceRoot::EnvironmentObject, flow::ReferenceRoot::EnvironmentCell] {
                 intern_reference(&mut recipes.shared_references, &mut recipes.shared_reference_indices,
                     &flow::Reference { root, path: path.clone() });
             }
+        }
+    }
+    /// Gives a revision's recipes what a project's setup of its registry gives them
+    /// (`set_original_require_capability` and the rest), before a registry takes them: that
+    /// setup then finds them given and leaves the recipes shared.
+    pub(super) fn give_recipe_capabilities(recipes: &mut Arc<NativeFlowRecipes>, capabilities: FlowCapabilities) {
+        if Self::recipe_capabilities(recipes) == capabilities { return; }
+        let recipes = Arc::make_mut(recipes);
+        recipes.original_require_capability = capabilities.require;
+        recipes.require_needs_declaration = capabilities.require_needs_declaration;
+        recipes.runtime_type_intrinsic_enabled = capabilities.runtime_type;
+        recipes.runtime_userdata_enabled = capabilities.userdata;
+        recipes.runtime_thread_enabled = capabilities.thread;
+    }
+    /// What a revision's recipes have been given (`give_recipe_capabilities`).
+    pub(super) fn recipe_capabilities(recipes: &NativeFlowRecipes) -> FlowCapabilities {
+        FlowCapabilities {
+            require: recipes.original_require_capability,
+            require_needs_declaration: recipes.require_needs_declaration,
+            runtime_type: recipes.runtime_type_intrinsic_enabled,
+            userdata: recipes.runtime_userdata_enabled,
+            thread: recipes.runtime_thread_enabled,
         }
     }
     pub(super) fn set_runtime_type_intrinsic_enabled(&mut self, enabled: bool) {

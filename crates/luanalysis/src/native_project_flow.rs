@@ -15,7 +15,7 @@ impl ProjectRegistry {
     fn original_flow_registry(&self, snapshot: u64) -> Option<&super::NativeRegistry> {
         // Graph/value/reference snapshots belong to flow::ProgramFlow, not
         // the independently allocated native declaration namespace.
-        Some(&self.files[*self.flow_snapshots.get(&snapshot)?].source)
+        Some(self.files[*self.flow_snapshots.get(&snapshot)?].source(self))
     }
     fn original_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
         let source = self.original_flow_registry(snapshot)?;
@@ -234,7 +234,7 @@ mod tests {
             input(1, "local function second() return {},{} end\n"),
         ]);
         for file in &project.files {
-            let source = &file.source;
+            let source = file.source(&project);
             let graph = source.iterator_sources().graph(0, 0);
             assert_eq!(graph.snapshot, source.iterator_sources().program.snapshot);
             assert_ne!(graph.snapshot, independent.snapshot);
@@ -264,7 +264,7 @@ mod tests {
             input(1, "local other={}\nlocal function replace() other={} return 'slot' end\nlocal field=other.slot\nlocal indexed=other[replace()]\nlocal plain=other\n"),
         ]);
         for file in &project.files {
-            let sources = file.source.iterator_sources();
+            let sources = file.source(&project).iterator_sources();
             assert_ne!(sources.program.snapshot, independent.snapshot);
             let mut reads = 0;
             for node in &sources.program.graphs[0].nodes {
