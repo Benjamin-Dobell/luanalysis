@@ -67,6 +67,8 @@ mod metatables;
 mod alias_facts;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
+#[path = "native_repeated_functions.rs"]
+mod native_repeated_functions;
 #[path = "native_globals.rs"]
 pub(crate) mod globals;
 #[path = "native_modules.rs"]
@@ -179,6 +181,7 @@ pub(super) struct NativeRegistry {
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
     report: RefCell<CheckReport>,
     provisional_reports: RefCell<Vec<CheckReport>>,
+    repeated_functions: std::cell::OnceCell<Vec<native_repeated_functions::RepeatedFunction>>,
     /// Written generic references whose constraints are still to be checked, as TypeScript's
     /// deferred `checkTypeReferenceNode`: once per reference, at top level, never inside the
     /// resolution that lowered it.
@@ -490,6 +493,7 @@ impl NativeRegistry {
             pending_owner_bodies: RefCell::new(HashSet::default()),
             report: RefCell::new(report),
             provisional_reports: RefCell::new(Vec::new()),
+            repeated_functions: std::cell::OnceCell::new(),
             deferred_constraints: RefCell::new(Vec::new()),
             deferred_constraint_spans: RefCell::new(HashSet::default()),
         };

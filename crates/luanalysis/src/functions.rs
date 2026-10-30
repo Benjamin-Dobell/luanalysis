@@ -552,6 +552,8 @@ impl Checker<'_> {
         let ty = if let (Some(native), Some(expected)) = (self.native, expected.as_ref()) {
             native.source_named_function_value(function, target, expected, self.check_mode, self.engine)
         } else { self.function_expression(function) };
+        // A repeated function statement is compared with the first (`report_repeated_functions`).
+        let ty = expected.filter(|_| self.native.is_some_and(|native| native.repeats_function(function.span))).unwrap_or(ty);
         self.assign_values(std::slice::from_ref(target), vec![(ty, function.span)]);
     }
 

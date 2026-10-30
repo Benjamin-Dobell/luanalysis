@@ -1,8 +1,7 @@
 //! Overloads declared without an implementation: a field written again as another function type
-//! (`---@field f fun(...)` twice), and a function defined again in a declaration file. Both are
-//! tried in the order they are written, as TypeScript tries an interface's method overloads and a
-//! `.d.ts` file's function declarations, and as lua-language-server and EmmyLua Analyzer read
-//! repeated function fields and a meta file's repeated definitions.
+//! (`---@field f fun(...)` twice). They are tried in the order they are written, as TypeScript
+//! tries an interface's method overloads, and as lua-language-server and EmmyLua Analyzer read
+//! repeated function fields.
 use luanalysis::check;
 use std::{
     fs,
@@ -90,23 +89,6 @@ impl Drop for Project {
 }
 
 #[test]
-fn a_declaration_files_repeated_definitions_are_overloads() {
-    let api = "---@class Api\nApi = {}\n\n\
----@param text string the text\n---@return string\nfunction Api.convert(text) end\n\n\
----@param count number the count\n---@return number\nfunction Api.convert(count) end\n\n\
----@param text string\n---@return \"first\"\nfunction choose(text) end\n";
-    let more = "---@param text string | number\n---@return \"second\"\nfunction choose(text) end\n";
-    let main = "---@type string\nlocal text = Api.convert(\"x\")\n---@type number\nlocal count = Api.convert(1)\n\
----@type \"first\"\nlocal first = choose(\"x\")\n---@type \"second\"\nlocal second = choose(1)\nApi.convert(true)\n";
-    let report = Project::new(&[("api.def.lua", api), ("more.def.lua", more), ("main.lua", main)]).check();
-    // A global's definitions in several declaration files are its overloads too, in the
-    // project's order; neither definition is reported as the other's redeclaration.
-    assert!(!report.contains(".def.lua"), "{report}");
-    assert!(report.contains("main.lua:9:13: error[TS2769]: No overload matches this call."), "{report}");
-    assert_eq!(report.matches("error[").count(), 1, "{report}");
-}
-
-#[test]
 fn a_declared_head_with_overloads_stays_their_implementation_signature() {
     // As in an implementation, and as tts-types writes them, the head beside `---@overload`s is
     // their implementation signature: it is checked against them and not called through.
@@ -133,20 +115,6 @@ fn function_fields_declared_again_in_another_declaration_are_overloads() {
     let report = Project::new(&[("a.lua", first), ("b.lua", second), ("c.lua", more), ("main.lua", main)]).check();
     assert!(!report.contains("main.lua"), "{report}");
     assert!(report.contains("b.lua:3:11: error[TS2717]: Subsequent property declarations must have the same type. Property 'count' must be of type 'number', but here has type 'string'."), "{report}");
-    assert_eq!(report.matches("error[").count(), 1, "{report}");
-}
-
-#[test]
-fn a_declaration_files_repeated_methods_of_a_local_class_are_overloads() {
-    // As tts-types declares its classes, on a local table.
-    let api = "---@class Box\nlocal Box = {}\n\n\
----@param value string\n---@return string\nfunction Box:pick(value) end\n\n\
----@param count number\n---@return number\nfunction Box:pick(count) end\n\n\
----@param value string\n---@return \"first\"\nfunction Box.choose(value) end\n\n\
----@param value string | number\n---@return \"second\"\nfunction Box.choose(value) end\n";
-    let main = "---@param box Box\nlocal function use(box)\n    ---@type string\n    local text = box:pick(\"x\")\n    ---@type number\n    local count = box:pick(1)\n    ---@type \"first\"\n    local first = box.choose(\"x\")\n    box:pick(true)\nend\n";
-    let report = Project::new(&[("api.def.lua", api), ("main.lua", main)]).check();
-    assert!(report.contains("main.lua:9:14: error[TS2769]: No overload matches this call."), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
 

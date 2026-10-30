@@ -36,28 +36,10 @@ pub(super) struct GlobalDeclarationSource {
 
 pub(super) struct NativeGlobals {
     pub declarations: Vec<GlobalDeclarationSource>,
-    unsupported: Vec<Span>,
+    pub(super) unsupported: Vec<Span>,
 }
 
 impl NativeGlobals {
-    /// What a declaration file's function definition defines: a global's name, or a namespace
-    /// member's root and path. Definitions of one target are its overloads.
-    pub(super) fn declared_function_target(&self, role: SourceRole, key: NativeValueDeclarationKey) -> Option<(&str, Vec<&str>)> {
-        if role != SourceRole::Declaration { return None }
-        let source = self.declaration(key)?;
-        if source.function.is_none() || source.nested { return None }
-        Some(match &source.namespace {
-            None => (source.name.text.as_str(), Vec::new()),
-            Some(target) => (target.root.text.as_str(), target.path.iter().map(|name| name.text.as_str()).collect()),
-        })
-    }
-    /// This file's function definitions of a namespace member.
-    pub(super) fn declared_namespace_functions(&self, role: SourceRole, root: &str, path: &[&str]) -> Vec<NativeValueDeclarationKey> {
-        self.declarations.iter()
-            .filter(|source| self.declared_function_target(role, source.key).is_some_and(|(other, other_path)| other == root && other_path == path))
-            .map(|source| source.key)
-            .collect()
-    }
     pub(super) fn member_namespace_end(&self, start: u32) -> u32 {
         self.declarations.iter().filter_map(|source| source.namespace.as_ref())
             .map(|target| target.member.index.checked_add(1).expect("namespace member identities fit u32"))

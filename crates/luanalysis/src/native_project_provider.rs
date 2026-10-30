@@ -789,31 +789,6 @@ impl ProjectRegistry {
         registry
     }
 
-    /// A declaration file's function definitions of one global, in any of the project's
-    /// declaration files, or of one namespace member, in its file, when there are several: its
-    /// overloads, as TypeScript merges a global's or a namespace's function declarations and as
-    /// lua-language-server and EmmyLua Analyzer read a meta file's repeated definitions. Each of
-    /// them is the whole group, in the project's order, tried first to last. The standard
-    /// library's are not grouped: a declaration of one of its globals is checked against it.
-    fn declared_function_overloads(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> Option<Vec<luanalysis_engine::NativeValueDeclarationKey>> {
-        use luanalysis_engine::NativeTypeProvider;
-        if self.value_declaration_is_standard(key) { return None }
-        // From each source's recipes: grouping builds no source's registry.
-        let file = |snapshot: u64| self.snapshots.get(&snapshot).map(|&index| &self.files[index]);
-        let owner = file(key.snapshot)?;
-        let (root, path) = owner.globals().declared_function_target(owner.role, key)?;
-        let mut overloads = if path.is_empty() {
-            self.globals.declarations(self.globals.binding(root)?).into_iter()
-                .filter(|&other| !self.value_declaration_is_standard(other)
-                    && file(other.snapshot).is_some_and(|other_file| other_file.globals().declared_function_target(other_file.role, other).is_some_and(|(_, path)| path.is_empty())))
-                .collect()
-        } else {
-            owner.globals().declared_namespace_functions(owner.role, root, &path)
-        };
-        if overloads.len() < 2 { return None }
-        overloads.sort_by_key(|other| (self.snapshots[&other.snapshot], other.index));
-        Some(overloads)
-    }
     fn owner_if(&self, snapshot: u64) -> Option<&NativeRegistry> {
         self.snapshots
             .get(&snapshot)
@@ -1039,6 +1014,7 @@ impl ProjectRegistry {
                 source.report_shadowed_declarations();
                 source.report_shadowed_generic_parameters();
                 source.report_reserved_field_names();
+                source.report_repeated_functions(queries);
                 if file.role == SourceRole::Implementation {
                     let mut checker = source.checker(queries);
                     checker.flow_at = Some(source.flow_entry(None, None));
@@ -1268,10 +1244,6 @@ impl NativeTypeProvider for ProjectRegistry {
         self.snapshots.get(&key.snapshot).is_some_and(|&index| self.files[index].standard_library.is_some())
     }
     fn value_declaration_contract(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
-        if let Some(overloads) = self.declared_function_overloads(key) {
-            let parts: Vec<Type> = overloads.iter().filter_map(|&overload| self.owner(overload.snapshot).global_contract(overload, queries)).collect();
-            return Some(Type::Intersection(parts));
-        }
         self.owner(key.snapshot).global_contract(key, queries)
     }
     fn value_declaration_initializer(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Type {

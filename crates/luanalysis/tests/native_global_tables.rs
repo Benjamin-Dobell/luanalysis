@@ -195,7 +195,7 @@ fn a_repeated_namespace_extension_checks_the_first_signature_instead_of_adding_a
     let consumer = "---@type number\nlocal result=math.extension(42)\n";
     let report = fixture.check_standard(&[("producer.lua", producer), ("consumer.lua", consumer)]);
     let producer_report = report.files.iter().find(|file| report.source(file.file).unwrap().path.file_name().unwrap() == "producer.lua").unwrap();
-    assert!(producer_report.report.diagnostics.iter().any(|error| error.code == "TS2322"), "{report:#?}");
+    assert!(producer_report.report.diagnostics.iter().any(|error| error.code == "TS2717"), "{report:#?}");
     let consumer_report = report.files.iter().find(|file| report.source(file.file).unwrap().path.file_name().unwrap() == "consumer.lua").unwrap();
     assert!(consumer_report.report.diagnostics.is_empty(), "{report:#?}");
     let wrong = consumer.replace("extension(42)", "extension('wrong')");

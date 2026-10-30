@@ -135,7 +135,7 @@ fn later_method_writes_in_one_constructor_do_not_form_a_union_contract() {
     let later = "---@return string\nfunction self.read() return 'wrong' end";
     let first = constructor("setmetatable", "number", "1", later);
     let output = fixture.check(&format!("{HEADER}{first}{USE}"));
-    assert!(text(&output).contains("TS2322"), "{}", text(&output));
+    assert!(text(&output).contains("TS2717"), "{}", text(&output));
     result_type(&output, "number");
 
     let corrected = "---@return number\nfunction self.read() return 2 end";

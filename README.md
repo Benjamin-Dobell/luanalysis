@@ -757,8 +757,8 @@ end
 
 In editors, Luanalysis also points out code that type checks but is probably wrong: unreachable
 code, conditions that are always true or always false, comparisons that can never match, unused
-locals, locals and generic parameters that shadow others of the same name, and parameters
-without types.
+locals, locals and generic parameters that shadow others of the same name, functions defined
+again with the same signature, and parameters without types.
 
 ## Standard library
 
@@ -797,23 +797,16 @@ nests through its parents' types, so `---@class ngx__req` on `ngx.req = {}` make
 `function ngx.req.read_body() end` a member of `ngx__req`. `--library` makes every file in a
 path a declaration file, whatever its name.
 
-A function a declaration file defines again declares another overload, as a `.d.ts` file's
-function declarations do, so each overload keeps its own `---@param` and `---@return`
-descriptions. A global's definitions in several declaration files are its overloads too; the
-standard library's are not, and another declaration of one of its globals is checked against
-it. A definition's `---@overload`s are its own, and its head is their implementation signature,
-as in an implementation.
+A definition's `---@overload`s are its own, and its head is their implementation signature, as
+in an implementation.
 
-```lua
----@param text string the text to show
----@return integer
-function notify(text) end
-
----@param text string the text to show
----@param color Color the text's color
----@return integer
-function notify(text, color) end
-```
+A function is defined once. A `function a.b()` statement repeating an earlier one's target, in
+any file, is an error if its signature differs (TypeScript's TS2717, TS2403 for a global), and
+only what a parameter or result both definitions write is compared. With the same signature it
+is an inspection. Statements in different branches, loops or functions repeat nothing, and a
+definition with `---@version` is an alternative for another Lua. An assignment
+(`a.b = function() end`) is only checked against the field's type, like any other write. Write
+overloads with `---@overload` or repeated `---@field`s.
 
 A module that no module root provides is, as in Luanalysis v1 and LuaLS, the checked or library
 file whose path ends with the module's path under a template, the shortest such path first: with
