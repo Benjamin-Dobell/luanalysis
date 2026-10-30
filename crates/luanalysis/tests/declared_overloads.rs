@@ -166,3 +166,17 @@ fn member_overloads_declared_in_several_files_map_through_inheritance() {
     let report = Project::new(&[("owner.def.lua", owner), ("more.def.lua", more), ("main.lua", main)]).check();
     assert!(!report.contains("error["), "{report}");
 }
+
+#[test]
+fn function_fields_of_a_generic_class_declared_again_are_overloads_of_its_type_parameters() {
+    // Each declaration's `T` is the class's, so the overloads of both map to its arguments,
+    // directly and through a derived class.
+    let first = "---@class Box<T>\n---@field choose fun(self: Box<T>, value: T): T\n";
+    let second = "---@class Box<T>\n---@field choose fun(self: Box<T>, value: T, other: T): T\n\n---@class Derived<T>: Box<T>\n";
+    let main = "---@param box Box<number>\n---@param derived Derived<string>\nlocal function use(box, derived)\n\
+    ---@type number\n    local one = box:choose(1)\n    ---@type number\n    local two = box:choose(1, 2)\n\
+    ---@type string\n    local inherited = derived:choose('a', 'b')\n    box:choose(1, 'x')\nend\n";
+    let report = Project::new(&[("first.def.lua", first), ("second.def.lua", second), ("main.lua", main)]).check();
+    assert!(report.contains("main.lua:10:19: error[TS2345]: Argument of type '\"x\"' is not assignable to parameter of type 'number'."), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}

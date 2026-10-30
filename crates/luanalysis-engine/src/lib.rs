@@ -1313,6 +1313,8 @@ pub trait TypeQueries {
         expected_return: Option<&Type>,
     ) -> CallResult;
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool;
+    /// TypeScript's identity relation (`isTypeIdenticalTo`).
+    fn is_identical(&mut self, source: &Type, target: &Type) -> bool;
     /// Physical nil membership, independent of optional nil assignment compatibility.
     fn contains_nil(&mut self, ty: &Type) -> bool;
     fn compare(&mut self, source: &Type, target: &Type) -> Relation;
@@ -2439,6 +2441,11 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let source = import_type(self.checker, self.handles, source);
         let target = import_type(self.checker, self.handles, target);
         self.checker.is_assignable(source, target)
+    }
+    fn is_identical(&mut self, source: &Type, target: &Type) -> bool {
+        let source = import_type(self.checker, self.handles, source);
+        let target = import_type(self.checker, self.handles, target);
+        self.checker.is_identical(source, target)
     }
 
     fn contains_nil(&mut self, ty: &Type) -> bool {

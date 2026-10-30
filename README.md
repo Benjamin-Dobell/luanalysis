@@ -239,6 +239,25 @@ parenthesized, as a union constraint is: `---@generic T = (string | nil)`.
 A call may give its type arguments, as TypeScript's `id<string>(x)` does, in EmmyLua Analyzer's
 comment just before its arguments: `id--[[@<string>]](x)`, `box:put--[[@<number>]](1)`.
 
+A generic class declared more than once has one list of type parameters, as a TypeScript
+interface's merged declarations do: each declaration's `T` is the class's `T`, and a constraint or
+default written in one applies to all. Declarations must declare the same parameters, by name and
+position, though one may leave out trailing parameters that have a default; TS2428 reports each
+declaration otherwise.
+
+```lua
+---@class Box<T>
+---@field first T
+
+---@class Box<T>
+---@field second T
+
+---@param box Box<number>
+local function read(box)
+    local second = box.second -- number
+end
+```
+
 ### Indexed fields
 
 Fields are not limited to names. Number literals, booleans and whole types can be keys, so

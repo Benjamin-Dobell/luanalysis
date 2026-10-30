@@ -891,6 +891,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Report a member declared again with another type, or other modifiers, at that declaration and keep the first, as TypeScript merges declarations (TS2717, TS2687), rather than failing the whole named type, as the merge's comment already described; and group a written function type's declarations of one key as overloads, as pure callable members are, when the provider says the member is one.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/relate.rs",
+    "patch": "vendor/patches/bun-sema-identity-relation.patch",
+    "reason": "Expose the identity relation (`isTypeIdenticalTo`) to the Lua adapter, which compares the constraints and defaults of a merged class's type parameters with it, as TypeScript's `areTypeParametersIdentical` does (TS2428); body unchanged.",
+})
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

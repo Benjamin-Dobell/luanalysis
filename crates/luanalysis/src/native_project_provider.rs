@@ -154,6 +154,34 @@ pub(crate) struct ProjectNamedIndex {
     /// declaration is merged into the first.
     merged: HashMap<NativeTypeDeclarationKey, NativeTypeDeclarationKey>,
     merges: HashMap<NativeTypeDeclarationKey, Vec<NativeTypeDeclarationKey>>,
+    /// A merged class's type parameters, in order, and each one's declarations: TypeScript's
+    /// merged declarations share their type parameters by name, so a name each declares is one
+    /// parameter, the key of the declaration that declares it first.
+    parameters: HashMap<NativeTypeDeclarationKey, Vec<(NativeTypeParameterKey, Vec<ParameterDeclaration>)>>,
+    /// The declarations of a merged class's type parameters declared more than once.
+    parameter_declarations: HashMap<NativeTypeParameterKey, Vec<ParameterDeclaration>>,
+    /// The merged classes whose declarations do not declare the same type parameters, by count
+    /// and name, and those whose declarations are known to declare identical ones.
+    differing_parameters: HashSet<NativeTypeDeclarationKey>,
+    identical_parameters: RefCell<HashMap<NativeTypeDeclarationKey, bool>>,
+}
+
+/// What a declaration of a merged class sees of the class's type parameters: the parameter of
+/// each name it declares, the class's parameters, and the class's `self`.
+struct MergedScope {
+    declaration: NativeTypeDeclarationKey,
+    names: HashMap<String, NativeTypeParameterKey>,
+    parameters: Vec<NativeTypeParameterKey>,
+    self_parameter: Option<NativeTypeParameterKey>,
+}
+
+/// One declaration of a merged class's type parameter: its own key, and whether it writes a
+/// constraint and a default.
+#[derive(Clone, Copy)]
+struct ParameterDeclaration {
+    key: NativeTypeParameterKey,
+    constraint: bool,
+    default: bool,
 }
 impl ProjectNamedIndex {
     pub(crate) fn candidates(&self, name: &str) -> &[NativeTypeDeclarationKey] {
@@ -197,6 +225,98 @@ impl ProjectNamedIndex {
             }
             *keys = vec![canonical];
         }
+    }
+    /// What each merged class's declarations make of their type parameters, from each
+    /// declaration's own (`declared`: name, key, and whether it writes a constraint and a
+    /// default; and its `self`): for each declaration, the names it declares, the class's
+    /// parameter list and the class's `self` (the canonical declaration's), as its scope is to
+    /// have them.
+    ///
+    /// As TypeScript reads a merged interface's type parameters, they are those of every
+    /// declaration by name, the canonical declaration's first and then those the others add in
+    /// order; one declared more than once is constrained and defaults as the first declaration
+    /// to write a constraint or a default says. Its declarations declare identical ones when each
+    /// declares a leading part of that list, leaving out only parameters with a default
+    /// (`areTypeParametersIdentical`, whose constraints and defaults `identical_type_parameters`
+    /// compares).
+    fn merge_type_parameters(
+        &mut self,
+        declared: impl Fn(NativeTypeDeclarationKey) -> (Vec<(String, ParameterDeclaration)>, Option<NativeTypeParameterKey>),
+    ) -> Vec<MergedScope> {
+        let mut scopes = Vec::new();
+        let mut canonicals: Vec<_> = self.merges.keys().copied().collect();
+        canonicals.sort_by_key(|key| (key.snapshot, key.index));
+        for canonical in canonicals {
+            let declarations: Vec<_> = std::iter::once(canonical).chain(self.merges[&canonical].iter().copied())
+                .map(|key| (key, declared(key)))
+                .collect();
+            let self_parameter = declarations[0].1.1;
+            let mut names: HashMap<String, usize> = HashMap::default();
+            let mut merged: Vec<(NativeTypeParameterKey, Vec<ParameterDeclaration>)> = Vec::new();
+            let mut own_names = Vec::new();
+            for (declaration, (parameters, _)) in &declarations {
+                let mut own = HashMap::default();
+                for (name, parameter) in parameters {
+                    // One declared twice in a declaration is a duplicate (TS2300) it does not see.
+                    if own.contains_key(name) { continue }
+                    let index = *names.entry(name.clone()).or_insert_with(|| {
+                        merged.push((parameter.key, Vec::new()));
+                        merged.len() - 1
+                    });
+                    merged[index].1.push(*parameter);
+                    own.insert(name.clone(), merged[index].0);
+                }
+                own_names.push((*declaration, own));
+            }
+            let required = merged.iter().rposition(|(_, declarations)| declarations.iter().all(|declaration| !declaration.default)).map_or(0, |index| index + 1);
+            let identical = declarations.iter().all(|(_, (parameters, _))| {
+                (required..=merged.len()).contains(&parameters.len())
+                    && parameters.iter().zip(&merged).all(|((name, _), (key, _))| names.get(name).is_some_and(|&index| merged[index].0 == *key))
+            });
+            if !identical { self.differing_parameters.insert(canonical); }
+            let list: Vec<_> = merged.iter().map(|(key, _)| *key).collect();
+            for (key, declarations) in &merged {
+                if declarations.len() > 1 { self.parameter_declarations.insert(*key, declarations.clone()); }
+            }
+            scopes.extend(own_names.into_iter().map(|(declaration, names)| MergedScope { declaration, names, parameters: list.clone(), self_parameter }));
+            if !merged.is_empty() { self.parameters.insert(canonical, merged); }
+        }
+        scopes
+    }
+    /// The declarations of a merged class's type parameter `key`, if it is declared more than once.
+    fn parameter_declarations(&self, key: NativeTypeParameterKey) -> Option<&[ParameterDeclaration]> {
+        self.parameter_declarations.get(&key).map(Vec::as_slice)
+    }
+    /// The declaration of the merged type parameter `key` whose constraint (or, with `default`,
+    /// default) it has: the first to write one.
+    fn parameter_declaration(&self, key: NativeTypeParameterKey, default: bool) -> Option<NativeTypeParameterKey> {
+        self.parameter_declarations(key)?.iter()
+            .find(|declaration| if default { declaration.default } else { declaration.constraint })
+            .map(|declaration| declaration.key)
+    }
+    /// Whether the declarations of the merged class `canonical` declare identical type
+    /// parameters (TypeScript's TS2428 otherwise): the same ones by count and name, and, where
+    /// two of a parameter's declarations write a constraint, or a default, identical ones.
+    pub(crate) fn identical_type_parameters(&self, canonical: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> bool {
+        if self.differing_parameters.contains(&canonical) { return false }
+        if let Some(&known) = self.identical_parameters.borrow().get(&canonical) { return known }
+        let identical = self.parameters.get(&canonical).is_none_or(|parameters| parameters.iter().all(|(key, declarations)| {
+            if declarations.len() < 2 { return true }
+            let [constraint, default] = [false, true].map(|default| {
+                let written = declarations.iter().filter(|declaration| if default { declaration.default } else { declaration.constraint });
+                if written.clone().count() < 2 { return true }
+                // The merged parameter's is the first written; each other one is to be identical to it.
+                let merged = if default { queries.type_parameter_default(*key) } else { queries.type_parameter_constraint(*key) };
+                let Some(merged) = merged else { return true };
+                written.skip(1).all(|declaration| {
+                    let own = if default { queries.type_parameter_default(declaration.key) } else { queries.type_parameter_constraint(declaration.key) };
+                    own.is_none_or(|own| queries.is_identical(&own, &merged))
+                })
+            });
+            constraint && default
+        }));
+        self.identical_parameters.borrow_mut().insert(canonical, identical);
+        identical
     }
 }
 
@@ -490,6 +610,23 @@ impl ProjectRegistry {
             })
             .collect();
         names.merge_classes(&classes, &declared);
+        // A merged class's declarations declare one list of type parameters, before any source
+        // shares their scopes.
+        let named = |key: NativeTypeDeclarationKey| crate::native_named::NativeNamedKey { snapshot: key.snapshot, index: key.index };
+        let scopes = names.merge_type_parameters(|key| {
+            let seed = files[snapshots[&key.snapshot]].seed.borrow();
+            let types = seed.as_ref().and_then(|(_, types)| types.as_ref()).expect("a named declaration's source has its types");
+            let parameters = types.named_parameters(named(key)).into_iter().map(|(name, key)| {
+                let source = types.parameter(key);
+                (name, ParameterDeclaration { key, constraint: source.constraint.is_some(), default: source.default.is_some() })
+            }).collect();
+            (parameters, types.self_parameter(named(key)))
+        });
+        for scope in scopes {
+            let seed = files[snapshots[&scope.declaration.snapshot]].seed.get_mut();
+            let types = seed.as_mut().and_then(|(_, types)| types.as_mut()).expect("a named declaration's source has its types");
+            types.merge_named_parameters(named(scope.declaration), &scope.names, &scope.parameters, scope.self_parameter);
+        }
         names.yield_utilities(&utilities);
         // Every source sees every other's scopes, merged once for all of them.
         let mut original_scopes = Vec::new();
@@ -810,6 +947,17 @@ impl ProjectRegistry {
             text.push_str(" : ");
             let arguments: Vec<_> = header.parameters.iter().map(|&parameter| Type::NativeTypeParameter(parameter)).collect();
             if let Ok(ty) = queries.named_type_reference(key, &arguments) { described(&ty, queries, &mut text); }
+        }
+        // The constraints and defaults its named types write, which references to them read and
+        // a merged class's other declarations are compared with.
+        for parameter in source.types.parameter_sources() {
+            if parameter.semantic_self.is_some() || !matches!(parameter.owner, crate::native_named::NativeTypeContext::NamedType(_)) { continue }
+            text.push_str(&parameter.name.text);
+            for written in [queries.type_parameter_constraint(parameter.key), queries.type_parameter_default(parameter.key)] {
+                text.push_str(" : ");
+                if let Some(ty) = written { text.push_str(&crate::describe_diagnostic_type(&ty, queries)); }
+            }
+            text.push('\n');
         }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         text.hash(&mut hasher);
@@ -1375,6 +1523,23 @@ impl NativeTypeProvider for ProjectRegistry {
         self.owner(snapshot).type_declaration_error(error);
     }
 
+    // A merged class's type parameter is constrained by, and defaults to, what the first of its
+    // declarations to write one writes, as TypeScript reads a merged type parameter's declarations.
+    fn has_type_parameter_constraint(&self, key: NativeTypeParameterKey) -> bool {
+        self.names.parameter_declaration(key, false).is_some() || self.owner(key.snapshot).has_type_parameter_constraint(key)
+    }
+    fn type_parameter_constraint(&self, key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type> {
+        let declaration = self.names.parameter_declaration(key, false).unwrap_or(key);
+        self.owner(declaration.snapshot).type_parameter_constraint(declaration, queries)
+    }
+    fn has_type_parameter_default(&self, key: NativeTypeParameterKey) -> bool {
+        self.names.parameter_declaration(key, true).is_some() || self.owner(key.snapshot).has_type_parameter_default(key)
+    }
+    fn type_parameter_default(&self, key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type> {
+        let declaration = self.names.parameter_declaration(key, true).unwrap_or(key);
+        self.owner(declaration.snapshot).type_parameter_default(declaration, queries)
+    }
+
     dispatch! {
         fn type_declaration_self_parameter(key: NativeTypeDeclarationKey) -> Option<NativeTypeParameterKey>;
         fn function_is_method(key: NativeFunctionKey) -> bool;
@@ -1443,10 +1608,6 @@ impl NativeTypeProvider for ProjectRegistry {
         fn type_parameter_is_sequence(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_is_const(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_name(key: NativeTypeParameterKey) -> String;
-        fn has_type_parameter_constraint(key: NativeTypeParameterKey) -> bool;
-        fn type_parameter_constraint(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;
-        fn has_type_parameter_default(key: NativeTypeParameterKey) -> bool;
-        fn type_parameter_default(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;
         fn type_parameter_order(key: NativeTypeParameterKey) -> u32;
         fn type_parameter_siblings(key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey>;
         fn circular_type_parameter_constraint(key: NativeTypeParameterKey) -> ();

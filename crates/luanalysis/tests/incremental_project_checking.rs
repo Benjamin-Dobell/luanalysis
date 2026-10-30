@@ -721,3 +721,26 @@ fn incremental_checks_redo_only_what_an_edit_can_affect_and_match_cold_checks() 
     // Other options check everything again.
     assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), ProjectCheckOptions { no_unsafe_any: true, ..modules() }), all);
 }
+
+#[test]
+fn an_edit_of_a_type_parameter_reaches_the_files_that_read_it() {
+    let fixture = Fixture::new();
+    fixture.file("a.lua", "---@class Box<T: string>\n---@field first T\n\nreturn {}\n");
+    fixture.file("b.lua", "---@class Box<T: string>\n---@field second T\n\nreturn {}\n");
+    fixture.file("single.lua", "---@class Single<T: string, U = number>\n---@field value T\n\nreturn {}\n");
+    fixture.file("use.lua", "---@type Single<string>\nlocal single\nlocal value = single.value\n");
+    let plan = || fixture.plan(&["a.lua", "b.lua", "single.lua", "use.lua"], &[]);
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    // A merged class's declarations are reported together when one writes another constraint...
+    fixture.file("b.lua", "---@class Box<T: number>\n---@field second T\n\nreturn {}\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
+    // ...and no more when it writes the same one again.
+    fixture.file("b.lua", "---@class Box<T: string>\n---@field second T\n\nreturn {}\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
+    // A constraint or a default that files read in a reference.
+    fixture.file("single.lua", "---@class Single<T: number, U = number>\n---@field value T\n\nreturn {}\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
+    fixture.file("single.lua", "---@class Single<T: string, U = boolean>\n---@field value T\n\nreturn {}\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
+}

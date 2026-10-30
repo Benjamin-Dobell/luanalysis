@@ -1045,6 +1045,17 @@ impl NativeRegistry {
                     message: format!("Duplicate identifier '{}'.", source.syntax.name.text),
                 });
             }
+            // As TypeScript reports it at every declaration of the merged interface.
+            if let Some(names) = &self.project_names
+                && names.is_merged(declaration(source.key))
+                && !names.identical_type_parameters(names.canonical(declaration(source.key)), queries)
+            {
+                self.report.borrow_mut().diagnostics.push(Diagnostic {
+                    code: "TS2428",
+                    span: source.syntax.name.span,
+                    message: format!("All declarations of '{}' must have identical type parameters.", source.syntax.name.text),
+                });
+            }
             if let Err(error) = queries.validate_named_declaration(declaration(source.key)) {
                 self.record_named_application_error(
                     error,

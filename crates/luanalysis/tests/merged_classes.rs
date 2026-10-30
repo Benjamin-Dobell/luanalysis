@@ -298,3 +298,84 @@ fn a_class_declared_again_in_one_file_is_one_class_with_its_setmetatable_tables_
     assert!(report.contains("main.lua:11:31: error[TS2339]: Property 'missing' does not exist on type 'def Builder'"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
+
+#[test]
+fn a_generic_class_declared_again_is_one_class_of_its_type_parameters() {
+    // As TypeScript merges a generic interface's declarations, which share their type parameters
+    // by name, each declaration's `T` and `self` are the class's: they are its arguments.
+    let fixture = Fixture::new(&[
+        ("box.lua", "---@class Box<T>\n---@field first T\n\nreturn {}\n"),
+        ("more.lua", "---@class Box<T>\n---@field second T\n---@field me self\n\n---@class Derived<T>: Box<T>\n\nreturn {}\n"),
+        ("main.lua", "require 'box'\nrequire 'more'\n---@class Box<T>\n---@field third T\n\n---@param box Box<number>\n---@param derived Derived<string>\nlocal function read(box, derived)\n    local second = box.second\n    local third = box.third\n    local first = box.me.first\n    local inherited = derived.second\n    ---@type string\n    local wrong = box.second\nend\n"),
+    ]);
+    let report = text(&fixture.check());
+    assert!(report.contains("main.lua:9:11: second: number"), "{report}");
+    assert!(report.contains("main.lua:10:11: third: number"), "{report}");
+    assert!(report.contains("main.lua:11:11: first: number"), "{report}");
+    assert!(report.contains("main.lua:12:11: inherited: string"), "{report}");
+    assert!(report.contains("main.lua:14:19: error[TS2322]: Type 'number' is not assignable to type 'string'."), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}
+
+#[test]
+fn a_later_declarations_methods_see_the_class_type_parameters_and_self() {
+    let fixture = Fixture::new(&[
+        ("box.lua", "---@class Box<T>\n---@field value T\nlocal Box = {}\nreturn Box\n"),
+        ("more.lua", "---@class Box<T>\nlocal Box = require 'box'\n---@return T\nfunction Box:get() return self.value end\nreturn Box\n"),
+        ("named.lua", "---@class Named\n---@field name string\nlocal Named = {}\nreturn Named\n"),
+        ("rename.lua", "---@class Named\nlocal Named = require 'named'\nfunction Named:get() return self.name end\nreturn Named\n"),
+        ("main.lua", "require 'more'\nrequire 'rename'\n---@param box Box<number>\n---@param named Named\nlocal function read(box, named)\n    local value = box:get()\n    local name = named:get()\nend\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(output.status.success(), "{report}");
+    assert!(report.contains("main.lua:6:11: value: number"), "{report}");
+    assert!(report.contains("main.lua:7:11: name: string"), "{report}");
+}
+
+#[test]
+fn declarations_of_a_class_with_other_type_parameters_are_reported_at_each() {
+    // TypeScript's TS2428: every declaration declares a leading part of the class's type
+    // parameters, by name, that leaves out only parameters with a default, and where two write a
+    // constraint or a default, they write identical ones.
+    let check = |first: &str, second: &str, main: &str| {
+        let fixture = Fixture::new(&[
+            ("box.lua", &format!("---@class {first}\n---@field first T\n\nreturn {{}}\n")),
+            ("more.lua", &format!("---@class {second}\n\nreturn {{}}\n")),
+            ("main.lua", &format!("require 'box'\nrequire 'more'\n{main}")),
+        ]);
+        text(&fixture.check())
+    };
+    let reported = |report: &str| {
+        report.contains("box.lua:1:11: error[TS2428]: All declarations of 'Box' must have identical type parameters.")
+            && report.contains("more.lua:1:11: error[TS2428]: All declarations of 'Box' must have identical type parameters.")
+            && report.matches("error[TS2428]").count() == 2
+    };
+    for (first, second) in [
+        ("Box<T>", "Box<U>"),
+        ("Box<T>", "Box"),
+        ("Box<T>", "Box<T, U>"),
+        ("Box<T: number>", "Box<T: string>"),
+        ("Box<T = number>", "Box<T = string>"),
+    ] {
+        let report = check(first, second, "");
+        assert!(reported(&report), "{first} and {second}: {report}");
+    }
+    // A later declaration that adds a parameter with a default, or leaves one out, declares the
+    // same ones; its parameter is the class's.
+    let main = "---@param box Box<number>\n---@param other Box<number, boolean>\nlocal function read(box, other)\n    local first = box.first\n    local second = box.second\n    local third = other.second\nend\n";
+    let report = check("Box<T>", "Box<T, U = string>\n---@field second U", main);
+    assert!(!report.contains("error["), "{report}");
+    assert!(report.contains("main.lua:7:11: second: string"), "{report}");
+    assert!(report.contains("main.lua:8:11: third: boolean"), "{report}");
+    let report = check("Box<T, U = string>", "Box<T>\n---@field second T", "---@param box Box<number>\nlocal function read(box) local second = box.second end\n");
+    assert!(!report.contains("error["), "{report}");
+    assert!(report.contains("main.lua:4:32: second: number"), "{report}");
+    // A constraint written once constrains the class's parameter; identical ones written
+    // otherwise are one.
+    let report = check("Box<T>", "Box<T: string>", "---@param box Box<number>\nlocal function read(box) end\n");
+    assert!(report.contains("main.lua:3:19: error[TS2344]: Type 'number' does not satisfy constraint 'string'."), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+    let report = check("Box<T: (string | number)>", "Box<T: (number | string)>", "");
+    assert!(!report.contains("error["), "{report}");
+}

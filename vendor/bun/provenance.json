@@ -3200,6 +3200,12 @@
       "patch": "vendor/patches/bun-sema-subsequent-properties.patch",
       "reason": "Report a member declared again with another type, or other modifiers, at that declaration and keep the first, as TypeScript merges declarations (TS2717, TS2687), rather than failing the whole named type, as the merge's comment already described; and group a written function type's declarations of one key as overloads, as pure callable members are, when the provider says the member is one.",
       "patch_sha256": "ecf06d4874b59f6d622b01e9bbd153e58deaaa46ed7f67718c049cc837975980"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-identity-relation.patch",
+      "reason": "Expose the identity relation (`isTypeIdenticalTo`) to the Lua adapter, which compares the constraints and defaults of a merged class's type parameters with it, as TypeScript's `areTypeParametersIdentical` does (TS2428); body unchanged.",
+      "patch_sha256": "ca465086f280309506de3811fba7b8a7037e6c36107ac2a589a09a4ccf8af75c"
     }
   ],
   "source_additions": {
@@ -4259,7 +4265,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "1e4054e50628ab819db66aaf7fa8e0c72abe1a6cc28c42252eb90423cb975375"
+      "extracted_sha256": "540bf76b911170208dbad3bf5a33c157e6cd21d9a717ffc840343892334a50ef"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",

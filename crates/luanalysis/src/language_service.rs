@@ -1861,6 +1861,33 @@ fn word_in(text: &str, span: Span, word: &str) -> Option<Span> {
     }).map(|(index, _)| Span { start: span.start + index, end: span.start + index + word.len() })
 }
 
+/// The documentation blocks that declare the type parameter `at` names, which its own block
+/// declares, with their files: its own, and those of its class's other declarations that declare
+/// the name, as a merged class's type parameter is one (TypeScript's merged declarations share
+/// one symbol, which a rename renames in all of them).
+fn type_parameter_blocks(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    at: &luanalysis_syntax::TypeName,
+    names: &[luanalysis_syntax::TypeName],
+) -> Vec<(FileId, Span)> {
+    use luanalysis_syntax::TypeNameKind;
+    let mut blocks = vec![(file, at.block)];
+    let Some(source) = registry.source(file) else { return blocks };
+    let classes = names.iter().filter(|name| name.kind == TypeNameKind::Declaration && name.block == at.block);
+    let sites = classes.flat_map(|class| source.named_candidates(&class.name)).flat_map(|key| registry.type_declaration_sites(key));
+    for (site_file, site) in sites {
+        let Some(other) = project.file(site_file) else { continue };
+        let Some(syntax) = registry.source(site_file).map(|source| source.syntax()) else { continue };
+        let names = luanalysis_syntax::type_names(syntax, &other.source);
+        let Some(class) = names.iter().find(|name| name.kind == TypeNameKind::Declaration && name.span == site) else { continue };
+        let declares = names.iter().any(|name| name.kind == TypeNameKind::Generic && name.block == class.block && name.name == at.name);
+        if declares && !blocks.contains(&(site_file, class.block)) { blocks.push((site_file, class.block)); }
+    }
+    blocks
+}
+
 /// A type name's declarations and uses. A `---@generic` parameter is its documentation block's;
 /// any other name is a type's, declared by `---@class`, `---@shape`, `---@alias` or `---@enum`
 /// in any file of the project.
@@ -1873,14 +1900,18 @@ fn type_navigation(
     references: bool,
 ) -> Option<Navigation> {
     use luanalysis_syntax::TypeNameKind;
-    let source = project.file(file)?;
     let mut navigation = Navigation { name: at.name.clone(), span: at.span, type_name: true, ..Navigation::default() };
     let shadowed = |names: &[luanalysis_syntax::TypeName], block: Span| names.iter()
         .any(|name| name.kind == TypeNameKind::Generic && name.block == block && name.name == at.name);
     if shadowed(names, at.block) {
-        for name in names.iter().filter(|name| name.block == at.block && name.name == at.name) {
-            let declaration = name.kind == TypeNameKind::Generic;
-            if references || declaration { add_occurrence(&mut navigation, &source.path, &source.source, name.span, declaration); }
+        for (block_file, block) in type_parameter_blocks(project, registry, file, at, names) {
+            let Some(other) = project.file(block_file) else { continue };
+            let Some(syntax) = registry.source(block_file).map(|source| source.syntax()) else { continue };
+            let names = luanalysis_syntax::type_names(syntax, &other.source);
+            for name in names.iter().filter(|name| name.block == block && name.name == at.name) {
+                let declaration = name.kind == TypeNameKind::Generic;
+                if references || declaration { add_occurrence(&mut navigation, &other.path, &other.source, name.span, declaration); }
+            }
         }
         return Some(navigation);
     }
@@ -2270,15 +2301,17 @@ fn type_rename_conflict(
     const BUILT_IN: [&str; 12] = ["any", "unknown", "never", "nil", "boolean", "number", "integer", "string", "table", "function", "void", "self"];
     if !name.split('.').all(crate::symbols::is_name) { return Err(RenameFailure::new(RenameReason::InvalidName, format!("{name:?} is not a type name"))); }
     if BUILT_IN.contains(&name) { return Err(RenameFailure::new(RenameReason::BuiltInType, format!("{name} is a built-in type"))); }
-    // A `---@generic` and its uses are its documentation block's alone.
+    // A `---@generic` and its uses are its documentation block's alone, and those of a merged
+    // class's other declarations of it.
     let generic = names.iter().any(|other| other.kind == TypeNameKind::Generic && other.block == at.block && other.name == at.name);
-    for other in project.files.iter().filter(|other| !generic || other.id == file) {
+    let blocks = if generic { type_parameter_blocks(project, registry, file, at, names) } else { Vec::new() };
+    for other in project.files.iter().filter(|other| !generic || blocks.iter().any(|(block_file, _)| *block_file == other.id)) {
         let Some(syntax) = registry.source(other.id).map(|source| source.syntax()) else { continue };
         let names = luanalysis_syntax::type_names(syntax, &other.source);
         let generic_in = |block: Span| names.iter().any(|type_name| type_name.kind == TypeNameKind::Generic && type_name.block == block && type_name.name == name);
         let renamed = |type_name: &luanalysis_syntax::TypeName| navigation.occurrences.iter().any(|(path, span, _)| *path == other.path && *span == type_name.span);
         let conflict = names.iter().find(|type_name| match () {
-            _ if generic => type_name.block == at.block && type_name.name == name,
+            _ if generic => type_name.name == name && blocks.contains(&(other.id, type_name.block)),
             _ if renamed(type_name) => generic_in(type_name.block),
             _ => type_name.name == name && !generic_in(type_name.block),
         });
@@ -3656,6 +3689,22 @@ mod tests {
         let (path, span, _) = renamed.occurrences.iter().find(|(path, _, _)| path.ends_with("other.lua")).unwrap();
         assert_eq!(span.start, other.find("Counter").unwrap());
         assert_eq!(renamed.texts[path], other);
+    }
+
+    #[test]
+    fn a_merged_classs_type_parameter_renames_in_each_declaration_that_declares_it() {
+        let first = "---@class Box<T>\n---@field first T\n\n---@class Other<T>\n---@field other T\n\nreturn {}\n";
+        let second = "---@class Box<T>\n---@field second T\n\nreturn {}\n";
+        let files = [("first.lua", first), ("second.lua", second)];
+        let renamed = rename_buffers(&files, "second.lua", "T\n", Some("Value")).unwrap().unwrap();
+        // Both declarations' `T` and its use; not `Other`'s.
+        assert_eq!(renamed.occurrences.len(), 4, "{:?}", renamed.occurrences);
+        let other = first.find("Other").unwrap();
+        assert!(renamed.occurrences.iter().all(|(path, span, _)| !path.ends_with("first.lua") || span.start < other), "{:?}", renamed.occurrences);
+        // A name one of them already uses would be captured in it.
+        let captured = "---@class Box<T>\n---@field first T\n---@field value Value\n\n---@class Value\n\nreturn {}\n";
+        let refused = rename_buffers(&[("first.lua", captured), ("second.lua", second)], "second.lua", "T\n", Some("Value"));
+        assert!(refused.is_err_and(|message| message.contains("Value")));
     }
 
     #[test]

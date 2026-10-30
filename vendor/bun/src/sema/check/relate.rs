@@ -538,7 +538,7 @@ impl<'p, 's> Checker<'p, 's> {
         self.is_comparable(a, b) || self.is_comparable(b, a)
     }
 
-    pub(super) fn is_identical(&mut self, a: TypeId, b: TypeId) -> bool {
+    pub fn is_identical(&mut self, a: TypeId, b: TypeId) -> bool {
         self.related(a, b, Relation::Identity)
     }
 

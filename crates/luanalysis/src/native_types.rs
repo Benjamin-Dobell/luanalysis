@@ -542,6 +542,35 @@ impl NativeTypes {
         key
     }
 
+    /// The type parameters that the named type `owner` declares, in order, with their names.
+    pub(super) fn named_parameters(&self, owner: NativeNamedKey) -> Vec<(String, NativeTypeParameterKey)> {
+        let scope = self.scope(&NativeTypeContext::NamedType(owner)).expect("original named type scope");
+        scope.parameters.iter().map(|&key| (self.parameter(key).name.text.clone(), key)).collect()
+    }
+
+    /// Makes the named type `owner`, a declaration of a class declared more than once, declare
+    /// that class's type parameters: `parameters` is every declaration's list as one, and each
+    /// name `owner` declares is the parameter of that name in `names`, which may belong to
+    /// another declaration. As TypeScript's merged declarations see only the type parameters they
+    /// declare themselves, the other names stay unseen here. Its `self` is the class's,
+    /// `self_parameter`.
+    pub(super) fn merge_named_parameters(
+        &mut self,
+        owner: NativeNamedKey,
+        names: &HashMap<String, NativeTypeParameterKey>,
+        parameters: &[NativeTypeParameterKey],
+        self_parameter: Option<NativeTypeParameterKey>,
+    ) {
+        let scope = self.scope_mut(&NativeTypeContext::NamedType(owner)).expect("original named type scope");
+        for (name, key) in &mut scope.names {
+            if let Some(&merged) = names.get(name) { *key = merged; }
+        }
+        scope.parameters = parameters.to_vec();
+        if self_parameter.is_some() { scope.self_parameter = self_parameter; }
+        let epoch = Rc::clone(&scope.metadata_epoch);
+        Self::advance_metadata(&epoch);
+    }
+
     pub(super) fn self_parameter(&self, owner: NativeNamedKey) -> Option<NativeTypeParameterKey> {
         self.scope(&NativeTypeContext::NamedType(owner)).and_then(|scope| scope.self_parameter)
     }
@@ -736,7 +765,10 @@ impl NativeTypes {
         // A signature's scope encloses the function it types, whose head the signature is.
         parameters.retain(|key| used.contains(key) && !scope.parameters.contains(key));
         parameters.sort_by_key(|key| key.index);
-        parameters.dedup();
+        // A merged class's scopes hold the parameters of its other declarations' sources too,
+        // so one key may not follow itself.
+        let mut seen = HashSet::default();
+        parameters.retain(|key| seen.insert(*key));
         parameters
     }
 }
