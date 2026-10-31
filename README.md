@@ -1060,41 +1060,46 @@ synchronization.lib legacy_stdio_definitions.lib`, compiling with `/MT` and defi
 Luanalysis's checker is built on Bun's Rust port of the TypeScript compiler's checker, and it
 checks a project's files in parallel.
 
-Checking 434 Lua files of
-[lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own repository,
-using Lua 5.4 on an Apple M1 Max (19 October 2026):
+Checking [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own
+repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October 2026):
 
-| Checker | Wall time | CPU time |
-| --- | --- | --- |
-| lua-language-server 3.19.2 `--check` | 18.4 s | 17.9 s |
-| Luanalysis, one thread | 2.9 s | 2.9 s |
-| Luanalysis, ten threads | 1.4 s | 4.7 s |
+| Checker | Wall time | CPU time | Peak memory |
+| --- | --- | --- | --- |
+| lua-language-server 3.19.2 `--check` | 17.5 s | 17.2 s | 732 MB |
+| EmmyLua Analyzer 0.25.1 | 0.86 s | 2.0 s | 159 MB |
+| Luanalysis, one thread | 3.0 s | 3.0 s | 706 MB |
+| Luanalysis, ten threads | 1.3 s | 5.3 s | 959 MB |
 
-These are medians of five fresh-process runs after one warmup, using release builds;
-CPU time includes user and system time. Both checkers receive `script/`, `test/`, `tools/`
-and the four root Lua files. LuaLS uses its repository configuration with Lua 5.4 and
-`lua/` (a symlink to `script/`) and `make/` excluded, so it checks those same 434 files.
-The checkers report different diagnostics. Other development work was running on the machine.
+These are medians of five fresh-process runs after one warmup, using release builds; CPU time
+includes user and system time, and peak memory is resident set size. Every checker receives
+`script/`, `test/`, `tools/` and the four root Lua files. LuaLS uses its repository
+configuration with Lua 5.4 and `lua/` (a symlink to `script/`) and `make/` excluded, so it checks
+those same 434 files. The checkers report different diagnostics. Other development work was
+running on the machine.
 
-Diagnostics after an edit, from the change to the new diagnostics, are measured by
-`docs/emmylua-comparison/bench/lsp_bench.py`. Each edit adds or removes a type error at the end
-of the file, and the figures are medians of ten edits (29 October 2026):
+On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.13 s and 110 MB,
+and EmmyLua Analyzer 0.25.1 takes 0.18 s and 25 MB.
 
-| Project, edited file | Whole check | Edit to diagnostics |
-| --- | --- | --- |
-| lua-language-server, `script/files.lua` (999 lines) | 1.5 s | 0.42 s |
-| Prototype Inertia, `src/model/CardBehavior.ttslua` (2,522 lines) | 6.1 s | 1.33 s |
+Diagnostics after an edit in the language server, from the change to the new diagnostics. Each
+edit adds or removes a type error in the file's first local function, and the figures are medians
+of 20 edits:
 
-An edit that changes what a widely used module or class exposes checks its users as well, and
-costs up to one whole check.
+| Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
+| --- | --- | --- | --- | --- |
+| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.3 s | 65 ms | 962 MB |
+| Another project (136 files, 33,083 lines) | 2,522 lines | 6.1 s | 1.13 s | 1.94 GB |
 
-Member completions in a 1,546-line Prototype Inertia file, with the buffer changed before
+An edit checks the edited file using the types it reads from the rest of the project, not the file
+alone. An edit that changes what a widely used module or class exposes checks its users as well,
+and costs up to one whole check.
+
+Member completions in a 1,546-line file of that 136-file project, with the buffer changed before
 every request and background checking active:
 
 | Completion item details | Median | 95th percentile |
 | --- | --- | --- |
-| Included in the list | 31 ms | 69 ms |
-| Resolved separately by the client | 32 ms | 80 ms |
+| Included in the list | 27 ms | 33 ms |
+| Resolved separately by the client | 26 ms | 31 ms |
 
 Each row measures 100 requests across five language-server sessions, excluding each session's
 first request. Times include sending the changed buffer and receiving the completion list
