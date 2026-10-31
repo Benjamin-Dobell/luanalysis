@@ -1061,24 +1061,27 @@ Luanalysis's checker is built on Bun's Rust port of the TypeScript compiler's ch
 checks a project's files in parallel.
 
 Checking [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own
-repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October 2026):
+repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October and
+1 November 2026):
 
 | Checker | Wall time | CPU time | Peak memory |
 | --- | --- | --- | --- |
 | lua-language-server 3.19.2 `--check` | 17.5 s | 17.2 s | 732 MB |
 | EmmyLua Analyzer 0.25.1 | 0.86 s | 2.0 s | 159 MB |
+| EmmyLua Analyzer main (`1b6df85`) | 8.3 s | 8.2 s | 169 MB |
 | Luanalysis, one thread | 3.0 s | 3.0 s | 706 MB |
 | Luanalysis, ten threads | 1.3 s | 5.3 s | 959 MB |
 
-These are medians of five fresh-process runs after one warmup, using release builds; CPU time
-includes user and system time, and peak memory is resident set size. Every checker receives
+These are medians of five fresh-process runs after one warmup, using release builds; EmmyLua
+Analyzer main is an unreleased commit built from source without changes. CPU time includes user
+and system time, and peak memory is resident set size. Every checker receives
 `script/`, `test/`, `tools/` and the four root Lua files. LuaLS uses its repository
 configuration with Lua 5.4 and `lua/` (a symlink to `script/`) and `make/` excluded, so it checks
 those same 434 files. The checkers report different diagnostics. Other development work was
 running on the machine.
 
 On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.13 s and 110 MB,
-and EmmyLua Analyzer 0.25.1 takes 0.18 s and 25 MB.
+EmmyLua Analyzer 0.25.1 takes 0.18 s and 25 MB, and its main branch takes 0.23 s and 31 MB.
 
 Diagnostics after an edit in the language server, from the change to the new diagnostics. Each
 edit adds or removes a type error in the file's first local function, and the figures are medians
