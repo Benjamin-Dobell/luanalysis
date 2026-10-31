@@ -1133,6 +1133,10 @@ pub trait TypeQueries {
     ) -> Result<Type, TableError>;
     fn table_sequence_context(&mut self, expected: &Type, start: i64) -> Option<ValuePack>;
     fn table_lookup(&mut self, table: &Type, key: &TableKey) -> Result<Type, TableError>;
+    /// Whether the member read from `table` is the checker's instance of `expected` itself, not
+    /// another instance that exports to the same type.
+    #[cfg(test)]
+    fn property_is_instance(&mut self, table: &Type, name: &str, expected: &Type) -> bool;
     fn table_write(&mut self, table: &Type, key: &TableKey, value: &Type)
     -> Result<(), TableError>;
     /// Validate an original store without turning future computed writes into
@@ -1820,6 +1824,10 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn table_lookup(&mut self, table: &Type, key: &TableKey) -> Result<Type, TableError> {
         self.table_lookup_native(table, key)
+    }
+    #[cfg(test)]
+    fn property_is_instance(&mut self, table: &Type, name: &str, expected: &Type) -> bool {
+        self.property_is_instance_native(table, name, expected)
     }
     fn table_write(
         &mut self,

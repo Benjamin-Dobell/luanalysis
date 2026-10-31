@@ -984,6 +984,7 @@ impl<'s> Program<'s> {
             recent_unions: Default::default(),
             recent_unreduced_unions: Default::default(),
             unions_of_union_types: Default::default(),
+            subtype_reductions: Default::default(),
             constraint_stack: Vec::new(),
             constraints_marked_circular: Vec::new(),
             circular_constraint_origins: Vec::new(),
@@ -1785,6 +1786,8 @@ pub struct Checker<'p, 's> {
     recent_unreduced_unions: instantiate::Recent,
     /// `unionOfUnionTypes`, for `UnionReductionSubtype`: the lower id first.
     unions_of_union_types: FxHashMap<(TypeId, TypeId), TypeId>,
+    /// `subtypeReductionCache`
+    subtype_reductions: FxHashMap<Vec<TypeId>, TypeId>,
     /// The `stack` of `getResolvedBaseConstraint`: the recursion identities of the nested
     /// constraint computations in progress.
     constraint_stack: Vec<relate::RecursionId>,

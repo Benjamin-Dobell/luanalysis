@@ -378,6 +378,7 @@ pub(super) struct NativeNamedCache {
     objects: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
     schemas: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
     bases: FxHashMap<NativeTypeDeclarationId, Result<Vec<TypeId>, NativeNamedTypeError>>,
+    own_parameters: FxHashMap<NativeTypeDeclarationId, Vec<NativeTypeParamId>>,
     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
     members: FxHashMap<TypeId, Vec<NativeObjectMember>>,
     owner_applications: FxHashMap<NativeTypeMemberId, Option<NativeMemberOwnerApplication>>,
@@ -1173,8 +1174,38 @@ impl<'p, 's> Checker<'p, 's> {
         let mapped = self.cloned_native_type_param(id, reference.mapper);
         let mut pairs = vec![(param, receiver)];
         if mapped != param { pairs.push((mapped, receiver)); }
+        // The receiver is composed into the type arguments only where they mention it.
+        let mentions = self.types().mapping(reference.mapper).iter()
+            .any(|&(_, value)| self.any_type_in(value, true, |part| part == param || part == mapped));
+        if !mentions {
+            for &pair in self.types().mapping(reference.mapper) {
+                if !pairs.iter().any(|other| other.0 == pair.0) { pairs.push(pair); }
+            }
+            return self.types().mapper(pairs);
+        }
         let mapper = self.types().mapper(pairs);
         self.compose(reference.mapper, mapper)
+    }
+
+    /// As `getObjectTypeInstantiation` identifies an instantiation by the values of its type's
+    /// own parameters: what a mapper says of any other parameter is nothing to the object, and
+    /// keeping it would make another instance, with another schema, of the same type.
+    pub(super) fn native_object_own_mapper(&mut self, declaration: NativeTypeDeclarationId, mapper: MapperId) -> MapperId {
+        if !self.native_named_cache.own_parameters.contains_key(&declaration) {
+            let Ok(provider) = self.native_named_provider(declaration) else { return mapper };
+            let header = provider.type_declaration_header(self, declaration);
+            let mut parameters: Vec<_> = header.outer_parameters.iter().chain(&header.parameters).copied().collect();
+            parameters.extend(provider.type_declaration_self_parameter(declaration));
+            self.native_named_cache.own_parameters.insert(declaration, parameters);
+        }
+        let parameters = &self.native_named_cache.own_parameters[&declaration];
+        let own = |param: TypeId| match *self.data(param) {
+            TypeData::NativeTypeParam { declaration, .. } => parameters.contains(&declaration),
+            _ => true,
+        };
+        let mapping = self.types().mapping(mapper);
+        if mapping.iter().all(|&(param, _)| own(param)) { return mapper }
+        self.types().mapper(mapping.iter().copied().filter(|&(param, _)| own(param)).collect())
     }
 
     fn native_member_type(&mut self, raw: TypeId, reference: NativeObjectReference) -> TypeId {
@@ -1490,6 +1521,23 @@ impl<'p, 's> Checker<'p, 's> {
         None
     }
 
+    /// `propertiesIdenticalTo` compares property names before their types: two objects with
+    /// different names are not identical, whatever their members' types would instantiate to.
+    pub(super) fn native_member_keys_differ(&mut self, source: TypeId, target: TypeId) -> bool {
+        let (&TypeData::NativeObject(source), &TypeData::NativeObject(target)) = (self.data(source), self.data(target)) else { return false };
+        if source.declaration == target.declaration { return false }
+        let (Ok(source_members), Ok(target_members)) = (self.native_object_members(source), self.native_object_members(target)) else { return false };
+        let Ok(provider) = self.native_named_provider(source.declaration) else { return false };
+        let keys = |members: &[NativeObjectMember]| -> Vec<NativeTableKey> {
+            members.iter().filter_map(|member| match provider.type_member_header(self, member.member).key {
+                NativeTypeMemberKey::Fixed(key) => key.normalize().ok(),
+                _ => None,
+            }).collect()
+        };
+        let (source_keys, target_keys) = (keys(&source_members), keys(&target_members));
+        source_keys.iter().any(|key| !target_keys.contains(key)) || target_keys.iter().any(|key| !source_keys.contains(key))
+    }
+
     pub(super) fn native_nominal_reference_compatible(&mut self, source: NativeObjectReference, target: NativeObjectReference, identity: bool) -> bool {
         if source.declaration == target.declaration { return true }
         if identity { return false }
@@ -1685,11 +1733,21 @@ impl<'p, 's> Checker<'p, 's> {
         let mut overridden = None;
         let mut indexers = Vec::new();
         let mut indexer_origins: Vec<NativeObjectMember> = Vec::new();
+        // An object's members share their owners' mappers.
+        let mut member_mappers: smallvec::SmallVec<[(NativeObjectReference, MapperId); 4]> = smallvec::SmallVec::new();
         for origin in members.iter().cloned() {
             let metadata = provider.type_member_header(self, origin.member);
             let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
             let Some(value_origin) = self.native_object_member_effective_origin(&origin)? else { continue };
-            let value = self.native_member_type(raw, origin.owner);
+            let mapper = match member_mappers.iter().find(|(owner, _)| *owner == origin.owner) {
+                Some(&(_, mapper)) => mapper,
+                None => {
+                    let mapper = self.native_member_mapper(origin.owner);
+                    member_mappers.push((origin.owner, mapper));
+                    mapper
+                }
+            };
+            let value = self.instantiate(raw, mapper);
             if validate && header.kind != NativeTypeDeclarationKind::Class {
                 if let Err(NativeTableError::ValueType { value: actual, expected }) = self.native_member_read(raw, origin.owner) {
                     return Err(NativeNamedTypeError::InvalidReceiver { declaration, actual, expected });

@@ -1,0 +1,239 @@
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -1817,13 +1817,25 @@ impl<'p, 's> Checker<'p, 's> {
+         if t == TypeId::MISSING {
+             return s == t;
+         }
++        // Instantiations of one native declaration are matched next, identical or not.
++        if s != t && self.native_same_declaration(s, t) {
++            return false;
++        }
+         self.is_identical(s, t)
+             || self.flags(t) & tf::STRING != 0 && self.flags(s) & tf::STRING_LITERAL != 0
+             || self.flags(t) & tf::NUMBER != 0 && self.flags(s) & tf::NUMBER_LITERAL != 0
+     }
+ 
++    /// A native declaration is a named object's symbol.
++    fn native_same_declaration(&self, s: TypeId, t: TypeId) -> bool {
++        matches!((self.data(s), self.data(t)), (TypeData::NativeObject(s), TypeData::NativeObject(t)) if s.declaration == t.declaration)
++    }
++
+     /// `isTypeCloselyMatchedBy`
+     fn is_type_closely_matched_by(&mut self, s: TypeId, t: TypeId) -> bool {
++        if self.native_same_declaration(s, t) {
++            return true;
++        }
+         self.is_object_type(s)
+             && self.is_object_type(t)
+             && self
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -141,15 +141,19 @@ impl<'p, 's> Checker<'p, 's> {
+             _ => (2, 0, 0, 0),
+         };
+         let stored = self.types().mapping(mapper);
+-        if stored.is_sorted_by(|x, y| declaration(x.0) < declaration(y.0)) {
++        if stored.len() < 2 {
+             return stored.into();
+         }
+-        let mut pairs = stored.to_vec();
++        let keys: smallvec::SmallVec<[_; 8]> = stored.iter().map(|x| declaration(x.0)).collect();
++        if keys.is_sorted_by(|x, y| x < y) {
++            return stored.into();
++        }
++        let mut order: smallvec::SmallVec<[usize; 8]> = (0..stored.len()).collect();
+         // Clones of one declaration, and the `this` types of nested classes, have one key.
+-        pairs.sort_by(|x, y| {
+-            (declaration(x.0).cmp(&declaration(y.0))).then_with(|| self.creation_order(x.0, y.0))
++        order.sort_by(|&x, &y| {
++            (keys[x].cmp(&keys[y])).then_with(|| self.creation_order(stored[x].0, stored[y].0))
+         });
+-        pairs.into()
++        order.into_iter().map(|index| stored[index]).collect::<Vec<_>>().into()
+     }
+ 
+     /// `first`, then `second`. See `unresolved_members`.
+@@ -737,6 +741,7 @@ impl<'p, 's> Checker<'p, 's> {
+             TypeData::NativeObject(reference) => {
+                 let reference = *reference;
+                 let around = self.compose(reference.mapper, mapper);
++                let around = self.native_object_own_mapper(reference.declaration, around);
+                 let self_argument = reference.self_argument.map(|ty| self.instantiate(ty, mapper));
+                 self.intern(TypeData::NativeObject(NativeObjectReference { declaration: reference.declaration, mapper: around, self_argument, runtime_context: reference.runtime_context }))
+             }
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -984,6 +984,7 @@ impl<'s> Program<'s> {
+             recent_unions: Default::default(),
+             recent_unreduced_unions: Default::default(),
+             unions_of_union_types: Default::default(),
++            subtype_reductions: Default::default(),
+             constraint_stack: Vec::new(),
+             constraints_marked_circular: Vec::new(),
+             circular_constraint_origins: Vec::new(),
+@@ -1785,6 +1786,8 @@ pub struct Checker<'p, 's> {
+     recent_unreduced_unions: instantiate::Recent,
+     /// `unionOfUnionTypes`, for `UnionReductionSubtype`: the lower id first.
+     unions_of_union_types: FxHashMap<(TypeId, TypeId), TypeId>,
++    /// `subtypeReductionCache`
++    subtype_reductions: FxHashMap<Vec<TypeId>, TypeId>,
+     /// The `stack` of `getResolvedBaseConstraint`: the recursion identities of the nested
+     /// constraint computations in progress.
+     constraint_stack: Vec<relate::RecursionId>,
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -378,6 +378,7 @@ pub(super) struct NativeNamedCache {
+     objects: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
+     schemas: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
+     bases: FxHashMap<NativeTypeDeclarationId, Result<Vec<TypeId>, NativeNamedTypeError>>,
++    own_parameters: FxHashMap<NativeTypeDeclarationId, Vec<NativeTypeParamId>>,
+     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
+     members: FxHashMap<TypeId, Vec<NativeObjectMember>>,
+     owner_applications: FxHashMap<NativeTypeMemberId, Option<NativeMemberOwnerApplication>>,
+@@ -1173,10 +1174,40 @@ impl<'p, 's> Checker<'p, 's> {
+         let mapped = self.cloned_native_type_param(id, reference.mapper);
+         let mut pairs = vec![(param, receiver)];
+         if mapped != param { pairs.push((mapped, receiver)); }
++        // The receiver is composed into the type arguments only where they mention it.
++        let mentions = self.types().mapping(reference.mapper).iter()
++            .any(|&(_, value)| self.any_type_in(value, true, |part| part == param || part == mapped));
++        if !mentions {
++            for &pair in self.types().mapping(reference.mapper) {
++                if !pairs.iter().any(|other| other.0 == pair.0) { pairs.push(pair); }
++            }
++            return self.types().mapper(pairs);
++        }
+         let mapper = self.types().mapper(pairs);
+         self.compose(reference.mapper, mapper)
+     }
+ 
++    /// As `getObjectTypeInstantiation` identifies an instantiation by the values of its type's
++    /// own parameters: what a mapper says of any other parameter is nothing to the object, and
++    /// keeping it would make another instance, with another schema, of the same type.
++    pub(super) fn native_object_own_mapper(&mut self, declaration: NativeTypeDeclarationId, mapper: MapperId) -> MapperId {
++        if !self.native_named_cache.own_parameters.contains_key(&declaration) {
++            let Ok(provider) = self.native_named_provider(declaration) else { return mapper };
++            let header = provider.type_declaration_header(self, declaration);
++            let mut parameters: Vec<_> = header.outer_parameters.iter().chain(&header.parameters).copied().collect();
++            parameters.extend(provider.type_declaration_self_parameter(declaration));
++            self.native_named_cache.own_parameters.insert(declaration, parameters);
++        }
++        let parameters = &self.native_named_cache.own_parameters[&declaration];
++        let own = |param: TypeId| match *self.data(param) {
++            TypeData::NativeTypeParam { declaration, .. } => parameters.contains(&declaration),
++            _ => true,
++        };
++        let mapping = self.types().mapping(mapper);
++        if mapping.iter().all(|&(param, _)| own(param)) { return mapper }
++        self.types().mapper(mapping.iter().copied().filter(|&(param, _)| own(param)).collect())
++    }
++
+     fn native_member_type(&mut self, raw: TypeId, reference: NativeObjectReference) -> TypeId {
+         let mapper = self.native_member_mapper(reference);
+         self.instantiate(raw, mapper)
+@@ -1490,6 +1521,23 @@ impl<'p, 's> Checker<'p, 's> {
+         None
+     }
+ 
++    /// `propertiesIdenticalTo` compares property names before their types: two objects with
++    /// different names are not identical, whatever their members' types would instantiate to.
++    pub(super) fn native_member_keys_differ(&mut self, source: TypeId, target: TypeId) -> bool {
++        let (&TypeData::NativeObject(source), &TypeData::NativeObject(target)) = (self.data(source), self.data(target)) else { return false };
++        if source.declaration == target.declaration { return false }
++        let (Ok(source_members), Ok(target_members)) = (self.native_object_members(source), self.native_object_members(target)) else { return false };
++        let Ok(provider) = self.native_named_provider(source.declaration) else { return false };
++        let keys = |members: &[NativeObjectMember]| -> Vec<NativeTableKey> {
++            members.iter().filter_map(|member| match provider.type_member_header(self, member.member).key {
++                NativeTypeMemberKey::Fixed(key) => key.normalize().ok(),
++                _ => None,
++            }).collect()
++        };
++        let (source_keys, target_keys) = (keys(&source_members), keys(&target_members));
++        source_keys.iter().any(|key| !target_keys.contains(key)) || target_keys.iter().any(|key| !source_keys.contains(key))
++    }
++
+     pub(super) fn native_nominal_reference_compatible(&mut self, source: NativeObjectReference, target: NativeObjectReference, identity: bool) -> bool {
+         if source.declaration == target.declaration { return true }
+         if identity { return false }
+@@ -1685,11 +1733,21 @@ impl<'p, 's> Checker<'p, 's> {
+         let mut overridden = None;
+         let mut indexers = Vec::new();
+         let mut indexer_origins: Vec<NativeObjectMember> = Vec::new();
++        // An object's members share their owners' mappers.
++        let mut member_mappers: smallvec::SmallVec<[(NativeObjectReference, MapperId); 4]> = smallvec::SmallVec::new();
+         for origin in members.iter().cloned() {
+             let metadata = provider.type_member_header(self, origin.member);
+             let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
+             let Some(value_origin) = self.native_object_member_effective_origin(&origin)? else { continue };
+-            let value = self.native_member_type(raw, origin.owner);
++            let mapper = match member_mappers.iter().find(|(owner, _)| *owner == origin.owner) {
++                Some(&(_, mapper)) => mapper,
++                None => {
++                    let mapper = self.native_member_mapper(origin.owner);
++                    member_mappers.push((origin.owner, mapper));
++                    mapper
++                }
++            };
++            let value = self.instantiate(raw, mapper);
+             if validate && header.kind != NativeTypeDeclarationKind::Class {
+                 if let Err(NativeTableError::ValueType { value: actual, expected }) = self.native_member_read(raw, origin.owner) {
+                     return Err(NativeNamedTypeError::InvalidReceiver { declaration, actual, expected });
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -908,7 +908,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
+             let mut values = Vec::new();
+             for &part in self.parts(ty) { values.push(self.native_table_read(table, NativeTableAccessKey::Type(part))?); }
+-            return Ok(self.union_reduced(&values));
++            return Ok(self.union(&values));
+         }
+         if self.is_any(table) { return Ok(TypeId::ANY) }
+         if self.is_union(table) {
+@@ -926,7 +926,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 }
+             }
+             if !present { return Err(missing.expect("a union has constituents")) }
+-            return Ok(self.union_reduced(&values));
++            return Ok(self.union(&values));
+         }
+         let base = self.base_constraint_or_type(table);
+         if base != table { let base = self.type_with_this_argument(base, table); return self.native_table_read(base, key) }
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -512,6 +512,7 @@ impl<'p, 's> Checker<'p, 's> {
+     /// Composite and instantiable types still use its ordinary distribution/constraint rules.
+     fn native_nominal_objects_compatible(&mut self, source: TypeId, target: TypeId, relation: Relation) -> bool {
+         if !is_object_kind(self.data(source)) || !is_object_kind(self.data(target)) { return true }
++        if relation == Relation::Identity && self.native_member_keys_differ(source, target) { return false }
+         let (source, target) = (self.native_nominal_origin(source), self.native_nominal_origin(target));
+         match target {
+             Some(target) => source.is_some_and(|source| self.native_nominal_reference_compatible(source, target, relation == Relation::Identity)),
+diff --git a/src/sema/check/unions.rs b/src/sema/check/unions.rs
+--- a/src/sema/check/unions.rs
++++ b/src/sema/check/unions.rs
+@@ -704,7 +704,18 @@ impl<'p, 's> Checker<'p, 's> {
+             _ => None,
+         };
+         let Some(key) = key else {
+-            return self.create_reduced_union(types);
++            if types.len() < 2 {
++                return self.create_reduced_union(types);
++            }
++            if let Some(&known) = self.subtype_reductions.get(types) {
++                return known;
++            }
++            let before = self.non_cacheable_mark();
++            let union = self.create_reduced_union(types);
++            if before == self.non_cacheable_mark() {
++                self.subtype_reductions.insert(types.to_vec(), union);
++            }
++            return union;
+         };
+         if let Some(&known) = self.unions_of_union_types.get(&key) {
+             return known;

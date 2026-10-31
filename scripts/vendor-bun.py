@@ -896,6 +896,41 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-identity-relation.patch",
     "reason": "Expose the identity relation (`isTypeIdenticalTo`) to the Lua adapter, which compares the constraints and defaults of a merged class's type parameters with it, as TypeScript's `areTypeParametersIdentical` does (TS2428); body unchanged.",
 })
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/infer.rs",
+    "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+    "reason": "Pair union members instantiated from one native declaration, as `isTypeCloselyMatchedBy` pairs one symbol's, without first testing them for identity.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/instantiate.rs",
+    "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+    "reason": "Identify a native object's instantiation by its own parameters, as `getObjectTypeInstantiation` does, and compute a mapper's declaration order once.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/mod.rs",
+    "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+    "reason": "Hold `subtypeReductionCache`.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+    "reason": "Compute an object's member mappers once per owner, keep only a declaration's own parameters in its mapper, and compare native objects' member names before their types, as `propertiesIdenticalTo` does.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_tables.rs",
+    "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+    "reason": "Read a table at a union key, or a union of tables, with literal reduction, as `getIndexedAccessType` and `getUnionOrIntersectionProperty` do.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/relate.rs",
+    "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+    "reason": "Reject identity between native objects with different member names before resolving their schemas.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/unions.rs",
+    "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+    "reason": "Cache subtype reduction of any list of types, as `removeSubtypes` does.",
+})
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

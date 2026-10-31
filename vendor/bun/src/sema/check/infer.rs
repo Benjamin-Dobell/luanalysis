@@ -1817,13 +1817,25 @@ impl<'p, 's> Checker<'p, 's> {
         if t == TypeId::MISSING {
             return s == t;
         }
+        // Instantiations of one native declaration are matched next, identical or not.
+        if s != t && self.native_same_declaration(s, t) {
+            return false;
+        }
         self.is_identical(s, t)
             || self.flags(t) & tf::STRING != 0 && self.flags(s) & tf::STRING_LITERAL != 0
             || self.flags(t) & tf::NUMBER != 0 && self.flags(s) & tf::NUMBER_LITERAL != 0
     }
 
+    /// A native declaration is a named object's symbol.
+    fn native_same_declaration(&self, s: TypeId, t: TypeId) -> bool {
+        matches!((self.data(s), self.data(t)), (TypeData::NativeObject(s), TypeData::NativeObject(t)) if s.declaration == t.declaration)
+    }
+
     /// `isTypeCloselyMatchedBy`
     fn is_type_closely_matched_by(&mut self, s: TypeId, t: TypeId) -> bool {
+        if self.native_same_declaration(s, t) {
+            return true;
+        }
         self.is_object_type(s)
             && self.is_object_type(t)
             && self

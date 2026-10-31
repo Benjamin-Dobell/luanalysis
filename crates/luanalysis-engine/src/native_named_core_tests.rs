@@ -417,6 +417,33 @@ fn reading_and_printing_one_member_does_not_demand_an_unused_sibling() {
 }
 
 #[test]
+fn an_instance_reached_through_another_generic_is_the_instance_written_directly() {
+    Engine::new().with_native_provider(
+        || {
+            let mut inner = Declaration::record(0, vec![0]);
+            inner.header.parameters = vec![parameter(0)];
+            let mut outer = Declaration::record(1, vec![1]);
+            outer.header.parameters = vec![parameter(1)];
+            Provider {
+                declarations: vec![inner, outer],
+                parameters: 2,
+                members: vec![
+                    Member::field(0, LuaKey::String(b"value".to_vec()), Type::NativeTypeParameter(parameter(0))),
+                    Member::field(1, LuaKey::String(b"inner".to_vec()), reference(0, vec![Type::NativeTypeParameter(parameter(1))])),
+                ],
+                defaults: vec![None, None],
+                ..Provider::default()
+            }
+        },
+        |_, q| {
+            let direct = q.named_type_reference(declaration(0), &[Type::String]).unwrap();
+            let outer = q.named_type_reference(declaration(1), &[Type::String]).unwrap();
+            assert!(q.property_is_instance(&outer, "inner", &direct));
+        },
+    );
+}
+
+#[test]
 fn native_generic_members_use_existing_mapper_once_and_constraints_defaults() {
     Engine::new().with_native_provider(
         || {

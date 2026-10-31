@@ -3206,6 +3206,48 @@
       "patch": "vendor/patches/bun-sema-identity-relation.patch",
       "reason": "Expose the identity relation (`isTypeIdenticalTo`) to the Lua adapter, which compares the constraints and defaults of a merged class's type parameters with it, as TypeScript's `areTypeParametersIdentical` does (TS2428); body unchanged.",
       "patch_sha256": "ca465086f280309506de3811fba7b8a7037e6c36107ac2a589a09a4ccf8af75c"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+      "reason": "Pair union members instantiated from one native declaration, as `isTypeCloselyMatchedBy` pairs one symbol's, without first testing them for identity.",
+      "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+      "reason": "Identify a native object's instantiation by its own parameters, as `getObjectTypeInstantiation` does, and compute a mapper's declaration order once.",
+      "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+      "reason": "Hold `subtypeReductionCache`.",
+      "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+      "reason": "Compute an object's member mappers once per owner, keep only a declaration's own parameters in its mapper, and compare native objects' member names before their types, as `propertiesIdenticalTo` does.",
+      "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+      "reason": "Read a table at a union key, or a union of tables, with literal reduction, as `getIndexedAccessType` and `getUnionOrIntersectionProperty` do.",
+      "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+      "reason": "Reject identity between native objects with different member names before resolving their schemas.",
+      "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
+      "reason": "Cache subtype reduction of any list of types, as `removeSubtypes` does.",
+      "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
     }
   ],
   "source_additions": {
@@ -3246,7 +3288,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "d1a70f11b3f32f44eb1522114d081548ad81c970773ffdd3774d86ab77c07669",
+      "extracted_sha256": "67dbb6d61e7eb79b6f8f99d3f8104d1ccddf86d2eae04cac1f72227e064de34a",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -3282,7 +3324,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "d0d02f0efcc99a1beb443b334cc18335d7a5ab2c83efae8351a12c1c1cc5a7d0",
+      "extracted_sha256": "a5afd6cb90a8617c0867e25a0df184d0b743a6b7a61efbe61fe223c2fc3f85ca",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -4205,12 +4247,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "8709f58e1f700c84a153847ae909044f549cd58aa897044cd628262866ceb8e1"
+      "extracted_sha256": "a8125c8f7174a6ff5474082d7aa5bdbc72da291021bf212b80f274f79c583935"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "cb7f17c5ea6b24591d31823736e8658b53834f19c92b2d511cacdcd8ba834be1"
+      "extracted_sha256": "604ef945cceab4feeb00e519489949bfdf4f0eea1169a0c624478519d6fca29d"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -4240,7 +4282,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "9d7f43bb86b75142e1222b3f251374a5af84d7dfc7ec4d0c70dea82cd78eb226"
+      "extracted_sha256": "e8896e39695688ef71a7295f13f63675d7ba285ea313efe97a5dca3e99fb99a4"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -4265,7 +4307,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "540bf76b911170208dbad3bf5a33c157e6cd21d9a717ffc840343892334a50ef"
+      "extracted_sha256": "512dc243c43e88298cc51200aae7d5bf6f30e85d5f400b23d96ff670c26c0648"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -4355,7 +4397,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "cf51919d889be2af897c0aff53a3721177c7eb539842007d4195e0ff2b71ace5"
+      "extracted_sha256": "58432434694b66bb8d1e06d45db560099b10ad986222c38fd62d7e2236c0d068"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",

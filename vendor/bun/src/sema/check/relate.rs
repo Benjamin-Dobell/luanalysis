@@ -512,6 +512,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// Composite and instantiable types still use its ordinary distribution/constraint rules.
     fn native_nominal_objects_compatible(&mut self, source: TypeId, target: TypeId, relation: Relation) -> bool {
         if !is_object_kind(self.data(source)) || !is_object_kind(self.data(target)) { return true }
+        if relation == Relation::Identity && self.native_member_keys_differ(source, target) { return false }
         let (source, target) = (self.native_nominal_origin(source), self.native_nominal_origin(target));
         match target {
             Some(target) => source.is_some_and(|source| self.native_nominal_reference_compatible(source, target, relation == Relation::Identity)),

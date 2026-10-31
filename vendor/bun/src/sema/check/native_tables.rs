@@ -908,7 +908,7 @@ impl<'p, 's> Checker<'p, 's> {
         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
             let mut values = Vec::new();
             for &part in self.parts(ty) { values.push(self.native_table_read(table, NativeTableAccessKey::Type(part))?); }
-            return Ok(self.union_reduced(&values));
+            return Ok(self.union(&values));
         }
         if self.is_any(table) { return Ok(TypeId::ANY) }
         if self.is_union(table) {
@@ -926,7 +926,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
             if !present { return Err(missing.expect("a union has constituents")) }
-            return Ok(self.union_reduced(&values));
+            return Ok(self.union(&values));
         }
         let base = self.base_constraint_or_type(table);
         if base != table { let base = self.type_with_this_argument(base, table); return self.native_table_read(base, key) }

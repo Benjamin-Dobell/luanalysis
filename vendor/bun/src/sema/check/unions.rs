@@ -704,7 +704,18 @@ impl<'p, 's> Checker<'p, 's> {
             _ => None,
         };
         let Some(key) = key else {
-            return self.create_reduced_union(types);
+            if types.len() < 2 {
+                return self.create_reduced_union(types);
+            }
+            if let Some(&known) = self.subtype_reductions.get(types) {
+                return known;
+            }
+            let before = self.non_cacheable_mark();
+            let union = self.create_reduced_union(types);
+            if before == self.non_cacheable_mark() {
+                self.subtype_reductions.insert(types.to_vec(), union);
+            }
+            return union;
         };
         if let Some(&known) = self.unions_of_union_types.get(&key) {
             return known;

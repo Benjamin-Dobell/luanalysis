@@ -402,6 +402,15 @@ impl SessionQueries<'_, '_, '_> {
             .map_err(|error| export_error(self.checker, self.handles, error))
     }
 
+    #[cfg(test)]
+    pub(super) fn property_is_instance_native(&mut self, table: &Type, name: &str, expected: &Type) -> bool {
+        let table = import_type(self.checker, self.handles, table);
+        let expected = import_type(self.checker, self.handles, expected);
+        let key = TableKey::Literal(LuaKey::String(name.as_bytes().to_vec()));
+        let key = import_access_key(self.checker, self.handles, &key);
+        self.checker.native_table_read(table, key).is_ok_and(|ty| ty == expected)
+    }
+
     pub(super) fn table_write_native(
         &mut self,
         table: &Type,

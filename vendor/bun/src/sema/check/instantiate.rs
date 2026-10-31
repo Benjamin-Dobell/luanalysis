@@ -141,15 +141,19 @@ impl<'p, 's> Checker<'p, 's> {
             _ => (2, 0, 0, 0),
         };
         let stored = self.types().mapping(mapper);
-        if stored.is_sorted_by(|x, y| declaration(x.0) < declaration(y.0)) {
+        if stored.len() < 2 {
             return stored.into();
         }
-        let mut pairs = stored.to_vec();
+        let keys: smallvec::SmallVec<[_; 8]> = stored.iter().map(|x| declaration(x.0)).collect();
+        if keys.is_sorted_by(|x, y| x < y) {
+            return stored.into();
+        }
+        let mut order: smallvec::SmallVec<[usize; 8]> = (0..stored.len()).collect();
         // Clones of one declaration, and the `this` types of nested classes, have one key.
-        pairs.sort_by(|x, y| {
-            (declaration(x.0).cmp(&declaration(y.0))).then_with(|| self.creation_order(x.0, y.0))
+        order.sort_by(|&x, &y| {
+            (keys[x].cmp(&keys[y])).then_with(|| self.creation_order(stored[x].0, stored[y].0))
         });
-        pairs.into()
+        order.into_iter().map(|index| stored[index]).collect::<Vec<_>>().into()
     }
 
     /// `first`, then `second`. See `unresolved_members`.
@@ -737,6 +741,7 @@ impl<'p, 's> Checker<'p, 's> {
             TypeData::NativeObject(reference) => {
                 let reference = *reference;
                 let around = self.compose(reference.mapper, mapper);
+                let around = self.native_object_own_mapper(reference.declaration, around);
                 let self_argument = reference.self_argument.map(|ty| self.instantiate(ty, mapper));
                 self.intern(TypeData::NativeObject(NativeObjectReference { declaration: reference.declaration, mapper: around, self_argument, runtime_context: reference.runtime_context }))
             }
