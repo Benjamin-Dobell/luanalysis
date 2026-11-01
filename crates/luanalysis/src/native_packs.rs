@@ -236,6 +236,7 @@ impl NativePacks {
             }).collect(),
         };
         result.statements(&file.statements, None, functions, expression_key);
+        result.lists.shrink_to_fit();
         result
     }
 

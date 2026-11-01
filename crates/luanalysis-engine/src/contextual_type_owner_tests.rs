@@ -25,7 +25,7 @@ fn parameter(index: u32) -> NativeTypeParameterKey {
         index,
     }
 }
-fn input(context: u64) -> NativeFlowKey {
+fn input(context: u32) -> NativeFlowKey {
     NativeFlowKey {
         graph: NativeGraphKey {
             snapshot: 7031,

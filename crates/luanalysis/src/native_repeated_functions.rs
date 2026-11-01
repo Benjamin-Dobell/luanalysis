@@ -33,7 +33,7 @@ impl NativeRegistry {
             ExprKind::Name(name) => Some(FunctionStatementTarget {
                 local: self.bound().binding_at(name.span.start),
                 root: &name.text,
-                path: Vec::new(),
+                path: [].into(),
             }),
             ExprKind::Field { base, name } => {
                 let mut target = self.function_statement_target(base)?;

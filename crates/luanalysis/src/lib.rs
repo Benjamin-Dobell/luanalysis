@@ -1445,7 +1445,7 @@ impl Checker<'_> {
             .filter_map(|write| match write {
                 Write::Local(id, _) => self.locals.get(id).map(|_| Reference {
                     binding: *id,
-                    path: Vec::new(),
+                    path: [].into(),
                 }),
                 Write::Field(reference, _) => Some(reference.clone()),
             })
@@ -1490,7 +1490,7 @@ impl Checker<'_> {
         match &expr.kind {
             ExprKind::Name(name) => self.bound.binding_at(name.span.start).map(|id| Reference {
                 binding: id,
-                path: Vec::new(),
+                path: [].into(),
             }),
             ExprKind::Parenthesized(inner) => self.reference(inner),
             ExprKind::Field { base, name } => {

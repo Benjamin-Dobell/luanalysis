@@ -19,6 +19,8 @@ path = "test_harness.rs"
 luanalysis-syntax.workspace = true
 luanalysis-engine.workspace = true
 luanalysis-project.workspace = true
+smallvec = { version = "1", features = ["union"] }
+libc = "0.2"
 
 [lints]
 workspace = true

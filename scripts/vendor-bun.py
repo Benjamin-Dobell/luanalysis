@@ -996,6 +996,36 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
     "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
 })
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_aliases.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+    "reason": "Keep a standard reference's result by a compact key, and not for every node a walk passes.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_flow.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+    "reason": "Use a 32-bit context in flow keys: a context is a counter.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_generic_storage.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+    "reason": "Read a member's owner from its interned type.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+    "reason": "Name a member's owner by its interned type rather than repeating the reference in each member.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_runtime_tables.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+    "reason": "Read a member's owner from its interned type.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_standard_assumptions.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+    "reason": "Keep a standard reference's result for the node it was asked of and for every eighth node, from which any later walk is short.",
+})
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

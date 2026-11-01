@@ -15,8 +15,8 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub(super) struct TypeParameterRecipe {
     pub name: Name,
-    pub constraint: Option<TypeExpr>,
-    pub default: Option<TypeExpr>,
+    pub constraint: Option<std::sync::Arc<TypeExpr>>,
+    pub default: Option<std::sync::Arc<TypeExpr>>,
     pub constant: bool,
 }
 
@@ -32,8 +32,8 @@ pub(super) struct TypeParameterSource {
     pub name: Name,
     pub owner: NativeTypeContext,
     pub order: u32,
-    pub constraint: Option<TypeExpr>,
-    pub default: Option<TypeExpr>,
+    pub constraint: Option<std::sync::Arc<TypeExpr>>,
+    pub default: Option<std::sync::Arc<TypeExpr>>,
     /// `---@generic const T` (`GenericParameter::constant`).
     pub constant: bool,
     /// A real semantic class-self parameter. Its constraint is the original
@@ -404,6 +404,7 @@ impl NativeTypes {
                 parameters: Vec::new(),
             };
             for (name, constraint) in declarations {
+                let constraint = constraint.map(std::sync::Arc::new);
                 let key = match scope.names.get(&name.text) {
                     // One declared again is one parameter, constrained by the first constraint.
                     Some(&key) => {

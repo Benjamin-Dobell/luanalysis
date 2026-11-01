@@ -27,7 +27,8 @@ pub(super) struct ExpressionRecipes {
     /// The tree the expressions are in.
     tree: std::sync::Arc<File>,
     expressions: Vec<SourceExpression>,
-    spans: HashMap<(usize, usize), NativeExpressionKey>,
+    /// Each expression's node by its span, as the file's offsets fit `u32`.
+    spans: HashMap<(u32, u32), u32>,
     functions: HashMap<(usize, usize), NativeFunctionKey>,
     /// Original field syntax only; no inferred receiver or contextual type.
     table_function_owners: HashMap<NativeFunctionKey, NativeExpressionKey>,
@@ -69,10 +70,11 @@ impl NativeExpressions {
         &self.expressions
     }
     pub(super) fn key_for_span(&self, span: Span) -> NativeExpressionKey {
-        *self
+        let node = *self
             .spans
-            .get(&(span.start, span.end))
-            .expect("expression belongs to original Lua snapshot")
+            .get(&(span.start as u32, span.end as u32))
+            .expect("expression belongs to original Lua snapshot");
+        NativeExpressionKey { snapshot: self.snapshot, node }
     }
     pub(super) fn table_function_owner(
         &self,
@@ -267,6 +269,7 @@ impl ExpressionRecipes {
             statement_functions: HashMap::default(),
         };
         recipes.statements(&file.statements, None, None);
+        recipes.expressions.shrink_to_fit();
         recipes
     }
     fn function_key(&self, function: &Function) -> NativeFunctionKey {
@@ -357,15 +360,15 @@ impl ExpressionRecipes {
         owner: Option<NativeFunctionKey>,
         parent: Option<NativeExpressionKey>,
     ) -> NativeExpressionKey {
-        let span = (expression.span.start, expression.span.end);
-        if let Some(key) = self.spans.get(&span) {
-            return *key;
+        let span = (expression.span.start as u32, expression.span.end as u32);
+        if let Some(&node) = self.spans.get(&span) {
+            return NativeExpressionKey { snapshot: self.snapshot, node };
         }
         let key = NativeExpressionKey {
             snapshot: self.snapshot,
             node: u32::try_from(self.expressions.len()).expect("source expression index fits u32"),
         };
-        self.spans.insert(span, key);
+        self.spans.insert(span, key.node);
         self.expressions.push(SourceExpression {
             // SAFETY: the recipes index only the statements and expressions of `self.tree`.
             expression: unsafe { SharedExpr::new(&self.tree, expression) },

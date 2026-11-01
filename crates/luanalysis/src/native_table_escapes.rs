@@ -110,7 +110,7 @@ impl NativeRegistry {
                         index: first + position,
                         own: Some(table) == callee_owner,
                     },
-                    path: Vec::new(),
+                    path: [].into(),
                 });
             }
         }
@@ -130,7 +130,7 @@ impl NativeRegistry {
                 let Some(table) = owner(value) else { continue };
                 escapes.constructors.entry(span(table)).or_default().push(TableEscape {
                     target: EscapeTarget::Annotation { annotation: annotation.clone(), slot, value: self.expressions().key_for_span(value.span) },
-                    path: Vec::new(),
+                    path: [].into(),
                 });
             }
         }
@@ -142,7 +142,7 @@ impl NativeRegistry {
             if depth == MAX_NESTING { continue; }
             let key = self.expressions().key_for_span(Span::new(parent.0, parent.1));
             let Some(constructor) = self.runtime_tables.constructor(key) else { continue };
-            for field in &constructor.fields {
+            for field in constructor.fields() {
                 let key = match &field.kind {
                     TableFieldKind::Named(name) => LuaKey::String(name.text.as_bytes().to_vec()),
                     TableFieldKind::Keyed(key) => match crate::native_tables::literal_key(key) { Some(key) => key, None => continue },

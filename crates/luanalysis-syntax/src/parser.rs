@@ -363,6 +363,8 @@ impl<'a> Parser<'a> {
         self.unattached_annotations(&annotations);
         self.documentation_group = None;
         self.finish_block_casts(widenings);
+        // A block is kept as long as its file: most hold one or two statements.
+        statements.shrink_to_fit();
         statements
     }
     /// At a block's end: a cast without a name before it has no value to cast, and a field's
@@ -1375,6 +1377,7 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             values.push(self.expr());
         }
+        values.shrink_to_fit();
         values
     }
     fn expr(&mut self) -> Expr {
@@ -2022,6 +2025,7 @@ impl<'a> Parser<'a> {
             break;
         }
         let end = self.expect(")");
+        args.shrink_to_fit();
         (args, start.join(end), built_depth)
     }
     /// The documentation comments before a table field. Kept out of the recursive table
@@ -2142,6 +2146,7 @@ impl<'a> Parser<'a> {
             }
             break;
         }
+        fields.shrink_to_fit();
         let end = self.expect("}");
         (
             Expr {

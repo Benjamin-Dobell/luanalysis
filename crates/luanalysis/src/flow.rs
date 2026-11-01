@@ -65,7 +65,27 @@ pub enum Key {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Reference {
     pub root: ReferenceRoot,
-    pub path: Vec<Key>,
+    /// Shared: a reference is kept by each graph that reads it and by its indexes.
+    pub path: std::sync::Arc<[Key]>,
+}
+
+impl Reference {
+    pub fn push_key(&mut self, key: Key) {
+        let mut path = self.path.to_vec();
+        path.push(key);
+        self.path = path.into();
+    }
+    pub fn extend_path(&mut self, keys: impl IntoIterator<Item = Key>) {
+        let mut path = self.path.to_vec();
+        path.extend(keys);
+        self.path = path.into();
+    }
+    pub fn pop_key(&mut self) -> Option<Key> {
+        let mut path = self.path.to_vec();
+        let key = path.pop();
+        self.path = path.into();
+        key
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +102,7 @@ pub struct Evaluation {
     /// Source state before this expression, not after later assignment stores.
     pub input: FlowId,
     pub completed: FlowId,
-    pub operands: Vec<EvaluationId>,
+    pub operands: smallvec::SmallVec<[EvaluationId; 2]>,
 }
 #[derive(Clone, Debug)]
 pub struct CapturedAddress {
@@ -220,7 +240,8 @@ pub enum NodeKind {
 pub struct Node {
     pub id: FlowId,
     pub kind: NodeKind,
-    pub antecedents: Vec<FlowId>,
+    /// Nearly every node has one.
+    pub antecedents: smallvec::SmallVec<[FlowId; 1]>,
     pub span: Span,
     pub scope: Option<ScopeId>,
 }
@@ -429,7 +450,7 @@ impl Builder<'_> {
             nodes: vec![Node {
                 id: entry,
                 kind: NodeKind::Start,
-                antecedents: Vec::new(),
+                antecedents: smallvec::SmallVec::new(),
                 span,
                 scope: self.scope(span),
             }],
@@ -457,7 +478,7 @@ impl Builder<'_> {
             .push(Node {
                 id,
                 kind,
-                antecedents,
+                antecedents: antecedents.into_iter().collect(),
                 span,
                 scope,
             });
@@ -531,7 +552,7 @@ impl Builder<'_> {
             self.program.references.insert(expression, reference);
         }
         let input = context.current;
-        let mut operands = Vec::new();
+        let mut operands = smallvec::SmallVec::new();
         match &expr.kind {
             ExprKind::Parenthesized(inner) | ExprKind::Unary { value: inner, .. } => {
                 operands.push(self.evaluate(context, inner))
@@ -621,21 +642,23 @@ impl Builder<'_> {
             snapshot: self.program.snapshot,
             index: self.program.evaluations.len() as u32,
         };
-        let completed = self.append(
-            context,
-            if matches!(
-                expr.kind,
-                ExprKind::Call { .. } | ExprKind::MethodCall { .. }
-            ) {
+        let completed = match expr.kind {
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } => self.append(
+                context,
                 NodeKind::Call {
                     expression,
                     evaluation: id,
-                }
-            } else {
-                NodeKind::Eval(id)
-            },
-            expr.span,
-        );
+                },
+                expr.span,
+            ),
+            // A read of a member has a receiver that a flow query can ask for.
+            ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                self.append(context, NodeKind::Eval(id), expr.span)
+            }
+            // Nothing else an expression does is a step of the flow: it completes where its last
+            // operand did.
+            _ => context.current,
+        };
         self.program.evaluations.push(Evaluation {
             id,
             expression,
@@ -651,9 +674,7 @@ impl Builder<'_> {
             ExprKind::Parenthesized(inner) => self.reference(inner),
             ExprKind::Field { base, name } => {
                 let mut reference = self.reference(base);
-                reference
-                    .path
-                    .push(Key::String(name.text.as_bytes().to_vec()));
+                reference.push_key(Key::String(name.text.as_bytes().to_vec()));
                 reference
             }
             ExprKind::Index { base, index } => {
@@ -672,24 +693,24 @@ impl Builder<'_> {
                     Some(luanalysis_engine::LuaKey::Number(value)) => Key::Float(value.to_bits()),
                     None => Key::Dynamic(self.expr_id(index)),
                 };
-                reference.path.push(key);
+                reference.push_key(key);
                 reference
             }
             _ => Reference {
                 root: ReferenceRoot::Temporary(self.expr_id(expr)),
-                path: Vec::new(),
+                path: [].into(),
             },
         }
     }
     fn name_reference(&self, name: &Name) -> Reference {
         if let Some(binding) = self.bound.binding_at(name.span.start) {
-            return Reference { root: ReferenceRoot::Binding(binding), path: Vec::new() };
+            return Reference { root: ReferenceRoot::Binding(binding), path: [].into() };
         }
         let root = self.bound.environment_binding_at(name.span.start)
             .map_or(ReferenceRoot::EnvironmentCell, ReferenceRoot::Binding);
         let path = if name.text == "_ENV" { Vec::new() }
             else { vec![Key::String(name.text.as_bytes().to_vec())] };
-        Reference { root, path }
+        Reference { root, path: path.into() }
     }
     fn address(
         &mut self,

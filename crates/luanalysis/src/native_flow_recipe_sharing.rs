@@ -165,7 +165,7 @@ fn prepared_global_keys_and_identical_profile_setters_do_not_copy_original_stora
             ] {
                 let reference = crate::flow::Reference {
                     root,
-                    path: vec![crate::flow::Key::String(name.clone())],
+                    path: [crate::flow::Key::String(name.clone())].into(),
                 };
                 assert!(flow.reference_key(flow.graph(0, 0), &reference).is_some());
             }

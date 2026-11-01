@@ -392,6 +392,22 @@ fn program_roots(project: &Project) -> Vec<FileId> {
     roots
 }
 
+/// A worker for each core that keeps up with the others. A check waits for its slowest worker, and
+/// each worker builds its own view of the program, so efficiency cores cost memory for no speed.
+fn default_workers() -> NonZeroUsize {
+    #[cfg(target_os = "macos")]
+    {
+        let mut count = 0u32;
+        let mut size = std::mem::size_of::<u32>();
+        // SAFETY: `count` and `size` describe a writable `u32`, and the name is a C string.
+        let found = unsafe {
+            libc::sysctlbyname(c"hw.perflevel0.logicalcpu".as_ptr(), (&raw mut count).cast(), &raw mut size, std::ptr::null_mut(), 0)
+        };
+        if found == 0 && let Some(count) = NonZeroUsize::new(count as usize) { return count }
+    }
+    std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
+}
+
 /// What checking a program's roots found.
 struct CheckRun {
     reports: Vec<FileCheckReport>,
@@ -419,8 +435,7 @@ fn run_checks(
     workspace: &mut crate::incremental::ProjectWorkspace,
 ) -> CheckRun {
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
-    let requested = NonZeroUsize::new(options.jobs)
-        .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN));
+    let requested = NonZeroUsize::new(options.jobs).unwrap_or_else(default_workers);
     // One task per worker, a measured deviation from Bun's warm-up and chunk plan.
     // Bun's plan relies on cheap tasks and
     // on publishing what a task derives; here a task builds the whole project

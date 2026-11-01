@@ -159,7 +159,7 @@ impl NativeRegistry {
         }
         if let Some((_, nested)) = reaching { return Some(nested); }
         let constructor = self.runtime_tables.constructor(owner)?;
-        constructor.fields.iter().find(|field| match &field.kind {
+        constructor.fields().iter().find(|field| match &field.kind {
             TableFieldKind::Named(name) => LuaKey::String(name.text.as_bytes().to_vec()) == *key,
             TableFieldKind::Keyed(expression) => crate::native_tables::literal_key(expression).as_ref() == Some(key),
             TableFieldKind::Sequence { index } => LuaKey::Integer(*index as i64) == *key,
@@ -299,7 +299,7 @@ impl NativeRegistry {
             luanalysis_engine::NativeCheckMode::empty(),
             queries,
         );
-        let ty = checker.native_table_expression(&source.fields, source.span, None);
+        let ty = checker.native_table_expression(source.fields(), source.span, None);
         if !checker.incomplete_flow {
             self.merge_report(checker.report);
         }

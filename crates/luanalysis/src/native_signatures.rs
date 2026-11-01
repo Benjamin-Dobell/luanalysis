@@ -1411,8 +1411,8 @@ impl NativeSignatures {
                     .iter()
                     .map(|generic| NamedGenericParameterRecipe {
                         name: generic.name.clone(),
-                        constraint: generic.constraint.clone(),
-                        default: generic.default.clone(),
+                        constraint: generic.constraint.clone().map(std::sync::Arc::new),
+                        default: generic.default.clone().map(std::sync::Arc::new),
                     })
                     .collect(),
             }))

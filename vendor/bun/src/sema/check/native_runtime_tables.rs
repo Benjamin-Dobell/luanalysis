@@ -143,7 +143,7 @@ impl<'p, 's> Checker<'p, 's> {
             let mut metadata = metadata;
             if !declared && matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) {
                 let raw = self.native_runtime_member_demand(reference, origin.member, true)?;
-                let key = self.native_member_type(raw, origin.owner);
+                let key = self.native_member_type(raw, self.native_member_owner(&origin));
                 let Ok(NativeTableAccessKey::Literal(key @ NativeTableKey::String(_))) = self.native_table_access(NativeTableAccessKey::Type(key)) else { continue };
                 metadata.key = NativeTypeMemberKey::Fixed(key);
             }
@@ -161,7 +161,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
             let raw = self.native_runtime_member_demand(reference, origin.member, false)?;
-            let value = self.native_member_type(raw, origin.owner);
+            let value = self.native_member_type(raw, self.native_member_owner(&origin));
             let value = if declared { self.regular(value) } else { self.widened(value) };
             match metadata.key {
                 NativeTypeMemberKey::Fixed(key) => {
@@ -182,7 +182,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 NativeTypeMemberKey::Indexer { sparse } => {
                     let raw = self.native_runtime_member_demand(reference, origin.member, true)?;
-                    let key = self.native_member_type(raw, origin.owner);
+                    let key = self.native_member_type(raw, self.native_member_owner(&origin));
                     indexers.push(NativeTableIndexer { key, value, readonly: metadata.readonly, sparse,
                         origin: if declared { NativeTableFieldOrigin::Declared } else { NativeTableFieldOrigin::Inferred } });
                 }
@@ -218,7 +218,7 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeTypeMemberKey::Indexer { .. } => {
                     if provider.type_member_origin(member.member) != NativeTableFieldOrigin::Declared { continue }
                     let raw = self.native_runtime_member_demand(reference.schema, member.member, true).map_err(|error| error.table_error(TypeId::ERROR))?;
-                    let domain = self.native_member_type(raw, member.owner);
+                    let domain = self.native_member_type(raw, self.native_member_owner(&member));
                     let observed = match key { NativeTableAccessKey::Literal(key) => self.native_table_key_type(key), NativeTableAccessKey::Type(ty) => ty };
                     if self.is_assignable(observed, domain) { return Ok(TypeId::UNDEFINED) }
                 }
@@ -457,12 +457,12 @@ impl<'p, 's> Checker<'p, 's> {
         for origin in self.native_object_written_fixed_members(reference, key)? {
             if self.native_object_member_effective_origin(&origin)? != Some(NativeTableFieldOrigin::Declared) { continue }
             let raw = if matches!(provider.type_member_header(self, origin.member).owner, NativeTypeMemberOwner::RuntimeStore(_)) {
-                self.native_runtime_member_demand(origin.owner, origin.member, false)?
+                self.native_runtime_member_demand(self.native_member_owner(&origin), origin.member, false)?
             } else {
                 let Some(value) = self.native_object_member_demand(&origin)? else { continue };
                 value
             };
-            values.push(self.native_member_type(raw, origin.owner));
+            values.push(self.native_member_type(raw, self.native_member_owner(&origin)));
         }
         Ok(if values.is_empty() { None } else { Some(self.intersection(&values)) })
     }

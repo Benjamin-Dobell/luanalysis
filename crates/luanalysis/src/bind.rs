@@ -348,6 +348,10 @@ pub fn bind(file: &File) -> BoundFile {
         }
     }
     binder.file.written = written;
+    binder.file.occurrences.shrink_to_fit();
+    binder.file.declarations.shrink_to_fit();
+    binder.file.scopes.shrink_to_fit();
+    for scope in &mut binder.file.scopes { scope.captures.shrink_to_fit(); }
     binder.file
 }
 

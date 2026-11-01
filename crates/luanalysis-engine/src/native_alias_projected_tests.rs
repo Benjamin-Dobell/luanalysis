@@ -10,7 +10,7 @@ enum History {
 struct Fields {
     history: History,
 }
-fn node(context: u64, index: u32) -> NativeFlowKey {
+fn node(context: u32, index: u32) -> NativeFlowKey {
     NativeFlowKey {
         graph: NativeGraphKey {
             context,
@@ -19,7 +19,7 @@ fn node(context: u64, index: u32) -> NativeFlowKey {
         node: index,
     }
 }
-fn cell(context: u64, index: u32) -> NativeReferenceKey {
+fn cell(context: u32, index: u32) -> NativeReferenceKey {
     NativeReferenceKey {
         graph: node(context, 0).graph,
         reference: index,

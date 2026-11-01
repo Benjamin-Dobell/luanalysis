@@ -34,13 +34,18 @@ pub(super) struct RuntimeTableConstructor {
     pub owner: Option<NativeFunctionKey>,
     pub input: NativeFlowKey,
     pub span: Span,
-    pub fields: Vec<TableField>,
+    /// The constructor in its file's shared tree, not a copy of its fields and all they contain.
+    pub expression: luanalysis_syntax::SharedExpr,
     /// Only syntactically attached contracts are indexed here. A constructor
     /// in a call/return/assignment can receive a contextual contract later;
     /// the native expression query must decide eligibility in that context.
     pub written_contexts: Vec<WrittenTableContext>,
 }
 impl RuntimeTableConstructor {
+    pub(super) fn fields(&self) -> &[TableField] {
+        let ExprKind::Table(fields) = &self.expression.kind else { unreachable!("a constructor is a table expression") };
+        fields
+    }
     pub(super) fn is_lexically_uncontracted(&self) -> bool {
         self.written_contexts.is_empty()
     }
@@ -184,9 +189,9 @@ impl NativeRuntimeTables {
             evaluations.insert((span.start, span.end), evaluation);
         }
         for (key, source) in expressions.sources() {
-            let ExprKind::Table(fields) = &source.expression.kind else {
+            if !matches!(source.expression.kind, ExprKind::Table(_)) {
                 continue;
-            };
+            }
             let span = source.expression.span;
             let evaluation = evaluations
                 .get(&(span.start, span.end))
@@ -197,7 +202,7 @@ impl NativeRuntimeTables {
                 owner: source.owner,
                 input: sources.flow_key(evaluation.input, 0),
                 span,
-                fields: fields.clone(),
+                expression: source.expression.clone(),
                 written_contexts: contexts.remove(&(span.start, span.end)).unwrap_or_default(),
             });
         }

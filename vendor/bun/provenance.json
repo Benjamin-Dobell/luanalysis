@@ -3326,6 +3326,42 @@
       "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
       "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
       "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+      "reason": "Keep a standard reference's result by a compact key, and not for every node a walk passes.",
+      "patch_sha256": "f2a68cf2ee4f53c0bc88a7635ebe65328f1b39e238d77f73ac6d5edfc2ebec48"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+      "reason": "Use a 32-bit context in flow keys: a context is a counter.",
+      "patch_sha256": "f2a68cf2ee4f53c0bc88a7635ebe65328f1b39e238d77f73ac6d5edfc2ebec48"
+    },
+    {
+      "path": "src/sema/check/native_generic_storage.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+      "reason": "Read a member's owner from its interned type.",
+      "patch_sha256": "f2a68cf2ee4f53c0bc88a7635ebe65328f1b39e238d77f73ac6d5edfc2ebec48"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+      "reason": "Name a member's owner by its interned type rather than repeating the reference in each member.",
+      "patch_sha256": "f2a68cf2ee4f53c0bc88a7635ebe65328f1b39e238d77f73ac6d5edfc2ebec48"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+      "reason": "Read a member's owner from its interned type.",
+      "patch_sha256": "f2a68cf2ee4f53c0bc88a7635ebe65328f1b39e238d77f73ac6d5edfc2ebec48"
+    },
+    {
+      "path": "src/sema/check/native_standard_assumptions.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-references.patch",
+      "reason": "Keep a standard reference's result for the node it was asked of and for every eighth node, from which any later walk is short.",
+      "patch_sha256": "f2a68cf2ee4f53c0bc88a7635ebe65328f1b39e238d77f73ac6d5edfc2ebec48"
     }
   ],
   "source_additions": {
@@ -3338,7 +3374,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "3a4232d89f020dfe369000b447498c88727a38d98e3d59c984c952691e13dce9",
+      "extracted_sha256": "10e8de25dcc98ade37dba4690be5cca195e3b99393d12b8b98ee4a4adfba3338",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -3346,11 +3382,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "1af880602090afd0773979e01519a25da7226ce9c57d1a650140149ecdb9d9fb",
+      "extracted_sha256": "6f441d18febefd94fca101669f0030d6bbf4c849f2b8c764496c1810f5d9789f",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_generic_storage.rs": {
-      "extracted_sha256": "b761f8a28dc1f66a7a1936bcdd0286357317a468afdec84f37010e4e1b68a9a8",
+      "extracted_sha256": "e74b84bbccf035cce2f0b8f7d57c995e24eae2d76c4c858368f1a428dab1857a",
       "introduced_by_patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -3366,7 +3402,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "58667a435a54e3f428aa8661a1a0f1c6aa07622af7657656c2c110bd0143d9a2",
+      "extracted_sha256": "34abf6c0a68a5cd81a52c20664b6034a62b74b2e16a64f29914b60877dfe2451",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -3390,7 +3426,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "ba403e836aa21dae7fad4fd90e7376ba593f3790c8d9ee3216a7c882c1c6a831",
+      "extracted_sha256": "86ff207c77c03ef48c65fdd25957ec15f337b89c6c1ab3d84b006adc46348138",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -3398,7 +3434,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
-      "extracted_sha256": "e423d40b1fd5f09e5100524d7e0e7c0c13c9e5fcc39772cb07813917a925dd1b",
+      "extracted_sha256": "aaeeb8718a298943d4f6d34d0ffa88e55cface6e04ba053c50912a60d51e917e",
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {

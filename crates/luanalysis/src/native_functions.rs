@@ -1393,7 +1393,7 @@ impl NativeRegistry {
         let graph = self.flow.graph_with_contexts(base.region, contextual.as_ref(), captured.as_ref());
         let reference = self.flow.reference_key(graph, &super::flow::Reference {
             root: super::flow::ReferenceRoot::Binding(binding),
-            path: Vec::new(),
+            path: [].into(),
         }).expect("a lexical capture has an original function reference");
         let at = self.flow.flow_key(self.flow.program.graphs[graph.region as usize].entry, graph.context);
         queries.flow_capture_type(&FlowAdapter { sources: &self.flow, values: self }, at, reference, declared, &Type::Nil).ty
@@ -3566,8 +3566,8 @@ fn type_scope_recipes(
                     .iter()
                     .map(|parameter| TypeParameterRecipe {
                         name: parameter.name.clone(),
-                        constraint: parameter.constraint.clone(),
-                        default: parameter.default.clone(),
+                        constraint: parameter.constraint.clone().map(std::sync::Arc::new),
+                        default: parameter.default.clone().map(std::sync::Arc::new),
                         constant: parameter.constant,
                     })
                     .collect(),

@@ -11,7 +11,7 @@ pub struct NativeGraphKey {
     pub snapshot: u32,
     pub region: u32,
     /// Unique immutable contextual-body facet; zero for the ordinary source view.
-    pub context: u64,
+    pub context: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

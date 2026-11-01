@@ -147,15 +147,15 @@ impl<'p, 's> Checker<'p, 's> {
         for origin in self.native_object_members(template)?.iter().cloned() {
             let metadata = provider.type_member_header(self, origin.member);
             let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
-            let value = self.native_member_type(raw, origin.owner);
+            let value = self.native_member_type(raw, self.native_member_owner(&origin));
             let child = self.native_storage_type(value, &environment, walk)?;
             facts |= child & OBSERVED;
             facts |= if metadata.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
             if matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) {
-                let Some(capture) = self.native_member_capture_mapper(origin.owner, origin.member)? else { continue };
+                let Some(capture) = self.native_member_capture_mapper(self.native_member_owner(&origin), origin.member)? else { continue };
                 let raw = self.native_named_member_demand(origin.member, true)?;
                 let raw = self.instantiate(raw, capture);
-                let value = self.native_member_type(raw, origin.owner);
+                let value = self.native_member_type(raw, self.native_member_owner(&origin));
                 let child = self.native_storage_type(value, &environment, walk)?;
                 facts |= child & OBSERVED;
                 facts |= if metadata.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };

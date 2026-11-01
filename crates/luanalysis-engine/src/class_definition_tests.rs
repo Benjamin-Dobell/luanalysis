@@ -601,7 +601,7 @@ fn runtime_table_relations_and_generic_inference_keep_definition_carrier() {
 
 struct DefinitionRuntimeGraph { context:u64, value:Type, kind:NativeRuntimeType }
 impl DefinitionRuntimeGraph {
-    fn graph(&self)->NativeGraphKey {NativeGraphKey{snapshot:91002,region:0,context:self.context}}
+    fn graph(&self)->NativeGraphKey {NativeGraphKey{snapshot:91002,region:0,context:self.context as u32}}
     fn at(&self,node:u32)->NativeFlowKey {NativeFlowKey{graph:self.graph(),node}}
     fn reference(&self)->NativeReferenceKey {NativeReferenceKey{graph:self.graph(),reference:0}}
 }

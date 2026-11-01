@@ -159,8 +159,8 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
                 .iter()
                 .map(|parameter| TypeParameterRecipe {
                     name: parameter.name.clone(),
-                    constraint: parameter.constraint.clone(),
-                    default: parameter.default.clone(),
+                    constraint: parameter.constraint.clone().map(std::sync::Arc::new),
+                    default: parameter.default.clone().map(std::sync::Arc::new),
                     constant: parameter.constant,
                 })
                 .collect(),

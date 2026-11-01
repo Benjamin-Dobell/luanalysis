@@ -133,7 +133,10 @@ struct Origins { tokens: OriginSet, unknown: bool, non_table: bool, uncertain: b
 #[derive(Default)]
 pub(super) struct NativeAliasCache {
     references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64, u64), Origins>,
-    standard_references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64, u64), Origins>,
+    /// By reference within its graph, node, effect epoch and execution frame. Not every node's
+    /// result is kept: see `native_standard_reference`.
+    standard_references: FxHashMap<(u32, NativeFlowKey, u32, u32), Origins>,
+    standard_reference_depth: u32,
     standard_loaders: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64, u64), NativeFlowResult>,
     standard_values: FxHashMap<(NativeValueKey, NativeFlowKey, u64, u64), Origins>,
     values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u64, u64), Origins>,

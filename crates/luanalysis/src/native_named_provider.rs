@@ -502,7 +502,7 @@ impl NativeRegistry {
     /// Where the constructor of runtime table `key` declares its field `name`: the key of
     /// `name = value` or `["name"] = value`.
     pub(crate) fn runtime_table_field_site(&self, key: NativeTypeDeclarationKey, name: &str) -> Option<Span> {
-        self.runtime_tables.schema(key)?.fields.iter().find_map(|field| match &field.kind {
+        self.runtime_tables.schema(key)?.fields().iter().find_map(|field| match &field.kind {
             luanalysis_syntax::TableFieldKind::Named(field) => (field.text == name).then_some(field.span),
             luanalysis_syntax::TableFieldKind::Keyed(key) => {
                 matches!(&key.kind, luanalysis_syntax::ExprKind::String(bytes) if bytes == name.as_bytes()).then_some(key.span)

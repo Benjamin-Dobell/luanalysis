@@ -17,11 +17,15 @@ mod fake_mimalloc {
 
     #[repr(C)]
     struct Header {
-        /// The pointer `malloc` returned, for a block that is freed individually. Null for a block
-        /// that is freed with its heap.
+        /// The pointer `malloc` returned, for a block that is freed individually. Otherwise the
+        /// block before it in its chunk, tagged `BUMP`, and `FREED` once it is freed: a block freed
+        /// at the end of its chunk gives its space back, with those freed just before it.
         base: *mut c_void,
         size: usize,
     }
+
+    const BUMP: usize = 1;
+    const FREED: usize = 2;
 
     const HEADER: usize = core::mem::size_of::<Header>();
     const CHUNK: usize = 1 << 20;
@@ -32,6 +36,19 @@ mod fake_mimalloc {
         end: usize,
         /// The bytes that were handed out, with their headers and padding.
         used: usize,
+        /// The header of the last block of the current chunk.
+        last: *mut Header,
+        /// The thread that created the heap: the only one that allocates from it.
+        owner: usize,
+    }
+
+    std::thread_local! {
+        /// The heap this thread last allocated from. `mi_free` is told no heap.
+        static CURRENT: core::cell::Cell<*mut Heap> = const { core::cell::Cell::new(core::ptr::null_mut()) };
+    }
+
+    fn this_thread() -> usize {
+        CURRENT.with(|current| core::ptr::from_ref(current).addr())
     }
 
     /// `mi_heap_area_t`
@@ -59,16 +76,13 @@ mod fake_mimalloc {
         from: usize,
         size: usize,
         align: usize,
-        owned: bool,
+        tag: *mut c_void,
     ) -> *mut c_void {
         let user = (from + HEADER).next_multiple_of(align.max(16));
         // SAFETY: the caller reserved `size + align + HEADER` bytes from `from`.
         unsafe {
             let user_ptr = base.byte_add(user - base.addr());
-            user_ptr.cast::<Header>().sub(1).write(Header {
-                base: if owned { base } else { core::ptr::null_mut() },
-                size,
-            });
+            user_ptr.cast::<Header>().sub(1).write(Header { base: tag, size });
             user_ptr
         }
     }
@@ -87,13 +101,14 @@ mod fake_mimalloc {
             return base;
         }
         // SAFETY: `total` bytes were reserved.
-        unsafe { place(base, base.addr(), size, align, true) }
+        unsafe { place(base, base.addr(), size, align, base) }
     }
 
     unsafe fn heap_alloc(heap: *mut Heap, size: usize, align: usize, zero: bool) -> *mut c_void {
         if heap == main_heap() {
             return global_alloc(size, align, zero);
         }
+        CURRENT.with(|current| current.set(heap));
         // SAFETY: a heap is used by the thread that created it.
         let heap = unsafe { &mut *heap };
         let total = size + align.max(16) + HEADER;
@@ -109,7 +124,7 @@ mod fake_mimalloc {
             if total > CHUNK / 4 {
                 // Allocated separately, so that the rest of the current chunk stays usable.
                 // SAFETY: `total` bytes were reserved.
-                let p = unsafe { place(base, base.addr(), size, align, false) };
+                let p = unsafe { place(base, base.addr(), size, align, core::ptr::without_provenance_mut(BUMP)) };
                 if zero {
                     // SAFETY: `size` bytes at `p` are inside the chunk.
                     unsafe { core::ptr::write_bytes(p.cast::<u8>(), 0, size) };
@@ -118,6 +133,7 @@ mod fake_mimalloc {
             }
             heap.at = base.addr();
             heap.end = base.addr() + chunk;
+            heap.last = core::ptr::null_mut();
         }
         let base = *heap.chunks.last().unwrap();
         let base = if heap.at >= base.addr() && heap.at < base.addr() + CHUNK {
@@ -130,14 +146,22 @@ mod fake_mimalloc {
                 .find(|c| heap.at >= c.addr() && heap.end <= c.addr() + CHUNK)
                 .unwrap()
         };
+        let tag = heap.last.map_addr(|addr| addr | BUMP).cast();
         // SAFETY: `total` bytes are left in the chunk.
-        let p = unsafe { place(base, heap.at, size, align, false) };
+        let p = unsafe { place(base, heap.at, size, align, tag) };
         heap.at = p.addr() + size;
+        heap.last = p.cast::<Header>().wrapping_sub(1);
         if zero {
             // SAFETY: `size` bytes at `p` are inside the chunk.
             unsafe { core::ptr::write_bytes(p.cast::<u8>(), 0, size) };
         }
         p
+    }
+
+    /// A block's `base`, which another thread may be freeing it through.
+    unsafe fn tag_of<'a>(block: *mut Header) -> &'a core::sync::atomic::AtomicPtr<c_void> {
+        // SAFETY: `block` is a live header, and every access to `base` after `place` is atomic.
+        unsafe { core::sync::atomic::AtomicPtr::from_ptr(&raw mut (*block).base) }
     }
 
     unsafe fn header(p: *const c_void) -> *const Header {
@@ -150,11 +174,38 @@ mod fake_mimalloc {
             return;
         }
         // SAFETY: see `header`.
-        let base = unsafe { (*header(p)).base };
-        if !base.is_null() {
-            // SAFETY: `base` came from `malloc`.
-            unsafe { libc::free(base) };
+        let block = unsafe { header(p) }.cast_mut();
+        // SAFETY: see `header`.
+        let base = unsafe { tag_of(block) };
+        let tagged = base.load(core::sync::atomic::Ordering::Relaxed);
+        if tagged.addr() & BUMP == 0 {
+            // SAFETY: `tagged` came from `malloc`.
+            unsafe { libc::free(tagged) };
+            return;
         }
+        // A block is freed once, by any thread. Its heap's own thread reads this below.
+        base.store(tagged.map_addr(|addr| addr | FREED), core::sync::atomic::Ordering::Relaxed);
+        let heap = CURRENT.with(core::cell::Cell::get);
+        if heap.is_null() {
+            return;
+        }
+        // SAFETY: `CURRENT` is this thread's, and its heap outlives it (`mi_heap_destroy`).
+        let heap = unsafe { &mut *heap };
+        if heap.last != block {
+            return;
+        }
+        // Blocks are allocated in order, and a chunk's are given back from its end.
+        let mut top = block;
+        while !top.is_null() {
+            // SAFETY: `top` is a live header of this heap's current chunk.
+            let tagged = unsafe { tag_of(top) }.load(core::sync::atomic::Ordering::Relaxed);
+            if tagged.addr() & FREED == 0 {
+                break;
+            }
+            heap.at = top.addr();
+            top = tagged.map_addr(|addr| addr & !(BUMP | FREED)).cast();
+        }
+        heap.last = top;
     }
 
     #[unsafe(no_mangle)]
@@ -164,16 +215,30 @@ mod fake_mimalloc {
             at: 0,
             end: 0,
             used: 0,
+            last: core::ptr::null_mut(),
+            owner: this_thread(),
         }))
         .cast()
     }
     #[unsafe(no_mangle)]
     unsafe extern "C" fn mi_heap_destroy(heap: *mut c_void) {
         // SAFETY: created by `mi_heap_new`.
-        let heap = unsafe { Box::from_raw(heap.cast::<Heap>()) };
+        let mut heap = unsafe { Box::from_raw(heap.cast::<Heap>()) };
         for &chunk in &heap.chunks {
             // SAFETY: from `malloc`.
             unsafe { libc::free(chunk) };
+        }
+        heap.last = core::ptr::null_mut();
+        heap.chunks = Vec::new();
+        if heap.owner == this_thread() {
+            CURRENT.with(|current| {
+                if current.get() == &raw mut *heap {
+                    current.set(core::ptr::null_mut());
+                }
+            });
+        } else {
+            // Its thread may still name it as `CURRENT`, and finds nothing to give back.
+            Box::leak(heap);
         }
     }
     #[unsafe(no_mangle)]
@@ -249,6 +314,16 @@ mod fake_mimalloc {
         // SAFETY: `heap` comes from `mi_heap_new` or `mi_heap_main`, as mimalloc requires. `p` is
         // null or a block that one of these functions has returned, as mimalloc requires.
         unsafe {
+            // The last block of a chunk grows or shrinks where it is.
+            if !p.is_null() && heap.cast::<Heap>() != main_heap() {
+                let bump = &mut *heap.cast::<Heap>();
+                let block = header(p).cast_mut();
+                if bump.last == block && p.addr().is_multiple_of(align.max(16)) && p.addr() + size <= bump.end {
+                    (*block).size = size;
+                    bump.at = p.addr() + size;
+                    return p;
+                }
+            }
             let new = heap_alloc(heap.cast(), size, align, false);
             if !p.is_null() && !new.is_null() {
                 core::ptr::copy_nonoverlapping(

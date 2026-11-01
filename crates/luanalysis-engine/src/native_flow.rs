@@ -695,7 +695,7 @@ mod tests {
     }
 
     struct FacetGraph {
-        context: u64,
+        context: u32,
         value: Type,
     }
     impl FacetGraph {
@@ -825,7 +825,7 @@ mod tests {
                 .enumerate()
             {
                 let graph = FacetGraph {
-                    context: 4 + index as u64,
+                    context: 4 + index as u32,
                     value: value.clone(),
                 };
                 let yes = queries.flow_type(&graph, graph.at(2), graph.reference(), &value, &value);
@@ -859,7 +859,7 @@ mod tests {
                 .enumerate()
             {
                 let graph = FacetGraph {
-                    context: 7 + index as u64,
+                    context: 7 + index as u32,
                     value,
                 };
                 assert!(!queries.flow_reachable(&graph, graph.at(2)));

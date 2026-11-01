@@ -120,8 +120,8 @@ pub(super) enum NativeTypeContext {
 #[derive(Clone, Debug)]
 pub(super) struct NamedGenericParameterRecipe {
     pub name: Name,
-    pub constraint: Option<TypeExpr>,
-    pub default: Option<TypeExpr>,
+    pub constraint: Option<std::sync::Arc<TypeExpr>>,
+    pub default: Option<std::sync::Arc<TypeExpr>>,
 }
 
 #[derive(Clone, Debug)]
@@ -799,8 +799,8 @@ fn named_scope(
             .iter()
             .map(|parameter| NamedGenericParameterRecipe {
                 name: parameter.name.clone(),
-                constraint: parameter.constraint.clone(),
-                default: parameter.default.clone(),
+                constraint: parameter.constraint.clone().map(std::sync::Arc::new),
+                default: parameter.default.clone().map(std::sync::Arc::new),
             })
             .collect(),
         documentation_parents: Vec::new(),

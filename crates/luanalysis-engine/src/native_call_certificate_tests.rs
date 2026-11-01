@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 
 const SNAPSHOT: u32 = 12_431;
 
-fn graph(region: u32, context: u64) -> NativeGraphKey {
+fn graph(region: u32, context: u32) -> NativeGraphKey {
     NativeGraphKey { snapshot: SNAPSHOT, region, context }
 }
 
-fn at(region: u32, node: u32, context: u64) -> NativeFlowKey {
+fn at(region: u32, node: u32, context: u32) -> NativeFlowKey {
     NativeFlowKey { graph: graph(region, context), node }
 }
 
@@ -55,7 +55,7 @@ impl Recipes {
         }
     }
 
-    fn input(&mut self, node: u32, context: u64) -> NativeFlowKey {
+    fn input(&mut self, node: u32, context: u32) -> NativeFlowKey {
         let input = at(0, node, context);
         self.nodes.entry(at(0, 0, context)).or_insert(NativeFlowNode::Start);
         if node != 0 {

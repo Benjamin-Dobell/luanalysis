@@ -95,7 +95,7 @@ fn declaration_shape(value: Option<NativeVariableDeclaration>) -> Option<Declara
     })
 }
 
-fn compare_every_reference(sources: &NativeFlowSources, context: u64) {
+fn compare_every_reference(sources: &NativeFlowSources, context: u32) {
     for (region, references) in sources.references.iter().enumerate() {
         let shared = sources.shared_references.iter().chain(sources.seeded_references.references()).filter(|reference| !sources.reference_indices[region].contains_key(reference));
         for original in references.iter().chain(shared) {

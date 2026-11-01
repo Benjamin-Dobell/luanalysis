@@ -247,18 +247,24 @@ impl<'p, 's> Checker<'p, 's> {
     fn native_standard_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
         if self.is_stack_low() { self.mark_tainted_from(0); return Origins::unknown() }
         if reference.graph != at.graph || !provider.contains_reference(reference) || provider.node(at).is_none() { return Origins::unavailable() }
-        let key = (reference, at, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+        let (epoch, frame) = (self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+        let key = (reference.reference, at, epoch as u32, frame as u32);
         if let Some(result) = self.native_alias_cache.standard_references.get(&key) { return result.clone() }
-        let query = Query::NativeStandardReference(reference, at, key.2, key.3);
+        let query = Query::NativeStandardReference(reference, at, epoch, frame);
         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
         let context = self.native_query_context();
+        // A walk back through a graph asks this of each node it passes: what it found is kept for
+        // the node it was asked of and for every eighth node, from which any later walk is short.
+        let outermost = self.native_alias_cache.standard_reference_depth == 0;
+        self.native_alias_cache.standard_reference_depth += 1;
         let (mut result, completed) = self.run_memoizable(|checker| checker.native_standard_reference_worker(provider, reference, at));
+        self.native_alias_cache.standard_reference_depth -= 1;
         let cacheable = match self.leave(query) {
             Ok(_) if completed.is_some() => true,
             Err(_) if self.native_complete_without_cache(context, completed.is_some()) => false,
             _ => { result.uncertain = true; self.mark_tainted_from(0); false },
         };
-        if cacheable && !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_references.insert(key, result.clone()); }
+        if cacheable && (outermost || at.node.is_multiple_of(8)) && !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_references.insert(key, result.clone()); }
         result
     }
 

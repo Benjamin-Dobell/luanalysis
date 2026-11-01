@@ -32,20 +32,20 @@ fn function() -> NativeFunctionKey {
         index: 0,
     }
 }
-fn graph(context: u64) -> NativeGraphKey {
+fn graph(context: u32) -> NativeGraphKey {
     NativeGraphKey {
         snapshot: SNAPSHOT,
         region: 0,
         context,
     }
 }
-fn at(context: u64, node: u32) -> NativeFlowKey {
+fn at(context: u32, node: u32) -> NativeFlowKey {
     NativeFlowKey {
         graph: graph(context),
         node,
     }
 }
-fn reference(context: u64) -> NativeReferenceKey {
+fn reference(context: u32) -> NativeReferenceKey {
     NativeReferenceKey {
         graph: graph(context),
         reference: 0,
@@ -100,7 +100,7 @@ impl Fixture {
             errors: RefCell::new(vec![]),
         }
     }
-    fn initial(context: u64) -> Type {
+    fn initial(context: u32) -> Type {
         Type::Union(vec![
             if context == 2 {
                 Type::String

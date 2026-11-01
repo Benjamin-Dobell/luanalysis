@@ -17,7 +17,7 @@ impl NativeRegistry {
         if reference.root != flow::ReferenceRoot::EnvironmentObject {
             return NativeAliasInitial::Opaque;
         }
-        let [flow::Key::String(name)] = reference.path.as_slice() else {
+        let [flow::Key::String(name)] = &*reference.path else {
             return NativeAliasInitial::Opaque;
         };
         std::str::from_utf8(name)

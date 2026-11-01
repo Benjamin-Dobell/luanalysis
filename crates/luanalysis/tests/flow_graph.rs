@@ -147,7 +147,7 @@ fn simultaneous_property_writes_capture_addresses_and_evaluate_rhs_once() {
     };
     assert_eq!(field.transaction, root.transaction);
     assert_eq!(field.epoch, root.epoch);
-    assert_eq!(field.reference.path, [Key::String(b"x".to_vec())]);
+    assert_eq!(&*field.reference.path, [Key::String(b"x".to_vec())]);
     let receiver = program.evaluation(field.receiver.unwrap());
     assert!(receiver.completed.index < program.evaluation(*rhs).completed.index);
     assert!(program.evaluation(*rhs).completed.index < writes[0].id.index);
@@ -216,8 +216,8 @@ fn numeric_and_string_keys_are_distinct_and_integral_floats_match_integer_keys()
             }
         })
         .collect();
-    assert_eq!(addresses[0].reference.path, [Key::Integer(1)]);
-    assert_eq!(addresses[1].reference.path, [Key::String(b"1".to_vec())]);
+    assert_eq!(&*addresses[0].reference.path, [Key::Integer(1)]);
+    assert_eq!(&*addresses[1].reference.path, [Key::String(b"1".to_vec())]);
     assert_eq!(addresses[2].reference.path, addresses[0].reference.path);
     assert!(matches!(addresses[3].reference.path[0], Key::Dynamic(_)));
     assert!(
@@ -408,8 +408,8 @@ fn canonical_read_references_preserve_bound_roots_and_typed_paths() {
         .collect();
     paths.sort_by_key(|p| format!("{p:?}"));
     assert_eq!(paths.len(), 2);
-    assert!(paths.contains(&vec![Key::Integer(1)]));
-    assert!(paths.contains(&vec![Key::String(b"1".to_vec())]));
+    assert!(paths.iter().any(|path| **path == [Key::Integer(1)]));
+    assert!(paths.iter().any(|path| **path == [Key::String(b"1".to_vec())]));
     assert!(
         program
             .references

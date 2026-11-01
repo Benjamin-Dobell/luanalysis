@@ -275,7 +275,7 @@ impl NativeTypeProvider for Provider {
     }
 }
 struct Graph {
-    context: u64,
+    context: u32,
     value: Type,
     kind: NativeRuntimeType,
 }
@@ -703,7 +703,7 @@ fn materialized_host_namespaces_keep_the_definition_facet_in_runtime_predicates(
                 handles,
             };
             let graph = Graph {
-                context: 11 + index as u64,
+                context: 11 + index as u32,
                 value: value.clone(),
                 kind: NativeRuntimeType::Userdata,
             };

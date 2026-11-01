@@ -846,7 +846,7 @@ files ignore unless a `.luarc.json` says otherwise.
 | `--package-path <templates>` | `package.path` templates, such as `?.lua;?/init.lua`. |
 | `--path-strict` | Leave a module that no module root provides unresolved, instead of finding it by its path. |
 | `--module-map <manifest.json>` | Resolve `require`s with a host's own module map instead (below). |
-| `--jobs <n>` | Worker threads; by default, one per core. |
+| `--jobs <n>` | Worker threads; by default, one per performance core on macOS and one per core elsewhere. |
 | `--watch` | Check again whenever sources or declarations change. |
 | `--no-implicit-any` | Require types for parameters and for locals whose type cannot be inferred. |
 | `--no-unsafe-any` | Report reading a member of, indexing or calling a value of type `any`, as Luanalysis for IntelliJ did with "unknown callable/indexable" off. `any` stays assignable either way. |
@@ -1061,16 +1061,16 @@ Luanalysis's checker is built on Bun's Rust port of the TypeScript compiler's ch
 checks a project's files in parallel.
 
 Checking [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own
-repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October and
-1 November 2026):
+repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October to
+2 November 2026):
 
 | Checker | Wall time | CPU time | Peak memory |
 | --- | --- | --- | --- |
 | lua-language-server 3.19.2 `--check` | 17.5 s | 17.2 s | 732 MB |
-| EmmyLua Analyzer 0.25.1 | 0.86 s | 2.0 s | 159 MB |
-| EmmyLua Analyzer main (`1b6df85`) | 8.3 s | 8.2 s | 169 MB |
-| Luanalysis, one thread | 2.8 s | 2.7 s | 463 MB |
-| Luanalysis, ten threads | 1.2 s | 4.9 s | 627 MB |
+| EmmyLua Analyzer 0.25.1 | 0.99 s | 2.1 s | 158 MB |
+| EmmyLua Analyzer main (`1b6df85`) | 9.0 s | 8.7 s | 169 MB |
+| Luanalysis, one thread | 2.6 s | 2.5 s | 360 MB |
+| Luanalysis, eight threads | 1.2 s | 4.3 s | 464 MB |
 
 These are medians of five fresh-process runs after one warmup, using release builds; EmmyLua
 Analyzer main is an unreleased commit built from source without changes. CPU time includes user
@@ -1080,8 +1080,8 @@ configuration with Lua 5.4 and `lua/` (a symlink to `script/`) and `make/` exclu
 those same 434 files. The checkers report different diagnostics. Other development work was
 running on the machine.
 
-On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.11 s and 80 MB,
-EmmyLua Analyzer 0.25.1 takes 0.18 s and 25 MB, and its main branch takes 0.23 s and 31 MB.
+On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.11 s and 72 MB,
+EmmyLua Analyzer 0.25.1 takes 0.20 s and 25 MB, and its main branch takes 0.25 s and 31 MB.
 
 Diagnostics after an edit in the language server, from the change to the new diagnostics. Each
 edit adds or removes a type error in the file's first local function, and the figures are medians
@@ -1089,8 +1089,8 @@ of 20 edits:
 
 | Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
 | --- | --- | --- | --- | --- |
-| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 56 ms | 639 MB |
-| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 284 ms | 364 MB |
+| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 58 ms | 501 MB |
+| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 290 ms | 291 MB |
 
 An edit checks the edited file using the types it reads from the rest of the project, not the file
 alone. The files above are among the largest. Editing every source file of each project in turn, in
@@ -1098,8 +1098,8 @@ one session:
 
 | Project | Median | 90th percentile | Slowest |
 | --- | --- | --- | --- |
-| lua-language-server (434 files) | 17 ms | 40 ms | 206 ms |
-| Another project (99 source files of its 136) | 18 ms | 53 ms | 277 ms |
+| lua-language-server (434 files) | 18 ms | 41 ms | 216 ms |
+| Another project (99 source files of its 136) | 18 ms | 55 ms | 291 ms |
 
 An edit that changes what a widely used module or class exposes checks its users as well, and costs
 up to one whole check.
@@ -1109,8 +1109,8 @@ every request and background checking active:
 
 | Completion item details | Median | 95th percentile |
 | --- | --- | --- |
-| Included in the list | 24 ms | 30 ms |
-| Resolved separately by the client | 24 ms | 29 ms |
+| Included in the list | 21 ms | 23 ms |
+| Resolved separately by the client | 21 ms | 23 ms |
 
 Each row measures 100 requests across five language-server sessions, excluding each session's
 first request. Times include sending the changed buffer and receiving the completion list

@@ -392,8 +392,9 @@ struct NativeObjectMember {
     /// Further original declarations of the same pure callable own member.
     /// No synthetic member identity replaces these source origins.
     overloads: Vec<NativeTypeMemberId>,
-    owner: NativeObjectReference,
-    via: Option<(usize, TypeId)>,
+    /// The `NativeObject` that owns it: an object's members are many, its owners few.
+    owner: TypeId,
+    via: Option<(u32, TypeId)>,
 }
 
 impl NativeNamedCache {
@@ -714,7 +715,7 @@ impl<'p, 's> Checker<'p, 's> {
                         },
                     };
                     if !matches { continue }
-                    let origin = NativeObjectMember { member: declared, overloads: Vec::new(), owner, via: None };
+                    let origin = NativeObjectMember { member: declared, overloads: Vec::new(), owner: self.intern(TypeData::NativeObject(owner)), via: None };
                     if let Some(raw) = self.native_object_member_demand(&origin)? {
                         let value = self.native_member_type(raw, owner);
                         contexts.push(if metadata.optional { self.optional(value) } else { value });
@@ -964,13 +965,13 @@ impl<'p, 's> Checker<'p, 's> {
     /// rather than inferred from its value.
     fn native_object_member_written(&mut self, origin: &NativeObjectMember) -> Result<bool, NativeNamedTypeError> {
         if self.native_object_member_effective_origin(origin)? == Some(crate::types::NativeTableFieldOrigin::Declared) { return Ok(true) }
-        let provider = self.native_named_provider(origin.owner.declaration)?;
+        let provider = self.native_named_provider(self.native_member_owner(&origin).declaration)?;
         Ok(std::iter::once(origin.member).chain(origin.overloads.iter().copied()).any(|member| provider.type_member_is_written(member)))
     }
 
     /// Whether a statement of its own stores the member's value, checking it against the member.
     fn native_object_member_stored(&mut self, origin: &NativeObjectMember) -> Result<bool, NativeNamedTypeError> {
-        let provider = self.native_named_provider(origin.owner.declaration)?;
+        let provider = self.native_named_provider(self.native_member_owner(&origin).declaration)?;
         Ok(provider.type_member_is_stored(origin.member))
     }
 
@@ -1018,7 +1019,7 @@ impl<'p, 's> Checker<'p, 's> {
             let metadata = self.native_named_member_effective_metadata(member)?;
             if metadata.is_assignment && metadata.origin != crate::types::NativeTableFieldOrigin::Declared
                 && self.native_named_member_context(member)?.is_some() { continue }
-            let Some(mapper) = self.native_member_capture_mapper(origin.owner, member)? else { continue };
+            let Some(mapper) = self.native_member_capture_mapper(self.native_member_owner(&origin), member)? else { continue };
             active.push((member, mapper));
         }
         let Some(&(first, mapper)) = active.first() else { return Ok(None) };
@@ -1165,6 +1166,11 @@ impl<'p, 's> Checker<'p, 's> {
             }
             _ => ty,
         }
+    }
+
+    fn native_member_owner(&self, member: &NativeObjectMember) -> NativeObjectReference {
+        let TypeData::NativeObject(owner) = *self.data(member.owner) else { unreachable!("a member's owner is an object") };
+        owner
     }
 
     fn native_member_mapper(&mut self, reference: NativeObjectReference) -> MapperId {
@@ -1384,7 +1390,7 @@ impl<'p, 's> Checker<'p, 's> {
                         continue;
                     }
                 }
-                members.push(NativeObjectMember { member, overloads: Vec::new(), owner: reference, via: None });
+                members.push(NativeObjectMember { member, overloads: Vec::new(), owner: self.intern(TypeData::NativeObject(reference)), via: None });
             }
             for (index, base) in bases.into_iter().enumerate() {
                 if self.is_error_type(base) { continue }
@@ -1392,7 +1398,7 @@ impl<'p, 's> Checker<'p, 's> {
                 for member in self.native_object_members(owner)?.iter().cloned() {
                     // Candidate origins are immutable. An inactive override
                     // must not hide its inherited active fallback.
-                    members.push(NativeObjectMember { via: Some((index, base)), ..member });
+                    members.push(NativeObjectMember { via: Some((index as u32, base)), ..member });
                 }
             }
             Ok(std::sync::Arc::new(members))
@@ -1420,7 +1426,7 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_object_declares(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> bool {
         let Ok(members) = self.native_object_members(reference) else { return false };
         members.iter().any(|member| {
-            let Ok(provider) = self.native_named_provider(member.owner.declaration) else { return false };
+            let Ok(provider) = self.native_named_provider(self.native_member_owner(&member).declaration) else { return false };
             matches!(provider.type_member_header(self, member.member).key, NativeTypeMemberKey::Fixed(fixed) if fixed.normalize() == Ok(key))
         })
     }
@@ -1434,7 +1440,7 @@ impl<'p, 's> Checker<'p, 's> {
         let Ok(members) = self.native_object_members(reference) else { return Vec::new() };
         let mut origins = Vec::new();
         for member in members.iter().cloned() {
-            let Ok(provider) = self.native_named_provider(member.owner.declaration) else { continue };
+            let Ok(provider) = self.native_named_provider(self.native_member_owner(&member).declaration) else { continue };
             let NativeTypeMemberKey::Fixed(key) = provider.type_member_header(self, member.member).key else { continue };
             let Ok(NativeTableKey::String(atom)) = key.normalize() else { continue };
             if self.atoms().bytes(atom) != name { continue }
@@ -1488,13 +1494,13 @@ impl<'p, 's> Checker<'p, 's> {
             let metadata = provider.type_member_header(self, member);
             if !matches!(metadata.key, NativeTypeMemberKey::Fixed(other) if other.normalize() == Ok(key)) { continue }
             if self.native_named_member_header(reference, member)?.is_none() { continue }
-            members.push(NativeObjectMember { member, overloads: Vec::new(), owner: reference, via: None });
+            members.push(NativeObjectMember { member, overloads: Vec::new(), owner: self.intern(TypeData::NativeObject(reference)), via: None });
         }
         for (index, base) in self.native_object_bases(reference)?.into_iter().enumerate() {
             if self.is_error_type(base) { continue }
             let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
             for member in self.native_object_written_fixed_members(owner, key)? {
-                members.push(NativeObjectMember { via: Some((index, base)), ..member });
+                members.push(NativeObjectMember { via: Some((index as u32, base)), ..member });
             }
         }
         Ok(members)
@@ -1626,7 +1632,7 @@ impl<'p, 's> Checker<'p, 's> {
             let Ok(key) = key.normalize() else { continue };
             if fields.iter().any(|field| field.key == key) { continue }
             let value = match self.native_named_cache.types.get(&NativeTypeDeclarationQuery::MemberType(origin.member)) {
-                Some(&raw) if origin.via.is_none() => self.native_member_type(raw, origin.owner),
+                Some(&raw) if origin.via.is_none() => self.native_member_type(raw, self.native_member_owner(&origin)),
                 _ => TypeId::UNRESOLVED,
             };
             fields.push(NativeTableField { key, value, optional: header.optional, readonly: header.readonly, origin: provider.type_member_origin(origin.member) });
@@ -1739,17 +1745,17 @@ impl<'p, 's> Checker<'p, 's> {
             let metadata = provider.type_member_header(self, origin.member);
             let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
             let Some(value_origin) = self.native_object_member_effective_origin(&origin)? else { continue };
-            let mapper = match member_mappers.iter().find(|(owner, _)| *owner == origin.owner) {
+            let mapper = match member_mappers.iter().find(|(owner, _)| *owner == self.native_member_owner(&origin)) {
                 Some(&(_, mapper)) => mapper,
                 None => {
-                    let mapper = self.native_member_mapper(origin.owner);
-                    member_mappers.push((origin.owner, mapper));
+                    let mapper = self.native_member_mapper(self.native_member_owner(&origin));
+                    member_mappers.push((self.native_member_owner(&origin), mapper));
                     mapper
                 }
             };
             let value = self.instantiate(raw, mapper);
             if validate && header.kind != NativeTypeDeclarationKind::Class {
-                if let Err(NativeTableError::ValueType { value: actual, expected }) = self.native_member_read(raw, origin.owner) {
+                if let Err(NativeTableError::ValueType { value: actual, expected }) = self.native_member_read(raw, self.native_member_owner(&origin)) {
                     return Err(NativeNamedTypeError::InvalidReceiver { declaration, actual, expected });
                 }
             }
@@ -1813,7 +1819,7 @@ impl<'p, 's> Checker<'p, 's> {
                                 if overridden.is_some() { self.report_native_named(error) } else { overridden = Some(error) }
                             }
                         } else if previous.optional != field.optional || previous.readonly != field.readonly || !self.related(actual, expected, Relation::Identity) {
-                            return Err(NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected, actual });
+                            return Err(NativeNamedTypeError::IncompatibleBase { declaration, index: index as usize, base, expected, actual });
                         }
                     } else {
                         // An inherited member is as its owner resolves it, so an unannotated
@@ -1827,9 +1833,9 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 NativeTypeMemberKey::Indexer { sparse } => {
                     let raw_key = self.native_named_member_demand(origin.member, true)?;
-                    let Some(capture) = self.native_member_capture_mapper(origin.owner, origin.member)? else { continue };
+                    let Some(capture) = self.native_member_capture_mapper(self.native_member_owner(&origin), origin.member)? else { continue };
                     let raw_key = self.instantiate(raw_key, capture);
-                    let key = self.native_member_type(raw_key, origin.owner);
+                    let key = self.native_member_type(raw_key, self.native_member_owner(&origin));
                     indexers.push(NativeTableIndexer { key, value, readonly: metadata.readonly, sparse, origin: value_origin });
                     indexer_origins.push(origin);
                 }
@@ -1859,7 +1865,7 @@ impl<'p, 's> Checker<'p, 's> {
                 if let (Some((index, base)), Some(_)) = (origin.via, other.via)
                     && origin.via != other.via
                     && !self.related(expected.value, indexer.value, Relation::Identity) {
-                    return Err(NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected: indexer.value, actual: expected.value });
+                    return Err(NativeNamedTypeError::IncompatibleBase { declaration, index: index as usize, base, expected: indexer.value, actual: expected.value });
                 }
             }
             for (field_position, field) in fields.iter().enumerate() {
@@ -1879,7 +1885,7 @@ impl<'p, 's> Checker<'p, 's> {
                 if origin.via.is_none() && field_origin.via.is_none() { continue }
                 if !self.is_assignable(field.value, indexer.value) {
                     if let Some((index, base)) = origin.via.or(field_origin.via) {
-                        return Err(NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected: indexer.value, actual: field.value });
+                        return Err(NativeNamedTypeError::IncompatibleBase { declaration, index: index as usize, base, expected: indexer.value, actual: field.value });
                     }
                     return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::ValueType { value: field.value, expected: indexer.value } });
                 }
@@ -1922,7 +1928,7 @@ impl<'p, 's> Checker<'p, 's> {
                         NativeTypeMemberKey::Indexer { .. } if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared => true,
                         // A store at a computed key of this one literal type stores this field.
                         NativeTypeMemberKey::Indexer { .. } => self.native_runtime_member_demand(reference, origin.member, true).ok()
-                            .map(|raw| self.native_member_type(raw, origin.owner))
+                            .map(|raw| self.native_member_type(raw, self.native_member_owner(&origin)))
                             .is_some_and(|key| matches!(self.native_table_access(NativeTableAccessKey::Type(key)), Ok(NativeTableAccessKey::Literal(other @ NativeTableKey::String(_))) if other == literal)),
                     };
                     if keep { selected.push(origin); }
@@ -1947,7 +1953,7 @@ impl<'p, 's> Checker<'p, 's> {
                     if let Some((previous, _, _)) = &found
                         && origin.via.is_some() && origin.via == previous.via { continue }
                     let Some(raw) = self.native_object_member_demand(&origin).map_err(|error| error.table_error(TypeId::ERROR))? else { continue };
-                    let value = self.native_member_read(raw, origin.owner)?;
+                    let value = self.native_member_read(raw, self.native_member_owner(&origin))?;
                     let declared_here = self.native_object_member_effective_origin(&origin).map_err(|error| error.table_error(TypeId::ERROR))? == Some(crate::types::NativeTableFieldOrigin::Declared);
                     let value = if declared_here { self.regular(value) } else { value };
                     let value = if let Some((_, base)) = origin.via {
@@ -1980,7 +1986,7 @@ impl<'p, 's> Checker<'p, 's> {
                             if previous.via.is_none() {
                                 (previous_metadata.optional && !metadata.optional || !self.is_assignable(*actual, value)).then_some(NativeNamedTypeError::IncompatibleOverride { declaration: reference.declaration, member: previous.member, base, expected: value, actual: *actual })
                             } else {
-                                (previous_metadata.optional != metadata.optional || previous_metadata.readonly != metadata.readonly || !self.related(*actual, value, Relation::Identity)).then_some(NativeNamedTypeError::IncompatibleBase { declaration: reference.declaration, index, base, expected: value, actual: *actual })
+                                (previous_metadata.optional != metadata.optional || previous_metadata.readonly != metadata.readonly || !self.related(*actual, value, Relation::Identity)).then_some(NativeNamedTypeError::IncompatibleBase { declaration: reference.declaration, index: index as usize, base, expected: value, actual: *actual })
                             }
                         } else {
                             // A written field outranks a definition table's value for it; otherwise a
@@ -2048,7 +2054,7 @@ impl<'p, 's> Checker<'p, 's> {
                 // An unannotated override of a written member takes that member's type (v1).
                 if !declared && !self.native_object_member_written(&origin).ok()?
                     && self.native_named_key_origin(reference, literal).ok()? == Some(crate::types::NativeTableFieldOrigin::Declared) { continue }
-                let value = self.native_member_type(raw, origin.owner);
+                let value = self.native_member_type(raw, self.native_member_owner(&origin));
                 let value = if declared { self.regular(value) } else { value };
                 return Some(if metadata.optional { self.optional(value) } else { value });
             }

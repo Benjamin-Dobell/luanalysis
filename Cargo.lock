@@ -366,9 +366,11 @@ checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 name = "luanalysis"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "luanalysis-engine",
  "luanalysis-project",
  "luanalysis-syntax",
+ "smallvec",
 ]
 
 [[package]]

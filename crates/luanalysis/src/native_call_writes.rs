@@ -130,13 +130,13 @@ impl NativeFlowRecipes {
             let flow::NodeKind::Write { address, value, .. } = &node.kind else { continue; };
             for (key, function) in self.written_functions(value) {
                 let mut reference = address.reference.clone();
-                reference.path.extend(key);
+                reference.extend_path(key);
                 definitions.entry(reference.clone()).or_default().push(function);
                 // `function owner:name()` is called on its owner's values: its
                 // receiver's members are the owner's, and other receivers
                 // calling `:name` may be instances of it.
                 if let Some(&receiver) = self.implicit_receivers.get(&function)
-                    && let Some(flow::Key::String(name)) = reference.path.pop() {
+                    && let Some(flow::Key::String(name)) = reference.pop_key() {
                     methods.entry(name).or_default().push(function);
                     receivers.insert(receiver, reference);
                 }
@@ -147,7 +147,7 @@ impl NativeFlowRecipes {
             let flow::ReferenceRoot::Binding(binding) = &reference.root else { return Vec::new(); };
             let Some(owner) = receivers.get(binding) else { return Vec::new(); };
             let mut member = owner.clone();
-            member.path.extend(reference.path.iter().cloned());
+            member.extend_path(reference.path.iter().cloned());
             definitions.get(&member).cloned().unwrap_or_default()
         };
         let owner = |binding: &BindingId| self.binding_owners.get(binding).copied();
@@ -284,7 +284,7 @@ impl NativeFlowRecipes {
             ),
             ExprKind::MethodCall { name, .. } => (
                 evaluation.operands.first().and_then(reference).map(|mut receiver| {
-                    receiver.path.push(flow::Key::String(name.text.as_bytes().to_vec()));
+                    receiver.push_key(flow::Key::String(name.text.as_bytes().to_vec()));
                     receiver
                 }),
                 evaluation.operands.as_slice(),

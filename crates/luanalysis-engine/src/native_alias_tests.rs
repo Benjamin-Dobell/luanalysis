@@ -536,7 +536,7 @@ fn matching_known_allocations_do_not_hide_an_untracked_recursive_return_alternat
 }
 
 struct ContextSource;
-fn context_at(context: u64, node: u32) -> NativeFlowKey {
+fn context_at(context: u32, node: u32) -> NativeFlowKey {
     NativeFlowKey {
         graph: NativeGraphKey {
             context,
@@ -545,7 +545,7 @@ fn context_at(context: u64, node: u32) -> NativeFlowKey {
         node,
     }
 }
-fn context_reference(context: u64) -> NativeReferenceKey {
+fn context_reference(context: u32) -> NativeReferenceKey {
     NativeReferenceKey {
         graph: context_at(context, 0).graph,
         reference: 0,
