@@ -14,7 +14,7 @@ mod native_types;
 use native_named::*;
 use native_types::*;
 
-const SNAPSHOT: u64 = 505;
+const SNAPSHOT: u32 = 505;
 
 fn named(source: &str) -> NativeNamed {
     let file = luanalysis_syntax::parse(source);

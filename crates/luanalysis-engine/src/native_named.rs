@@ -20,17 +20,17 @@ use bun_sema::types::{NativeTableKey, TypeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeTypeDeclarationKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeTypeMemberKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NativeClassDefinitionKey { pub snapshot: u64, pub index: u32 }
+pub struct NativeClassDefinitionKey { pub snapshot: u32, pub index: u32 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClassDefinitionHeader { pub declaration: NativeTypeDeclarationKey }

@@ -19,7 +19,6 @@ use luanalysis_engine::{
 use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeExpr};
 use std::cell::{Cell, RefCell};
 use crate::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicU64;
 
 #[cfg(test)]
 mod immutable_function_predicate_tests {
@@ -80,7 +79,7 @@ mod alias_contracts;
 #[path = "native_effect_contracts.rs"]
 mod effect_contracts;
 
-static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
+static NEXT_SNAPSHOT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 #[derive(Clone)]
 enum DeclarationSource {
@@ -102,7 +101,7 @@ enum DeclarationSource {
 }
 
 pub(super) struct NativeRegistry {
-    snapshot: u64,
+    snapshot: u32,
     source_role: luanalysis_project::SourceRole,
     overload_mode: crate::OverloadMode,
     no_implicit_any: bool,
@@ -204,7 +203,7 @@ impl std::ops::Deref for SourceRecipes {
 
 #[derive(Clone)]
 pub(crate) struct SourceRecipeParts {
-    snapshot: u64,
+    snapshot: u32,
     functions: std::sync::Arc<Vec<luanalysis_syntax::SharedFunction>>,
     function_names: std::sync::Arc<Vec<Option<Name>>>,
     declaration_functions: std::sync::Arc<HashSet<u32>>,
@@ -3518,7 +3517,7 @@ fn source_statements<'a>(statements: &'a [Stmt], all: &mut Vec<&'a Stmt>) {
 }
 
 fn type_scope_recipes(
-    snapshot: u64,
+    snapshot: u32,
     functions: &[luanalysis_syntax::SharedFunction],
     bound: &BoundFile,
 ) -> Vec<TypeScopeRecipe> {

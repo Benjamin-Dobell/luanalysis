@@ -8,7 +8,7 @@ use crate::types::TypeId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeGraphKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub region: u32,
     /// Unique immutable contextual-body facet; zero for the ordinary source view.
     pub context: u64,
@@ -29,7 +29,7 @@ pub struct NativeReferenceKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeValueKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 

@@ -1,6 +1,6 @@
 use super::*;
 
-const SNAPSHOT: u64 = 12_436;
+const SNAPSHOT: u32 = 12_436;
 fn graph() -> NativeGraphKey { NativeGraphKey { snapshot: SNAPSHOT, region: 0, context: 0 } }
 fn at(node: u32) -> NativeFlowKey { NativeFlowKey { graph: graph(), node } }
 fn reference(index: u32) -> NativeReferenceKey { NativeReferenceKey { graph: graph(), reference: index } }

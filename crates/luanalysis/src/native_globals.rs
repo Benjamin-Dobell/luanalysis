@@ -47,7 +47,7 @@ impl NativeGlobals {
     }
 
     pub(super) fn new(
-        snapshot: u64,
+        snapshot: u32,
         file: &File,
         bound: &BoundFile,
         functions: &HashMap<(usize, usize), u32>,
@@ -184,7 +184,7 @@ impl NativeGlobals {
     /// Globals assigned inside function bodies and blocks: `name = value` and `function name()`.
     fn nested_declarations(
         &mut self,
-        snapshot: u64,
+        snapshot: u32,
         file: &File,
         bound: &BoundFile,
         functions: &HashMap<(usize, usize), u32>,

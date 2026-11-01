@@ -28,7 +28,7 @@ pub(super) struct MethodSource {
 }
 
 pub(super) struct NativeMethods {
-    snapshot: u64,
+    snapshot: u32,
     sources: Vec<Option<MethodSource>>,
     fields: Vec<AssignmentFieldSource>,
     owner_applications: HashMap<BindingId, OriginalOwnerApplication>,
@@ -110,7 +110,7 @@ struct AssignmentFieldSource {
 }
 impl NativeMethods {
     pub(super) fn new(
-        snapshot: u64,
+        snapshot: u32,
         file: &File,
         functions: &[luanalysis_syntax::SharedFunction],
         spans: &HashMap<(usize, usize), u32>,

@@ -1,8 +1,8 @@
 use super::*;
 use std::collections::HashMap;
 
-const SNAPSHOT: u64 = 12_432;
-const MODULE_SNAPSHOT: u64 = 12_433;
+const SNAPSHOT: u32 = 12_432;
+const MODULE_SNAPSHOT: u32 = 12_433;
 
 fn graph(region: u32) -> NativeGraphKey {
     NativeGraphKey { snapshot: if region == 4 { MODULE_SNAPSHOT } else { SNAPSHOT }, region, context: 0 }

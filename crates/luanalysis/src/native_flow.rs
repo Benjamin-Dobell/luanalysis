@@ -27,7 +27,7 @@ use crate::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum ValueRecipe {
     Evaluation(flow::EvaluationId),
     PackElement {
@@ -159,7 +159,11 @@ pub(super) struct NativeFlowRecipes {
     /// which made a large file's setup quadratic in its functions and keys.
     shared_references: Vec<flow::Reference>,
     shared_reference_indices: HashMap<flow::Reference, u32>,
-    /// Each evaluation's value first, at the evaluation's index, then the others.
+    /// The members of the environment that the project's global names are: one list for all of
+    /// its sources, which are many (`SEEDED_REFERENCE_BASE`).
+    seeded_references: Arc<SeededGlobalReferences>,
+    /// The values other than each evaluation's own, whose key is the evaluation's index: these
+    /// come after them.
     values: Vec<ValueRecipe>,
     iterator_values: HashMap<flow::IteratorId, u32>,
     write_values: HashMap<flow::FlowId, u32>,
@@ -238,19 +242,12 @@ impl NativeFlowSources {
     /// addresses. It creates no expression, flow node, value or declaration.
     #[cfg(test)]
     pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
-        Self::seed_recipe_global_reference_keys(&mut self.recipes, names);
+        Self::seed_recipe_global_references(&mut self.recipes, &SeededGlobalReferences::new(names));
     }
     /// As `seed_original_global_reference_keys`, on a revision's recipes before a registry takes
     /// them.
-    pub(super) fn seed_recipe_global_reference_keys(recipes: &mut Arc<NativeFlowRecipes>, names: &[Vec<u8>]) {
-        let recipes = Arc::make_mut(recipes);
-        for name in names {
-            let path = vec![flow::Key::String(name.clone())];
-            for root in [flow::ReferenceRoot::EnvironmentObject, flow::ReferenceRoot::EnvironmentCell] {
-                intern_reference(&mut recipes.shared_references, &mut recipes.shared_reference_indices,
-                    &flow::Reference { root, path: path.clone() });
-            }
-        }
+    pub(super) fn seed_recipe_global_references(recipes: &mut Arc<NativeFlowRecipes>, seeded: &Arc<SeededGlobalReferences>) {
+        Arc::make_mut(recipes).seeded_references = Arc::clone(seeded);
     }
     /// Gives a revision's recipes what a project's setup of its registry gives them
     /// (`set_original_require_capability` and the rest), before a registry takes them: that
@@ -339,7 +336,7 @@ impl NativeFlowSources {
     pub(super) fn new(
         file: &File,
         bound: &super::bind::BoundFile,
-        native_snapshot: u64,
+        native_snapshot: u32,
         functions: &HashMap<(usize, usize), u32>,
     ) -> Self {
         Self::new_with_snapshot(&std::sync::Arc::new(file.clone()), bound, native_snapshot, functions, flow::allocate_snapshot())
@@ -348,9 +345,9 @@ impl NativeFlowSources {
     pub(super) fn new_with_snapshot(
         file: &std::sync::Arc<File>,
         bound: &super::bind::BoundFile,
-        native_snapshot: u64,
+        native_snapshot: u32,
         functions: &HashMap<(usize, usize), u32>,
-        flow_snapshot: u64,
+        flow_snapshot: u32,
     ) -> Self {
         let program = flow::build_with_snapshot(file, bound, flow_snapshot);
         let environment_cell_written = program.graphs.iter().flat_map(|graph| &graph.nodes).any(|node| {
@@ -362,6 +359,7 @@ impl NativeFlowSources {
             reference_indices: vec![HashMap::default(); program.graphs.len()],
             shared_references: Vec::new(),
             shared_reference_indices: HashMap::default(),
+            seeded_references: Arc::default(),
             functions: HashMap::default(),
             graph_functions: vec![None; program.graphs.len()],
             values: Vec::new(),
@@ -418,8 +416,6 @@ impl NativeFlowSources {
             );
             result.predicate_evaluations.entry((evaluation.expression.index, evaluation.completed.graph, evaluation.completed.index))
                 .or_insert(evaluation.id.index);
-            assert_eq!(result.values.len(), evaluation.id.index as usize, "an evaluation's value is at its index");
-            result.values.push(ValueRecipe::Evaluation(evaluation.id));
             if let Some(reference) = result.program.references.get(&evaluation.expression) {
                 let region = evaluation.input.graph as usize;
                 intern_reference(
@@ -445,7 +441,7 @@ impl NativeFlowSources {
                     &mut result.reference_indices[graph.index as usize],
                     &reference,
                 );
-                let index = result.values.len() as u32;
+                let index = (result.program.evaluations.len() + result.values.len()) as u32;
                 result.values.push(ValueRecipe::IteratorHeader(iterator.id));
                 result.iterator_values.insert(iterator.id, index);
             }
@@ -493,7 +489,7 @@ impl NativeFlowSources {
                                 }
                                 flow::ValueDemand::Evaluation(_) => unreachable!(),
                             };
-                            let index = result.values.len() as u32;
+                            let index = (result.program.evaluations.len() + result.values.len()) as u32;
                             result.values.push(recipe);
                             index
                         }
@@ -1084,16 +1080,22 @@ impl NativeFlowSources {
         if !self.contains_graph(key.graph) {
             return None;
         }
+        if let Some(seeded) = key.reference.checked_sub(SEEDED_REFERENCE_BASE) {
+            return self.seeded_references.references.get(seeded as usize);
+        }
         match key.reference.checked_sub(SHARED_REFERENCE_BASE) {
             Some(shared) => self.shared_references.get(shared as usize),
             None => self.references[key.graph.region as usize].get(key.reference as usize),
         }
     }
 
-    pub(super) fn value(&self, key: NativeValueKey) -> Option<&ValueRecipe> {
-        (key.snapshot == self.program.snapshot)
-            .then(|| self.values.get(key.index as usize))
-            .flatten()
+    pub(super) fn value(&self, key: NativeValueKey) -> Option<ValueRecipe> {
+        if key.snapshot != self.program.snapshot { return None }
+        let evaluations = self.program.evaluations.len();
+        match (key.index as usize).checked_sub(evaluations) {
+            None => Some(ValueRecipe::Evaluation(flow::EvaluationId { snapshot: self.program.snapshot, index: key.index })),
+            Some(other) => self.values.get(other).copied(),
+        }
     }
 
     pub(super) fn flow_key(&self, source: flow::FlowId, context: u64) -> NativeFlowKey {
@@ -1115,7 +1117,8 @@ impl NativeFlowSources {
         let index = self.reference_indices[graph.region as usize]
             .get(reference)
             .copied()
-            .or_else(|| Some(SHARED_REFERENCE_BASE + self.shared_reference_indices.get(reference)?))?;
+            .or_else(|| self.shared_reference_indices.get(reference).map(|index| SHARED_REFERENCE_BASE + index))
+            .or_else(|| Some(SEEDED_REFERENCE_BASE + self.seeded_references.indices.get(reference)?))?;
         Some(NativeReferenceKey { graph, reference: index })
     }
 
@@ -1258,7 +1261,7 @@ impl NativeFlowSources {
 
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         let ValueRecipe::Evaluation(evaluation) = self.value(condition)? else { return None };
-        let evaluation = self.program.evaluation(*evaluation);
+        let evaluation = self.program.evaluation(evaluation);
         if self.flow_key(evaluation.input, input.graph.context) != input || !self.assertion_condition_is_frozen(evaluation.id) { return None }
         Some(self.predicate_evaluation(input, evaluation))
     }
@@ -1724,6 +1727,28 @@ impl NativeFlowSources {
 
 /// The first index of the references every region shares, above any region's own.
 pub(super) const SHARED_REFERENCE_BASE: u32 = 1 << 31;
+pub(super) const SEEDED_REFERENCE_BASE: u32 = 3 << 30;
+
+#[derive(Default)]
+pub(super) struct SeededGlobalReferences {
+    references: Vec<flow::Reference>,
+    indices: HashMap<flow::Reference, u32>,
+}
+
+impl SeededGlobalReferences {
+    pub(super) fn new(names: &[Vec<u8>]) -> Arc<Self> {
+        let mut seeded = Self::default();
+        for name in names {
+            let path = vec![flow::Key::String(name.clone())];
+            for root in [flow::ReferenceRoot::EnvironmentObject, flow::ReferenceRoot::EnvironmentCell] {
+                intern_reference(&mut seeded.references, &mut seeded.indices, &flow::Reference { root, path: path.clone() });
+            }
+        }
+        Arc::new(seeded)
+    }
+    #[cfg(test)]
+    pub(super) fn references(&self) -> &[flow::Reference] { &self.references }
+}
 
 fn intern_reference(
     references: &mut Vec<flow::Reference>,
@@ -1834,7 +1859,7 @@ impl FlowAdapter<'_> {
     fn alias_literal_member(&self, value: NativeValueKey, input: NativeFlowKey, key: &luanalysis_engine::LuaKey) -> Option<Option<luanalysis_engine::NativeAliasReturnValue>> {
         let luanalysis_engine::LuaKey::String(_) = key else { return None; };
         let mut evaluation = match self.sources.value(value)? {
-            ValueRecipe::Evaluation(evaluation) | ValueRecipe::PackElement { evaluation, index: 0 } => self.sources.program.evaluation(*evaluation),
+            ValueRecipe::Evaluation(evaluation) | ValueRecipe::PackElement { evaluation, index: 0 } => self.sources.program.evaluation(evaluation),
             _ => return None,
         };
         while matches!(self.sources.program.expression(evaluation.expression).expression.kind, ExprKind::Parenthesized(_)) {
@@ -2044,7 +2069,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
 
     fn alias_environment_candidate(&self, value:NativeValueKey, _:NativeFlowKey)->bool {
         let evaluation=match self.sources.value(value) {
-            Some(ValueRecipe::Evaluation(evaluation)|ValueRecipe::PackElement {evaluation,index:0})=>self.sources.program.evaluation(*evaluation),
+            Some(ValueRecipe::Evaluation(evaluation)|ValueRecipe::PackElement {evaluation,index:0})=>self.sources.program.evaluation(evaluation),
             _=>return false,
         };
         self.sources.program.references.get(&evaluation.expression).is_some_and(|reference| {
@@ -2062,7 +2087,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
 
     fn alias_call_source(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasCall> {
         let ValueRecipe::Evaluation(evaluation) = self.sources.value(value)? else { return None; };
-        let evaluation = self.sources.program.evaluation(*evaluation);
+        let evaluation = self.sources.program.evaluation(evaluation);
         if !matches!(self.sources.program.expression(evaluation.expression).expression.kind, ExprKind::Call { .. }) { return None; }
         let completed = self.sources.program.node(evaluation.completed);
         if !matches!(completed.kind, flow::NodeKind::Call { evaluation: called, .. } if called == evaluation.id) { return None; }
@@ -2097,7 +2122,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
     }
     fn alias_value_type(&self, value:NativeValueKey, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
         let recipe=self.sources.value(value).expect("original alias callee value");
-        self.values.alias_value_type(self.sources,recipe,input,queries)
+        self.values.alias_value_type(self.sources,&recipe,input,queries)
     }
     fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool {
         self.sources.source_reference(reference).is_some_and(|reference| {
@@ -2134,11 +2159,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let Some(recipe)=self.sources.value(value) else {return NativeAliasValue::Unknown};
         let evaluation=match recipe {
             ValueRecipe::PackElement {evaluation,index} => {
-                let source=self.sources.program.evaluation(*evaluation);
-                return NativeAliasValue::Projection {value:self.sources.evaluation_value(*evaluation),input:self.sources.flow_key(source.input,input.graph.context),index:*index};
+                let source=self.sources.program.evaluation(evaluation);
+                return NativeAliasValue::Projection {value:self.sources.evaluation_value(evaluation),input:self.sources.flow_key(source.input,input.graph.context),index:index};
             }
-            ValueRecipe::Evaluation(evaluation)=>self.sources.program.evaluation(*evaluation),
-            ValueRecipe::Function(region) => return self.alias_function_value(*region, input),
+            ValueRecipe::Evaluation(evaluation)=>self.sources.program.evaluation(evaluation),
+            ValueRecipe::Function(region) => return self.alias_function_value(region, input),
             ValueRecipe::Nil | ValueRecipe::DeclarationNil(_)=>return NativeAliasValue::NotTable,
             ValueRecipe::NumericIteration=>return NativeAliasValue::NonNilScalar,
             _=>return NativeAliasValue::Unknown,
@@ -2173,7 +2198,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
     }
     fn value_alias_environment_member(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasEnvironmentMember> {
         let ValueRecipe::Evaluation(evaluation) = self.sources.value(value)? else { return None };
-        let evaluation = self.sources.program.evaluation(*evaluation);
+        let evaluation = self.sources.program.evaluation(evaluation);
         let expression = &self.sources.program.expression(evaluation.expression).expression;
         match &expression.kind {
             ExprKind::Field { .. } => {},
@@ -2238,11 +2263,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
     fn loader_never_mutated(&self, _: NativeGraphKey) -> bool { self.values.loader_never_mutated() }
     fn value_lexical_standard(&self, value: NativeValueKey, input: NativeFlowKey) -> luanalysis_engine::NativeLexicalStandard {
         let Some(ValueRecipe::Evaluation(evaluation)) = self.sources.value(value) else { return luanalysis_engine::NativeLexicalStandard::Unknown; };
-        self.values.lexical_standard(self.sources, *evaluation, input.graph)
+        self.values.lexical_standard(self.sources, evaluation, input.graph)
     }
     fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> {
         let Some(ValueRecipe::Evaluation(evaluation)) = self.sources.value(value) else { return None; };
-        let mut expression: &luanalysis_syntax::Expr = &self.sources.program.expression(self.sources.program.evaluation(*evaluation).expression).expression;
+        let mut expression: &luanalysis_syntax::Expr = &self.sources.program.expression(self.sources.program.evaluation(evaluation).expression).expression;
         while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
         match &expression.kind {
             ExprKind::Nil => Some(false),
@@ -2253,7 +2278,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
     }
     fn runtime_type_operation(&self, value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
         let Some(ValueRecipe::Evaluation(argument)) = self.sources.value(value) else { return false; };
-        let Some(callee) = self.sources.runtime_type_operations.get(argument).copied() else { return false; };
+        let Some(callee) = self.sources.runtime_type_operations.get(&argument).copied() else { return false; };
         let evaluation = self.sources.program.evaluation(callee);
         self.values.original_type_operation(&ValueRecipe::Evaluation(callee), self.sources.flow_key(evaluation.input, input.graph.context), queries)
     }
@@ -2300,7 +2325,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             .value(value)
             .expect("native pack query uses an original source evaluation");
         self.values
-            .flow_value_pack(self.sources, recipe, input, queries)
+            .flow_value_pack(self.sources, &recipe, input, queries)
     }
     fn contains_graph(&self, graph: NativeGraphKey) -> bool {
         self.sources.contains_graph(graph)
@@ -2440,7 +2465,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             .value(value)
             .expect("native query uses an original source value");
         self.values
-            .flow_value_type(self.sources, recipe, input, queries)
+            .flow_value_type(self.sources, &recipe, input, queries)
     }
     fn call_type_predicate(
         &self,
@@ -2448,7 +2473,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         input: NativeFlowKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<luanalysis_engine::TypePredicate> {
-        self.values.flow_call_type_predicate(self.sources, self.sources.value(value)?, input, queries)
+        self.values.flow_call_type_predicate(self.sources, &self.sources.value(value)?, input, queries)
     }
     fn call_effects(
         &self,
@@ -2461,7 +2486,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             .value(value)
             .expect("native query uses an original source call value");
         self.values
-            .flow_call_effects(self.sources, recipe, input, queries)
+            .flow_call_effects(self.sources, &recipe, input, queries)
     }
     fn flow_error(&self, at: NativeFlowKey, error: NativeFlowError) {
         let span = self

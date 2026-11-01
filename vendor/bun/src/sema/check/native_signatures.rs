@@ -18,7 +18,7 @@ pub enum NativeSignatureOwner {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeSignatureSite {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -150,6 +150,7 @@ impl<'p, 's> Checker<'p, 's> {
         let Some((function, mapper)) = self.sig_native_decl(implementation) else { return self.type_of_signature(implementation, false) };
         let declarations = self.native_function_provider.expect("native function provider").overload_signatures(function);
         if declarations.is_empty() { return self.type_of_signature(implementation, false); }
+        if let Some(&known) = self.native_overload_types.borrow().get(&implementation) { return known }
         let mut shape = Shape::new_in(self.arena);
         for declaration in declarations {
             self.native_signature_provider_for(declaration);
@@ -158,7 +159,9 @@ impl<'p, 's> Checker<'p, 's> {
         if self.native_function_provider.expect("native function provider").exposes_implementation(function) {
             shape.call.push(implementation);
         }
-        self.synth(shape)
+        let ty = self.synth(shape);
+        self.native_overload_types.borrow_mut().insert(implementation, ty);
+        ty
     }
 
     pub fn native_implementation_signature(&mut self, ty: TypeId) -> Option<SigId> {

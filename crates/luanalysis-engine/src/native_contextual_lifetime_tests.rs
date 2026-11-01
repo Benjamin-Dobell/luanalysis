@@ -4,7 +4,7 @@ use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
-const SNAPSHOT: u64 = 94_117;
+const SNAPSHOT: u32 = 94_117;
 fn function(index: u32) -> NativeFunctionKey {
     NativeFunctionKey {
         snapshot: SNAPSHOT,

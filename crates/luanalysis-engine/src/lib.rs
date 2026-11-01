@@ -126,7 +126,7 @@ pub const BUN_REVISION: &str = "408c9374b266b45fe6b8260e09be73aa82a957cd";
 /// An original-source function identity, independent of backend type numbering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeFunctionKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -136,7 +136,7 @@ pub struct InvalidNativeFunctionKey(pub NativeFunctionKey);
 /// A source type parameter, in a namespace separate from function declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeTypeParameterKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -147,7 +147,7 @@ pub struct InvalidNativeTypeParameterKey(pub NativeTypeParameterKey);
 /// lowers when they are first read (`NativeTypeProvider::annotation_piece`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeAnnotationKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -166,7 +166,7 @@ pub enum AnnotationPiece {
 
 /// Where a conditional type was lowered, in the provider's terms, for its branches: three
 /// source keys (snapshot, index) whose meaning the provider gives.
-pub type NativeAnnotationContext = [Option<(u64, u32)>; 3];
+pub type NativeAnnotationContext = [Option<(u32, u32)>; 3];
 
 /// A mapped type's `readonly` or `?`: absent, added (bare or with `+`) or removed (`-`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,7 +208,7 @@ pub enum ConditionalBranches {
 /// An expression in the original source snapshot, never a synthetic TS node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeExpressionKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub node: u32,
 }
 
@@ -218,7 +218,7 @@ pub struct InvalidNativeExpressionKey(pub NativeExpressionKey);
 /// A lexical binding identity in the original source snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeBindingKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 

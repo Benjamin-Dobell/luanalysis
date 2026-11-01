@@ -56,7 +56,7 @@ struct SourceFunctions {
 }
 
 impl SourceFunctions {
-    const SNAPSHOT: u64 = 9_234;
+    const SNAPSHOT: u32 = 9_234;
 
     fn function(index: u32) -> NativeFunctionKey {
         NativeFunctionKey {

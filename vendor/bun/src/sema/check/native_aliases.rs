@@ -81,8 +81,52 @@ enum Origin {
     CallAllocation(NativeValueKey, NativeFlowKey, Box<Origin>),
     CallOpaque(NativeValueKey, NativeFlowKey, Box<Origin>),
 }
+/// A set of origins. Most steps of a flow graph pass theirs on unchanged, so each step's memo
+/// shares the set of the step before.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct OriginSet(Option<std::sync::Arc<HashSet<Origin>>>);
+
+impl OriginSet {
+    fn len(&self) -> usize { self.0.as_ref().map_or(0, |set| set.len()) }
+    fn is_empty(&self) -> bool { self.len() == 0 }
+    fn iter(&self) -> impl Iterator<Item = &Origin> { self.0.iter().flat_map(|set| set.iter()) }
+    fn contains(&self, origin: &Origin) -> bool { self.0.as_ref().is_some_and(|set| set.contains(origin)) }
+    fn is_disjoint(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(left), Some(right)) => left.is_disjoint(right),
+            _ => true,
+        }
+    }
+    fn insert(&mut self, origin: Origin) {
+        std::sync::Arc::make_mut(self.0.get_or_insert_default()).insert(origin);
+    }
+    fn extend(&mut self, other: Self) {
+        if self.is_empty() { *self = other; return }
+        for origin in other { self.insert(origin); }
+    }
+}
+
+impl IntoIterator for OriginSet {
+    type Item = Origin;
+    type IntoIter = std::vec::IntoIter<Origin>;
+    fn into_iter(self) -> Self::IntoIter {
+        let origins: Vec<Origin> = match self.0 {
+            Some(set) => std::sync::Arc::try_unwrap(set).map_or_else(|set| set.iter().cloned().collect(), |set| set.into_iter().collect()),
+            None => Vec::new(),
+        };
+        origins.into_iter()
+    }
+}
+
+impl FromIterator<Origin> for OriginSet {
+    fn from_iter<I: IntoIterator<Item = Origin>>(origins: I) -> Self {
+        let set: HashSet<Origin> = origins.into_iter().collect();
+        if set.is_empty() { Self(None) } else { Self(Some(std::sync::Arc::new(set))) }
+    }
+}
+
 #[derive(Clone, Default)]
-struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncertain: bool, maybe_nil: bool }
+struct Origins { tokens: OriginSet, unknown: bool, non_table: bool, uncertain: bool, maybe_nil: bool }
 
 /// Completed provenance facts belong to the checker that owns their query
 /// dependencies. Flow epochs separate speculative effects from stable inputs.
@@ -129,7 +173,7 @@ impl Origins {
     fn unavailable() -> Self { Self { unknown: true, ..Self::default() } }
     fn non_table() -> Self { Self { non_table: true, maybe_nil: true, ..Self::default() } }
     fn non_nil_scalar() -> Self { Self { non_table: true, ..Self::default() } }
-    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from_iter([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
+    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: OriginSet::from_iter([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
     fn merge(&mut self, other: Self) { self.tokens.extend(other.tokens); self.unknown |= other.unknown; self.non_table |= other.non_table; self.uncertain |= other.uncertain; self.maybe_nil |= other.maybe_nil; }
     fn relation(&self, other: &Self) -> NativeAliasRelation {
         if self.tokens.is_empty() && !self.unknown || other.tokens.is_empty() && !other.unknown { return NativeAliasRelation::Different }

@@ -2475,8 +2475,8 @@ impl<'p, 's> Checker<'p, 's> {
         match *self.types().sig(first) {
             crate::types::SigData::Native { declaration, .. }
             | crate::types::SigData::NativeCaptured { declaration, .. }
-            | crate::types::SigData::NativeContextual { declaration, .. } => Some((declaration.snapshot, declaration.index, false)),
-            crate::types::SigData::NativeDeclarationSignature { declaration, .. } => Some((declaration.snapshot, declaration.index, true)),
+            | crate::types::SigData::NativeContextual { declaration, .. } => Some((u64::from(declaration.snapshot), declaration.index, false)),
+            crate::types::SigData::NativeDeclarationSignature { declaration, .. } => Some((u64::from(declaration.snapshot), declaration.index, true)),
             _ => None,
         }
     }

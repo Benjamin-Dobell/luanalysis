@@ -4045,9 +4045,12 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `getOrCreateTypeFromSignature`
     pub(super) fn type_of_signature(&self, sig: SigId, construct: bool) -> TypeId {
+        if let Some(&known) = self.isolated_signature_types.borrow().get(&(sig, construct)) {
+            return known;
+        }
         // It has the symbol of `sig.declaration`.
         let has_no_instantiable_symbol = !self.has_instantiable_symbol(sig);
-        self.synth(if construct {
+        let ty = self.synth(if construct {
             Shape {
                 construct: vec_from_iter_in([sig], self.arena),
                 has_no_instantiable_symbol,
@@ -4059,7 +4062,9 @@ impl<'p, 's> Checker<'p, 's> {
                 has_no_instantiable_symbol,
                 ..Shape::new_in(self.arena)
             }
-        })
+        });
+        self.isolated_signature_types.borrow_mut().insert((sig, construct), ty);
+        ty
     }
 
     /// `instantiateSignatureInContextOf`. `with_result`: inferences are also made from the return

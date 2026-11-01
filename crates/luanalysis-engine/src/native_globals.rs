@@ -5,7 +5,7 @@ use bun_sema::check::native_globals as core;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeEnvironmentKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -15,7 +15,7 @@ pub struct NativeGlobalBindingKey {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeValueDeclarationKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -352,7 +352,7 @@ mod tests {
     use crate::{Engine, FunctionType, NativeFunctionKey, PackArgument, Parameter, TypeQueries};
     use std::cell::{Cell, RefCell};
 
-    const SNAPSHOT: u64 = 4913;
+    const SNAPSHOT: u32 = 4913;
     fn declaration(index: u32) -> NativeValueDeclarationKey {
         NativeValueDeclarationKey {
             snapshot: SNAPSHOT,

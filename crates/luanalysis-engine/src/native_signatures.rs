@@ -17,7 +17,7 @@ pub enum FunctionCallingConvention { TypeScript, Lua }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeSignatureKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -57,7 +57,7 @@ pub enum SignatureOwner {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SignatureSite {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 

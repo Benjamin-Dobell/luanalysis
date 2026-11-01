@@ -43,14 +43,14 @@ pub(crate) struct RegistryInput {
 /// contain no inferred types or contextual checker capabilities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SourceRecipeIdentity {
-    pub(super) source: u64,
-    pub(super) flow: u64,
+    pub(super) source: u32,
+    pub(super) flow: u32,
 }
 
 impl SourceRecipeIdentity {
     pub(crate) fn new() -> Self {
         let source = super::NEXT_SNAPSHOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert_ne!(source, u64::MAX, "source snapshot identities exhausted");
+        assert_ne!(source, u32::MAX, "source snapshot identities exhausted");
         Self { source, flow: crate::flow::allocate_snapshot() }
     }
 }
@@ -355,7 +355,7 @@ struct FileRegistry {
 }
 
 impl FileRegistry {
-    fn snapshot(&self) -> u64 { self.identity.source }
+    fn snapshot(&self) -> u32 { self.identity.source }
     fn derived(&self) -> &super::DerivedRecipes { self.derived.get().expect("a seeded revision has its derived recipes") }
     fn globals(&self) -> &super::globals::NativeGlobals { &self.derived().globals }
     /// Its registry, if one has been built.
@@ -457,8 +457,8 @@ impl super::globals::GlobalIndexSource for FileRegistry {
 
 pub(crate) struct ProjectRegistry {
     files: Vec<FileRegistry>,
-    snapshots: HashMap<u64, usize>,
-    flow_snapshots: HashMap<u64, usize>,
+    snapshots: HashMap<u32, usize>,
+    flow_snapshots: HashMap<u32, usize>,
     names: Rc<ProjectNamedIndex>,
     globals: Rc<super::globals::ProjectGlobalIndex>,
     standard_environment: super::standard::ProjectStandardEnvironment,
@@ -656,10 +656,11 @@ impl ProjectRegistry {
                 no_implicit_any, environment, &PreparedSources::default(),
             );
         }
+        let seeded = crate::native_flow::SeededGlobalReferences::new(&original_names);
         for (index, file) in files.iter_mut().enumerate() {
             if prepared(index).is_some() { continue; }
             let (recipes, _) = file.seed.get_mut().as_mut().expect("a seeded source");
-            super::NativeFlowSources::seed_recipe_global_reference_keys(recipes.flow_mut(), &original_names);
+            super::NativeFlowSources::seed_recipe_global_references(recipes.flow_mut(), &seeded);
         }
         for file in &mut files {
             let implementation = file.role == SourceRole::Implementation;
@@ -789,13 +790,13 @@ impl ProjectRegistry {
         registry
     }
 
-    fn owner_if(&self, snapshot: u64) -> Option<&NativeRegistry> {
+    fn owner_if(&self, snapshot: u32) -> Option<&NativeRegistry> {
         self.snapshots
             .get(&snapshot)
             .map(|&index| self.files[index].source(self))
     }
 
-    fn owner(&self, snapshot: u64) -> &NativeRegistry {
+    fn owner(&self, snapshot: u32) -> &NativeRegistry {
         self.owner_if(snapshot)
             .expect("native source key belongs to this immutable project provider")
     }
@@ -914,7 +915,12 @@ impl ProjectRegistry {
         for declaration in &source.globals.declarations {
             text.push_str(&declaration.name.text);
             text.push_str(" = ");
-            if let Ok(ty) = queries.value_declaration_type(declaration.key) { described(&ty, queries, &mut text); }
+            // A declaration that reads itself is `any` to other files, whether this check reached
+            // it as any or through the cycle, so an edit elsewhere in the file reshapes nothing.
+            match queries.value_declaration_type(declaration.key) {
+                Ok(ty) => described(&ty, queries, &mut text),
+                Err(_) => described(&Type::Any, queries, &mut text),
+            }
         }
         for key in source.named_declaration_keys() {
             let header = self.owner(key.snapshot).type_declaration_header(key);

@@ -54,7 +54,7 @@ impl NativeRegistry {
             ExprKind::Name(name) => match self.bound().binding_at(name.span.start) {
                 None => name.text == "setmetatable",
                 Some(binding) => depth < 8
-                    && !self.bound().references(binding).any(|occurrence| occurrence.kind == crate::bind::OccurrenceKind::Write)
+                    && !self.bound().is_written(binding)
                     && self.iterator_sources().declaration_initializer(binding).is_some_and(|initializer| {
                         let sources = self.iterator_sources();
                         self.names_standard_setmetatable(&sources.program.expression(initializer.expression).expression, depth + 1)
@@ -150,7 +150,7 @@ impl NativeRegistry {
             let store_region = Some(store.key.graph.region);
             if self.syntactic_table_owner(receiver, store_region, depth + 1, memo) != Some(owner) { continue; }
             let (Some(ValueRecipe::Evaluation(value)) | Some(ValueRecipe::PackElement { evaluation: value, index: 0 })) = sources.value(store.value) else { continue; };
-            let value = &sources.program.expression(sources.program.evaluation(*value).expression).expression;
+            let value = &sources.program.expression(sources.program.evaluation(value).expression).expression;
             let Some(nested) = self.syntactic_table_owner(value, store_region, depth + 1, memo) else { continue; };
             if store_region == region && store.statement_end <= position
                 && reaching.is_none_or(|(end, _)| store.statement_end > end)
@@ -249,7 +249,7 @@ impl NativeRegistry {
                         .expression(
                             self.iterator_sources()
                                 .program
-                                .evaluation(*evaluation)
+                                .evaluation(evaluation)
                                 .expression,
                         )
                         .expression;
@@ -263,7 +263,7 @@ impl NativeRegistry {
                 ValueRecipe::Function(graph) => {
                     if let Some(function) = self
                         .iterator_sources()
-                        .function_for_graph(self.iterator_sources().graph(*graph, 0))
+                        .function_for_graph(self.iterator_sources().graph(graph, 0))
                     {
                         self.function_type_dependencies(
                             function,
@@ -366,7 +366,7 @@ impl NativeRegistry {
             .iterator_sources()
             .value(source.value)
             .expect("original runtime store value");
-        let value = self.flow_value_type(self.iterator_sources(), recipe, input, queries);
+        let value = self.flow_value_type(self.iterator_sources(), &recipe, input, queries);
         // A prospective original field contract must agree with the literal
         // read from its reached store. Scalar local storage still widens.
         Some(queries.regular_type(&value))

@@ -1,7 +1,7 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 
-const SNAPSHOT: u64 = 179301;
+const SNAPSHOT: u32 = 179301;
 fn declaration(index: u32) -> NativeTypeDeclarationKey {
     NativeTypeDeclarationKey {
         snapshot: SNAPSHOT,

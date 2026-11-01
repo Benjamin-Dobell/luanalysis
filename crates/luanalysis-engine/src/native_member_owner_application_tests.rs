@@ -1,7 +1,7 @@
 use crate::*;
 use std::cell::{Cell, RefCell};
 
-const SNAPSHOT: u64 = 95631;
+const SNAPSHOT: u32 = 95631;
 
 fn declaration(index: u32) -> NativeTypeDeclarationKey {
     NativeTypeDeclarationKey {

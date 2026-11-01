@@ -1,7 +1,7 @@
 use crate::*;
 use std::collections::{HashMap, HashSet};
 
-const SNAPSHOT: u64 = 8_150;
+const SNAPSHOT: u32 = 8_150;
 
 fn graph(region: u32) -> NativeGraphKey {
     NativeGraphKey { snapshot: SNAPSHOT, region, context: 0 }

@@ -6,7 +6,7 @@ use bun_sema::check::native_project as core;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeModuleKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

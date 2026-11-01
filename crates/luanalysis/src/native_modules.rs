@@ -29,7 +29,7 @@ pub(crate) struct ImportRecipe {
 }
 pub(crate) struct ProjectModuleIndex {
     pub policy: NativeLoaderPolicy,
-    pub imports: HashMap<(u64, usize, usize), ImportRecipe>,
+    pub imports: HashMap<(u32, usize, usize), ImportRecipe>,
     /// Checking roots and original targets whose callee/loader were proven.
     /// This schedules source checks; native queries still own all inferred types.
     pub required_files: RefCell<HashSet<FileId>>,

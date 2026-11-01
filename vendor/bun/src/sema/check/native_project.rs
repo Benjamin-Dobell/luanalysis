@@ -10,7 +10,7 @@ use crate::util::FxHashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeModuleId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 

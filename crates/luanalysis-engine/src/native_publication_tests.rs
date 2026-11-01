@@ -2,7 +2,7 @@ use crate::*;
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
-const SNAPSHOT: u64 = 81932;
+const SNAPSHOT: u32 = 81932;
 
 fn module(index: u32) -> NativeModuleKey { NativeModuleKey { snapshot: SNAPSHOT, index } }
 fn alias(index: u32) -> NativeTypeDeclarationKey { NativeTypeDeclarationKey { snapshot: SNAPSHOT, index } }

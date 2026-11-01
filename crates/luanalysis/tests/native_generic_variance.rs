@@ -105,7 +105,7 @@ mod readonly {
     use luanalysis_engine::*;
     use std::cell::Cell;
 
-    const SNAPSHOT: u64 = 95_811;
+    const SNAPSHOT: u32 = 95_811;
     fn declaration() -> NativeTypeDeclarationKey { NativeTypeDeclarationKey { snapshot: SNAPSHOT, index: 0 } }
     fn parameter() -> NativeTypeParameterKey { NativeTypeParameterKey { snapshot: SNAPSHOT, index: 0 } }
     fn member() -> NativeTypeMemberKey { NativeTypeMemberKey { snapshot: SNAPSHOT, index: 0 } }

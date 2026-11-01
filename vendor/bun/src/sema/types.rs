@@ -31,13 +31,13 @@ pub struct SigId(pub u32);
 /// A function in a foreign frontend's source snapshot, independent of TS HIR ids.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeFunctionId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 /// A written callable declaration, distinct from its optional runtime implementation.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeSignatureId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 /// A conditional or mapped type that a Lua annotation writes, whose pieces (`NativeAnnotationPiece`)
@@ -46,9 +46,9 @@ pub struct NativeSignatureId {
 /// rest of it, in its own terms.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeAnnotationId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
-    pub context: [Option<(u64, u32)>; 3],
+    pub context: [Option<(u32, u32)>; 3],
 }
 /// A piece of a `NativeAnnotationId` that is lowered when first read.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -64,17 +64,17 @@ pub enum NativeAnnotationPiece {
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeTypeParamId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeExpressionId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeBindingId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

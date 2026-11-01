@@ -91,7 +91,7 @@ pub(super) fn unobserved<R>(build: impl FnOnce() -> R) -> R {
 }
 
 pub(super) struct NativeTypes {
-    snapshot: u64,
+    snapshot: u32,
     /// This source's own scopes, and imported ones it has changed.
     scopes: HashMap<NativeTypeContext, TypeScope>,
     /// The other sources' scopes, shared by every source of a project rather than copied into
@@ -267,7 +267,7 @@ impl NativeTypes {
     /// One allocator owns every function and named parameter identity. Keeping
     /// function recipes first preserves their existing source parameter indices.
     pub(super) fn new_with_named(
-        snapshot: u64,
+        snapshot: u32,
         recipes: Vec<TypeScopeRecipe>,
         named: Vec<NamedGenericScopeRecipe>,
         annotations: Vec<AnnotationDeclaration>,
@@ -777,7 +777,7 @@ fn own_name(scope: &TypeScope, name: &str) -> Option<NativeTypeParameterKey> {
     scope.names.get(name).copied().or_else(|| (name == "self").then_some(scope.self_parameter).flatten())
 }
 
-fn context_snapshot(context: NativeTypeContext) -> u64 {
+fn context_snapshot(context: NativeTypeContext) -> u32 {
     match context {
         NativeTypeContext::Function(key) => key.snapshot,
         NativeTypeContext::NamedType(key) => key.snapshot,

@@ -931,6 +931,71 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
     "reason": "Cache subtype reduction of any list of types, as `removeSubtypes` does.",
 })
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/call.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Cache a signature's type, as `isolatedSignatureType` does, rather than allocating it again for each request.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/instantiate.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/mod.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Hold the caches of signature types and of table flow writes.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_aliases.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Share origin sets between flow steps rather than copy a set for each memo entry.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_flow.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_generic_storage.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Read an object's shared member list.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_globals.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Compare a global's declarations with its first, as identity is an equivalence, rather than every pair; use 32-bit snapshot identities.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Memoize table flow writes, share an object's member list rather than copy it for each read, and use 32-bit snapshot identities.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_project.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_runtime_tables.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Read an object's shared member list.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_signatures.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Cache the type of a native function with its overloads.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/unions.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/types.rs",
+    "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+    "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+})
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

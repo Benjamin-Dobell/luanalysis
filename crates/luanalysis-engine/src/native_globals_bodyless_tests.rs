@@ -5,10 +5,10 @@ use crate::{
 };
 use std::cell::{Cell, RefCell};
 
-fn declaration(snapshot: u64, index: u32) -> NativeValueDeclarationKey {
+fn declaration(snapshot: u32, index: u32) -> NativeValueDeclarationKey {
     NativeValueDeclarationKey { snapshot, index }
 }
-fn signature(snapshot: u64, index: u32) -> NativeSignatureKey {
+fn signature(snapshot: u32, index: u32) -> NativeSignatureKey {
     NativeSignatureKey { snapshot, index }
 }
 fn parameter(key: NativeSignatureKey) -> NativeTypeParameterKey {
@@ -200,14 +200,14 @@ impl NativeTypeProvider for Provider {
         panic!("no runtime function")
     }
 }
-fn pure(snapshot: u64, heads: Vec<NativeSignatureKey>) -> Declaration {
+fn pure(snapshot: u32, heads: Vec<NativeSignatureKey>) -> Declaration {
     Declaration {
         key: declaration(snapshot, 0),
         heads: Some(heads),
         role: GlobalSourceRole::Declaration,
     }
 }
-fn head(snapshot: u64, input: Type, output: Type) -> Head {
+fn head(snapshot: u32, input: Type, output: Type) -> Head {
     Head {
         key: signature(snapshot, 0),
         input,

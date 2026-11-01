@@ -37,7 +37,7 @@ mod generic_storage;
 /// File-local syntax ids must be mapped explicitly into this provider-owned namespace.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeTypeDeclarationId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -48,12 +48,12 @@ impl crate::local::MaybeLocal for NativeTypeDeclarationId {
 /// Original field/indexer declaration, including explicit-owner augmentations.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeTypeMemberId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct NativeDefinitionId { pub snapshot: u64, pub index: u32 }
+pub struct NativeDefinitionId { pub snapshot: u32, pub index: u32 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeDefinitionHeader { pub declaration: NativeTypeDeclarationId }
@@ -380,7 +380,7 @@ pub(super) struct NativeNamedCache {
     bases: FxHashMap<NativeTypeDeclarationId, Result<Vec<TypeId>, NativeNamedTypeError>>,
     own_parameters: FxHashMap<NativeTypeDeclarationId, Vec<NativeTypeParamId>>,
     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
-    members: FxHashMap<TypeId, Vec<NativeObjectMember>>,
+    members: FxHashMap<TypeId, std::sync::Arc<Vec<NativeObjectMember>>>,
     owner_applications: FxHashMap<NativeTypeMemberId, Option<NativeMemberOwnerApplication>>,
     /// The override a resolved object's validation found incompatible; the object is its schema.
     override_errors: FxHashMap<TypeId, NativeNamedTypeError>,
@@ -420,7 +420,7 @@ impl NativeNamedCache {
     }
     fn bases(&mut self, key: NativeTypeDeclarationId, value: Result<Vec<TypeId>, NativeNamedTypeError>, _: Stored) { self.bases.insert(key, value); }
     fn mapped_bases(&mut self, key: TypeId, value: Vec<TypeId>, _: Stored) { self.mapped_bases.insert(key, value); }
-    fn members(&mut self, key: TypeId, value: Vec<NativeObjectMember>, _: Stored) { self.members.insert(key, value); }
+    fn members(&mut self, key: TypeId, value: std::sync::Arc<Vec<NativeObjectMember>>, _: Stored) { self.members.insert(key, value); }
 }
 
 impl<'p, 's> Checker<'p, 's> {
@@ -988,7 +988,7 @@ impl<'p, 's> Checker<'p, 's> {
         let members = self.native_object_members(reference)?;
         let provider = self.native_named_provider(reference.declaration)?;
         let mut own = None;
-        for origin in members {
+        for origin in members.iter().cloned() {
             let NativeTypeMemberKey::Fixed(member_key) = provider.type_member_header(self, origin.member).key else { continue };
             if member_key.normalize() != Ok(key) { continue }
             match origin.via {
@@ -1352,9 +1352,9 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(bases)
     }
 
-    fn native_object_members(&mut self, reference: NativeObjectReference) -> Result<Vec<NativeObjectMember>, NativeNamedTypeError> {
+    fn native_object_members(&mut self, reference: NativeObjectReference) -> Result<std::sync::Arc<Vec<NativeObjectMember>>, NativeNamedTypeError> {
         let ty = self.intern(TypeData::NativeObject(reference));
-        if let Some(known) = self.native_named_cache.members.get(&ty) { return Ok(known.clone()) }
+        if let Some(known) = self.native_named_cache.members.get(&ty) { return Ok(std::sync::Arc::clone(known)) }
         let bases = self.native_object_bases(reference)?;
         let query = Query::NativeNamed(NativeTypeDeclarationQuery::ObjectMembers(ty));
         if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(NativeTypeDeclarationQuery::ObjectMembers(ty))) }
@@ -1389,13 +1389,13 @@ impl<'p, 's> Checker<'p, 's> {
             for (index, base) in bases.into_iter().enumerate() {
                 if self.is_error_type(base) { continue }
                 let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
-                for member in self.native_object_members(owner)? {
+                for member in self.native_object_members(owner)?.iter().cloned() {
                     // Candidate origins are immutable. An inactive override
                     // must not hide its inherited active fallback.
                     members.push(NativeObjectMember { via: Some((index, base)), ..member });
                 }
             }
-            Ok(members)
+            Ok(std::sync::Arc::new(members))
         })();
         if let Ok(stored) = self.leave(query) { if let Ok(members) = &result { self.native_named_cache.members(ty, members.clone(), stored); } }
         if let Err(error) = result { self.report_native_named(error) }
@@ -1419,7 +1419,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// admitting it by an index signature.
     pub(super) fn native_object_declares(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> bool {
         let Ok(members) = self.native_object_members(reference) else { return false };
-        members.into_iter().any(|member| {
+        members.iter().any(|member| {
             let Ok(provider) = self.native_named_provider(member.owner.declaration) else { return false };
             matches!(provider.type_member_header(self, member.member).key, NativeTypeMemberKey::Fixed(fixed) if fixed.normalize() == Ok(key))
         })
@@ -1433,7 +1433,7 @@ impl<'p, 's> Checker<'p, 's> {
         let TypeData::NativeObject(reference) = *self.data(ty) else { return Vec::new() };
         let Ok(members) = self.native_object_members(reference) else { return Vec::new() };
         let mut origins = Vec::new();
-        for member in members {
+        for member in members.iter().cloned() {
             let Ok(provider) = self.native_named_provider(member.owner.declaration) else { continue };
             let NativeTypeMemberKey::Fixed(key) = provider.type_member_header(self, member.member).key else { continue };
             let Ok(NativeTableKey::String(atom)) = key.normalize() else { continue };
@@ -1916,7 +1916,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
                 let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
                 let mut selected = Vec::new();
-                for origin in members {
+                for origin in members.iter().cloned() {
                     let keep = match provider.type_member_header(self, origin.member).key {
                         NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
                         NativeTypeMemberKey::Indexer { .. } if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared => true,
@@ -1941,7 +1941,7 @@ impl<'p, 's> Checker<'p, 's> {
             let mut found_declared = false;
             let mut found_written = false;
             let mut kept_own = None;
-            for origin in members {
+            for origin in members.iter().cloned() {
                 let metadata = provider.type_member_header(self, origin.member);
                 if let NativeTypeMemberKey::Fixed(member_key) = metadata.key && member_key.normalize()? == key {
                     if let Some((previous, _, _)) = &found
@@ -2012,7 +2012,7 @@ impl<'p, 's> Checker<'p, 's> {
             if self.stack.contains(&Query::NativeNamed(NativeTypeDeclarationQuery::ObjectMembers(object))) {
                 let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
                 let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
-                let indexers: Vec<_> = members.into_iter()
+                let indexers: Vec<_> = members.iter().cloned()
                     .filter(|origin| matches!(provider.type_member_header(self, origin.member).key, NativeTypeMemberKey::Indexer { .. }))
                     .collect();
                 let table = self.native_object_resolved_uncached(reference, &indexers, false).map_err(|error| error.table_error(object))?;
@@ -2035,7 +2035,7 @@ impl<'p, 's> Checker<'p, 's> {
             let literal = literal.normalize().ok()?;
             let members = self.native_object_members(reference).ok()?;
             let provider = self.native_named_provider(reference.declaration).ok()?;
-            for origin in members {
+            for origin in members.iter().cloned() {
                 let metadata = provider.type_member_header(self, origin.member);
                 let NativeTypeMemberKey::Fixed(member_key) = metadata.key else { continue };
                 if member_key.normalize().ok()? != literal { continue }
@@ -2110,7 +2110,7 @@ impl<'p, 's> Checker<'p, 's> {
         // type used to perform it. In particular a bad inferred override must not
         // discard an inherited callback's parameter/return context.
         let mut members = Vec::new();
-        for origin in self.native_object_members(reference)? {
+        for origin in self.native_object_members(reference)?.iter().cloned() {
             if origin.via.is_some() || self.native_object_member_effective_origin(&origin)? == Some(crate::types::NativeTableFieldOrigin::Declared) { members.push(origin); }
         }
         let schema = self.native_object_resolved_uncached(reference, &members, true)?;
@@ -2289,9 +2289,16 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_definition_flow_write(&mut self, table: TypeId, key: NativeTableKey, value: TypeId) -> TypeId {
         if table.is_never() || self.is_error_type(table) { return table }
         if self.is_union(table) { return self.map_type(table, |c, part| c.native_definition_flow_write(part, key, value)) }
-        if self.native_runtime_table_ref(table).is_some() { return self.native_runtime_table_flow_write(table, key, value) }
-        if self.native_definition_ref(table).is_none() { return table }
-        self.native_definition_fixed_write(table, key, value).unwrap_or(table)
+        let runtime = self.native_runtime_table_ref(table).is_some();
+        if !runtime && self.native_definition_ref(table).is_none() { return table }
+        // Each walk of a flow graph passes the same writes: a table's description is copied once
+        // for each write, not once for each walk.
+        if let Some(&known) = self.native_flow_writes.get(&(table, key, value)) { return known }
+        let before = self.non_cacheable_mark();
+        let written = if runtime { self.native_runtime_table_flow_write(table, key, value) }
+            else { self.native_definition_fixed_write(table, key, value).unwrap_or(table) };
+        if before == self.non_cacheable_mark() { self.native_flow_writes.insert((table, key, value), written); }
+        written
     }
 
     /// `native_definition_flow_write` through a path of fixed members: the table each member of a

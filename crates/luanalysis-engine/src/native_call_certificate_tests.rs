@@ -2,7 +2,7 @@ use super::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-const SNAPSHOT: u64 = 12_431;
+const SNAPSHOT: u32 = 12_431;
 
 fn graph(region: u32, context: u64) -> NativeGraphKey {
     NativeGraphKey { snapshot: SNAPSHOT, region, context }

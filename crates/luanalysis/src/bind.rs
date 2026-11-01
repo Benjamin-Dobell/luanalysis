@@ -112,6 +112,8 @@ pub struct BoundFile {
     shadowed_bindings: Vec<Option<BindingId>>,
     /// Original-source occurrences sorted by byte offset.
     pub occurrences: Vec<NameOccurrence>,
+    /// Whether each binding is assigned anywhere, by index.
+    written: Vec<bool>,
     intrinsic_occurrences: Vec<IntrinsicOccurrence>,
     modified_module_environment: bool,
     module_environment_mutations: Vec<Span>,
@@ -264,9 +266,14 @@ impl BoundFile {
         })
     }
 
+    pub fn is_written(&self, binding: BindingId) -> bool {
+        self.written[binding.0]
+    }
+
     /// Whether a function nested in the one that declares `binding` assigns it, a write that
     /// the declaring function's control flow cannot see.
     pub fn written_in_nested_function(&self, binding: BindingId) -> bool {
+        if !self.is_written(binding) { return false }
         let owner = self.function_scope(self.declaration(binding).scope);
         self.references(binding).any(|occurrence| {
             occurrence.kind == OccurrenceKind::Write && self.function_scope(occurrence.scope) != owner
@@ -292,6 +299,7 @@ pub fn bind(file: &File) -> BoundFile {
             declarations: Vec::new(),
             shadowed_bindings: Vec::new(),
             occurrences: Vec::new(),
+            written: Vec::new(),
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
             module_environment_mutations: Vec::new(),
@@ -333,6 +341,13 @@ pub fn bind(file: &File) -> BoundFile {
         .file
         .intrinsic_occurrences
         .sort_by_key(|occurrence| (occurrence.span.start, occurrence.span.end));
+    let mut written = vec![false; binder.file.declarations.len()];
+    for occurrence in &binder.file.occurrences {
+        if occurrence.kind == OccurrenceKind::Write && let Some(binding) = occurrence.binding {
+            written[binding.0] = true;
+        }
+    }
+    binder.file.written = written;
     binder.file
 }
 

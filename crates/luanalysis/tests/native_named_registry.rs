@@ -13,7 +13,7 @@ use luanalysis_engine::FxHashMap as HashMap;
 mod native_named;
 use native_named::*;
 
-const SNAPSHOT: u64 = 401;
+const SNAPSHOT: u32 = 401;
 
 fn file(source: &str) -> luanalysis_syntax::File {
     let file = luanalysis_syntax::parse(source);

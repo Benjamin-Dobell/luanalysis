@@ -3248,6 +3248,84 @@
       "patch": "vendor/patches/bun-sema-native-instance-identity.patch",
       "reason": "Cache subtype reduction of any list of types, as `removeSubtypes` does.",
       "patch_sha256": "f943e509dc2a41c8e89d18a530490f38c386ec7153d371bd8cb68e4c46b29276"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Cache a signature's type, as `isolatedSignatureType` does, rather than allocating it again for each request.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Hold the caches of signature types and of table flow writes.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Share origin sets between flow steps rather than copy a set for each memo entry.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_generic_storage.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Read an object's shared member list.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Compare a global's declarations with its first, as identity is an equivalence, rather than every pair; use 32-bit snapshot identities.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Memoize table flow writes, share an object's member list rather than copy it for each read, and use 32-bit snapshot identities.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_project.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Read an object's shared member list.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Cache the type of a native function with its overloads.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-compact-identities.patch",
+      "reason": "Use 32-bit snapshot identities: a snapshot is a counter, and each identity is smaller for it.",
+      "patch_sha256": "24d87b9eb2fdd67371e4d4af2ccb35f8dadce8c9683394a78356d1701804d14a"
     }
   ],
   "source_additions": {
@@ -3260,7 +3338,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "629963d899cd74628e62ae25838c0036ee8f3228c8fb879e2ae38476491c0672",
+      "extracted_sha256": "3a4232d89f020dfe369000b447498c88727a38d98e3d59c984c952691e13dce9",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -3268,15 +3346,15 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "adac9b40b5f4784ad66c1ce7fcbea7e3614e8ca90e245abce88f3b456164102f",
+      "extracted_sha256": "1af880602090afd0773979e01519a25da7226ce9c57d1a650140149ecdb9d9fb",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_generic_storage.rs": {
-      "extracted_sha256": "6de13adba5c10d65d11461decebf13e0ab907a6989f8ce9c3fe0c6fcbf176886",
+      "extracted_sha256": "b761f8a28dc1f66a7a1936bcdd0286357317a468afdec84f37010e4e1b68a9a8",
       "introduced_by_patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "f483ced07b4197120d44918d701452f389fede8cac8973eb207c1e5d49ff741b",
+      "extracted_sha256": "c8e3f25796c5ed5382dbf92271ff90ee1511f61c68b0134e5a484ad6a6d8a3af",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -3288,7 +3366,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "67dbb6d61e7eb79b6f8f99d3f8104d1ccddf86d2eae04cac1f72227e064de34a",
+      "extracted_sha256": "58667a435a54e3f428aa8661a1a0f1c6aa07622af7657656c2c110bd0143d9a2",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -3300,7 +3378,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
-      "extracted_sha256": "56c1bc1301382d62fb15b4a0a09983da239fa72003f7f9155f7e9ea44e5ba7ab",
+      "extracted_sha256": "bec3dc2234f0f41fddc4302cd577f150fbd159538ff408901f7009e7d50f2976",
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_query_context.rs": {
@@ -3312,11 +3390,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "d898599a23ec2f11aadecdcb09aea6fff82842d5c119527a03e24799161288a9",
+      "extracted_sha256": "ba403e836aa21dae7fad4fd90e7376ba593f3790c8d9ee3216a7c882c1c6a831",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
-      "extracted_sha256": "0cca4e83c25b696da621837bc8402cd87c5f9a13a13abc43d771f279b42044d5",
+      "extracted_sha256": "383c328177d0fdc27b8228abfb1d3c49d21d1c8ae72dc074a27ced79d227b2f9",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
@@ -4022,7 +4100,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "f03abf52f7993a350d07ddd9d42bf3a432c071b14af3ccaf2a0f92d0034da66c"
+      "extracted_sha256": "f3816da18f8bf745274d0948bb5b6edecb4c69d4fecf6990880375c7488b7ebf"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -4252,7 +4330,7 @@
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "604ef945cceab4feeb00e519489949bfdf4f0eea1169a0c624478519d6fca29d"
+      "extracted_sha256": "ee0447af9f0dccb45e8a997d9daf85c4f2114a65607668fe8ce380b5d99f5149"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -4282,7 +4360,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "e8896e39695688ef71a7295f13f63675d7ba285ea313efe97a5dca3e99fb99a4"
+      "extracted_sha256": "f6e71d75772350402aae341b5a88a5a3f806ff64b1055956916c19a9a5f0c20d"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -4397,7 +4475,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "58432434694b66bb8d1e06d45db560099b10ad986222c38fd62d7e2236c0d068"
+      "extracted_sha256": "8c8ba59c4b5f0fee4ba4b812d012be92f03108a7fa4409194a527b5fdf6b84a3"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",
@@ -4487,7 +4565,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "128b057febfde5cf3fee104c581371c9676cf186d288b2b7a218658c6f9184a4"
+      "extracted_sha256": "861c2a9f6fd24dd5745af536bd9038d8db18af72ba2bd1aa772825cf1b69d946"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

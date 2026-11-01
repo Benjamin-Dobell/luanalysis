@@ -8,11 +8,11 @@ use crate::types::CloneIn;
 use crate::util::FxHashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NativeEnvironmentId { pub snapshot: u64, pub index: u32 }
+pub struct NativeEnvironmentId { pub snapshot: u32, pub index: u32 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeGlobalBindingId { pub environment: NativeEnvironmentId, pub index: u32 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NativeValueDeclarationId { pub snapshot: u64, pub index: u32 }
+pub struct NativeValueDeclarationId { pub snapshot: u32, pub index: u32 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NativePrimitiveMemberKind { String }
@@ -491,15 +491,10 @@ impl<'p, 's> Checker<'p, 's> {
             }
             // Sources that disagree, as a global each file redefines for itself may: none is the
             // global's, every conflicting one is reported, and the global is not typed by one.
-            let mut conflicts = Vec::new();
-            for left in 0..values.len() {
-                for right in left + 1..values.len() {
-                    if !checker.is_identical(values[left].1, values[right].1) {
-                        conflicts.extend([values[left].0, values[right].0]);
-                    }
-                }
-            }
-            if !conflicts.is_empty() {
+            // Identity is an equivalence: one that differs from the first leaves every declaration
+            // differing from another.
+            if values[1..].iter().any(|&(_, actual)| !checker.is_identical(expected, actual)) {
+                let mut conflicts: Vec<_> = values.iter().map(|&(declaration, _)| declaration).collect();
                 conflicts.sort_unstable_by_key(|key| (key.snapshot, key.index));
                 conflicts.dedup();
                 return Err(NativeGlobalQueryError::ConflictingDeclarations { binding, declarations: conflicts });

@@ -144,7 +144,7 @@ impl<'p, 's> Checker<'p, 's> {
         let TypeData::NativeObject(mut template) = *self.data(head) else { unreachable!() };
         template.runtime_context = reference.runtime_context;
         let mut facts = 0;
-        for origin in self.native_object_members(template)? {
+        for origin in self.native_object_members(template)?.iter().cloned() {
             let metadata = provider.type_member_header(self, origin.member);
             let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
             let value = self.native_member_type(raw, origin.owner);

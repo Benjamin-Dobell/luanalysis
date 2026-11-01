@@ -744,3 +744,45 @@ fn an_edit_of_a_type_parameter_reaches_the_files_that_read_it() {
     fixture.file("single.lua", "---@class Single<T: string, U = boolean>\n---@field value T\n\nreturn {}\n");
     assert!(fixture.compare_incrementally(&mut workspace, plan(), modules()) >= 2);
 }
+
+#[test]
+fn an_edit_beside_a_global_that_reads_itself_checks_only_its_file() {
+    let fixture = Fixture::new();
+    let main = "LOGPATH = LOGPATH or 'log'\nMETAPATH = METAPATH or LOGPATH\nlocal function helper() end\nhelper()\n";
+    fixture.file("main.lua", main);
+    fixture.file("other.lua", "LOGPATH = LOGPATH or 'other'\nMETAPATH = METAPATH or LOGPATH\n");
+    // Large enough that checking the edited file is not half of the program.
+    fixture.file("user.lua", &"local path = LOGPATH\nlocal meta = METAPATH\n".repeat(40));
+    let plan = fixture.plan(&["main.lua", "other.lua", "user.lua"], &[]);
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan.clone(), options());
+    fixture.file("main.lua", &main.replace("helper() end", "helper() local probe = 1 return probe end"));
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan.clone(), options()), 1);
+    fixture.file("main.lua", main);
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan, options()), 1);
+}
+
+#[test]
+fn a_function_capturing_a_module_and_an_automatic_local_reads_both() {
+    let fixture = Fixture::new();
+    fixture.file("m.lua", "return { value = 1 }\n");
+    let main = fixture.file(
+        "main.lua",
+        "local m = require('m')\nlocal count\nlocal function read()\n  count = 1\n  return m.value\nend\n---@type string\nlocal wrong = read()\nreturn wrong, count\n",
+    );
+    let mut workspace = ProjectWorkspace::new();
+    let report = fixture.compare(&mut workspace, fixture.plan(&["main.lua"], &[]), modules());
+    diagnostic_at(&report, &main, "TS2322", "read()");
+}
+
+#[test]
+fn one_global_declaration_of_another_type_conflicts_with_all_of_them() {
+    let fixture = Fixture::new();
+    let sources = [("a.lua", "---@type number\nSHARED = 1\n"), ("b.lua", "---@type number\nSHARED = 2\n"), ("c.lua", "---@type string\nSHARED = ''\n")];
+    let paths: Vec<_> = sources.iter().map(|(name, source)| fixture.file(name, source)).collect();
+    let mut workspace = ProjectWorkspace::new();
+    let report = fixture.compare(&mut workspace, fixture.plan(&["a.lua", "b.lua", "c.lua"], &[]), options());
+    for path in &paths {
+        diagnostic_at(&report, path, "TS2403", "SHARED");
+    }
+}

@@ -169,7 +169,7 @@ mod tests {
                         before: Self::at(0),
                         frame,
                         header: NativeValueKey {
-                            snapshot: 913 + u64::from(self.foreign_header),
+                            snapshot: 913 + u32::from(self.foreign_header),
                             index: 0,
                         },
                         input,

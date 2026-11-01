@@ -209,7 +209,7 @@ impl<'p, 's> Checker<'p, 's> {
         let provider = self.native_named_provider(reference.schema.declaration).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
         // Original fixed keys and computed key domains do not demand future
         // stored values. Their schema presence cannot prove runtime presence.
-        for member in members {
+        for member in members.iter().cloned() {
             let metadata = provider.type_member_header(self, member.member);
             match metadata.key {
                 NativeTypeMemberKey::Fixed(other) => {

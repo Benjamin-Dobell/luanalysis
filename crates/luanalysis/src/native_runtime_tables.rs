@@ -80,7 +80,7 @@ pub(super) struct NativeRuntimeTables {
     schema_indices: HashMap<NativeExpressionKey, usize>,
     member_keys: Vec<NativeTypeMemberKey>,
     /// The registered key namespace: (snapshot, declaration base, member base).
-    bases: Option<(u64, u32, u32)>,
+    bases: Option<(u32, u32, u32)>,
 }
 impl NativeRuntimeTables {
     pub(super) fn new(
@@ -285,7 +285,7 @@ impl NativeRuntimeTables {
     pub(super) fn constructors(&self) -> &[RuntimeTableConstructor] {
         &self.recipes.constructors
     }
-    pub(super) fn register_keys(&mut self, snapshot: u64, declaration_base: u32, member_base: u32) {
+    pub(super) fn register_keys(&mut self, snapshot: u32, declaration_base: u32, member_base: u32) {
         self.bases = Some((snapshot, declaration_base, member_base));
         self.schema_keys = self
             .recipes
@@ -503,7 +503,7 @@ mod tests {
         };
         let program = &registry.iterator_sources().program;
         let expression = &program
-            .expression(program.evaluation(*evaluation).expression)
+            .expression(program.evaluation(evaluation).expression)
             .expression;
         assert_eq!(text(source, expression.span), "object.Name");
         // The index records the alias expression; it never decides which

@@ -7,34 +7,34 @@ use luanalysis_syntax::{
     TableFieldKind, UnaryOperator,
 };
 use crate::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
-static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
+static NEXT_SNAPSHOT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SourceExpressionId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FlowId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub graph: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EvaluationId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AssignmentId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IteratorId {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -255,7 +255,7 @@ pub struct Feature {
 }
 #[derive(Clone, Debug)]
 pub struct ProgramFlow {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub graphs: Vec<FunctionGraph>,
     pub expressions: Vec<SourceExpression>,
     pub evaluations: Vec<Evaluation>,
@@ -322,13 +322,13 @@ pub fn build_shared(file: &std::sync::Arc<File>, bound: &BoundFile) -> ProgramFl
     build_with_snapshot(file, bound, allocate_snapshot())
 }
 
-pub(crate) fn allocate_snapshot() -> u64 {
+pub(crate) fn allocate_snapshot() -> u32 {
     let snapshot = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
-    assert_ne!(snapshot, u64::MAX, "source graph snapshots exhausted");
+    assert_ne!(snapshot, u32::MAX, "source graph snapshots exhausted");
     snapshot
 }
 
-pub(crate) fn build_with_snapshot(tree: &std::sync::Arc<File>, bound: &BoundFile, snapshot: u64) -> ProgramFlow {
+pub(crate) fn build_with_snapshot(tree: &std::sync::Arc<File>, bound: &BoundFile, snapshot: u32) -> ProgramFlow {
     let file: &File = tree;
     let mut builder = Builder {
         tree,

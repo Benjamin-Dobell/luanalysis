@@ -1,0 +1,488 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -4045,9 +4045,12 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     /// `getOrCreateTypeFromSignature`
+     pub(super) fn type_of_signature(&self, sig: SigId, construct: bool) -> TypeId {
++        if let Some(&known) = self.isolated_signature_types.borrow().get(&(sig, construct)) {
++            return known;
++        }
+         // It has the symbol of `sig.declaration`.
+         let has_no_instantiable_symbol = !self.has_instantiable_symbol(sig);
+-        self.synth(if construct {
++        let ty = self.synth(if construct {
+             Shape {
+                 construct: vec_from_iter_in([sig], self.arena),
+                 has_no_instantiable_symbol,
+@@ -4059,7 +4062,9 @@ impl<'p, 's> Checker<'p, 's> {
+                 has_no_instantiable_symbol,
+                 ..Shape::new_in(self.arena)
+             }
+-        })
++        });
++        self.isolated_signature_types.borrow_mut().insert((sig, construct), ty);
++        ty
+     }
+ 
+     /// `instantiateSignatureInContextOf`. `with_result`: inferences are also made from the return
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -134,7 +134,7 @@ impl<'p, 's> Checker<'p, 's> {
+             TypeData::TypeParam(file, tp, _) => (0u8, u64::from(file.0), tp.0, 0),
+             TypeData::NativeTypeParam { declaration, .. } => (
+                 1,
+-                declaration.snapshot,
++                u64::from(declaration.snapshot),
+                 self.native_type_parameter_order(declaration),
+                 declaration.index,
+             ),
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -1010,6 +1010,9 @@ impl<'s> Program<'s> {
+             has_ambient_context: false,
+             suggestions_among_globals: Default::default(),
+             alias_symbols: Default::default(),
++            isolated_signature_types: Default::default(),
++            native_overload_types: Default::default(),
++            native_flow_writes: Default::default(),
+             has_compared_without_total_order: std::cell::Cell::new(false),
+             symbol_ids: None,
+             parsed_again_for_await: None,
+@@ -1838,6 +1841,12 @@ pub struct Checker<'p, 's> {
+     suggestions_among_globals: errors::SuggestionsAmongGlobals,
+     /// `t.alias.symbol` by type: see `alias_symbol_of_type`.
+     alias_symbols: std::cell::RefCell<FxHashMap<TypeId, Option<Sym>>>,
++    /// `signature.isolatedSignatureType`, and whether it constructs.
++    isolated_signature_types: std::cell::RefCell<FxHashMap<(SigId, bool), TypeId>>,
++    /// The type of a native function with its overloads, by its implementation signature.
++    native_overload_types: std::cell::RefCell<FxHashMap<SigId, TypeId>>,
++    /// A table's type after a write of a value at a key.
++    native_flow_writes: FxHashMap<(TypeId, native_tables::NativeTableKey, TypeId), TypeId>,
+     /// Set by `compare_type_names` where `CompareTypes` is not transitive.
+     has_compared_without_total_order: std::cell::Cell<bool>,
+     /// `Some`: this checker hands out symbol ids. See check/symbol_ids.rs.
+diff --git a/src/sema/check/native_aliases.rs b/src/sema/check/native_aliases.rs
+--- a/src/sema/check/native_aliases.rs
++++ b/src/sema/check/native_aliases.rs
+@@ -81,8 +81,52 @@ enum Origin {
+     CallAllocation(NativeValueKey, NativeFlowKey, Box<Origin>),
+     CallOpaque(NativeValueKey, NativeFlowKey, Box<Origin>),
+ }
++/// A set of origins. Most steps of a flow graph pass theirs on unchanged, so each step's memo
++/// shares the set of the step before.
++#[derive(Clone, Default, PartialEq, Eq)]
++struct OriginSet(Option<std::sync::Arc<HashSet<Origin>>>);
++
++impl OriginSet {
++    fn len(&self) -> usize { self.0.as_ref().map_or(0, |set| set.len()) }
++    fn is_empty(&self) -> bool { self.len() == 0 }
++    fn iter(&self) -> impl Iterator<Item = &Origin> { self.0.iter().flat_map(|set| set.iter()) }
++    fn contains(&self, origin: &Origin) -> bool { self.0.as_ref().is_some_and(|set| set.contains(origin)) }
++    fn is_disjoint(&self, other: &Self) -> bool {
++        match (&self.0, &other.0) {
++            (Some(left), Some(right)) => left.is_disjoint(right),
++            _ => true,
++        }
++    }
++    fn insert(&mut self, origin: Origin) {
++        std::sync::Arc::make_mut(self.0.get_or_insert_default()).insert(origin);
++    }
++    fn extend(&mut self, other: Self) {
++        if self.is_empty() { *self = other; return }
++        for origin in other { self.insert(origin); }
++    }
++}
++
++impl IntoIterator for OriginSet {
++    type Item = Origin;
++    type IntoIter = std::vec::IntoIter<Origin>;
++    fn into_iter(self) -> Self::IntoIter {
++        let origins: Vec<Origin> = match self.0 {
++            Some(set) => std::sync::Arc::try_unwrap(set).map_or_else(|set| set.iter().cloned().collect(), |set| set.into_iter().collect()),
++            None => Vec::new(),
++        };
++        origins.into_iter()
++    }
++}
++
++impl FromIterator<Origin> for OriginSet {
++    fn from_iter<I: IntoIterator<Item = Origin>>(origins: I) -> Self {
++        let set: HashSet<Origin> = origins.into_iter().collect();
++        if set.is_empty() { Self(None) } else { Self(Some(std::sync::Arc::new(set))) }
++    }
++}
++
+ #[derive(Clone, Default)]
+-struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncertain: bool, maybe_nil: bool }
++struct Origins { tokens: OriginSet, unknown: bool, non_table: bool, uncertain: bool, maybe_nil: bool }
+ 
+ /// Completed provenance facts belong to the checker that owns their query
+ /// dependencies. Flow epochs separate speculative effects from stable inputs.
+@@ -129,7 +173,7 @@ impl Origins {
+     fn unavailable() -> Self { Self { unknown: true, ..Self::default() } }
+     fn non_table() -> Self { Self { non_table: true, maybe_nil: true, ..Self::default() } }
+     fn non_nil_scalar() -> Self { Self { non_table: true, ..Self::default() } }
+-    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from_iter([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
++    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: OriginSet::from_iter([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
+     fn merge(&mut self, other: Self) { self.tokens.extend(other.tokens); self.unknown |= other.unknown; self.non_table |= other.non_table; self.uncertain |= other.uncertain; self.maybe_nil |= other.maybe_nil; }
+     fn relation(&self, other: &Self) -> NativeAliasRelation {
+         if self.tokens.is_empty() && !self.unknown || other.tokens.is_empty() && !other.unknown { return NativeAliasRelation::Different }
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -8,7 +8,7 @@ use crate::types::TypeId;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeGraphKey {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub region: u32,
+     /// Unique immutable contextual-body facet; zero for the ordinary source view.
+     pub context: u64,
+@@ -29,7 +29,7 @@ pub struct NativeReferenceKey {
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeValueKey {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ 
+diff --git a/src/sema/check/native_generic_storage.rs b/src/sema/check/native_generic_storage.rs
+--- a/src/sema/check/native_generic_storage.rs
++++ b/src/sema/check/native_generic_storage.rs
+@@ -144,7 +144,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let TypeData::NativeObject(mut template) = *self.data(head) else { unreachable!() };
+         template.runtime_context = reference.runtime_context;
+         let mut facts = 0;
+-        for origin in self.native_object_members(template)? {
++        for origin in self.native_object_members(template)?.iter().cloned() {
+             let metadata = provider.type_member_header(self, origin.member);
+             let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
+             let value = self.native_member_type(raw, origin.owner);
+diff --git a/src/sema/check/native_globals.rs b/src/sema/check/native_globals.rs
+--- a/src/sema/check/native_globals.rs
++++ b/src/sema/check/native_globals.rs
+@@ -8,11 +8,11 @@ use crate::types::CloneIn;
+ use crate::util::FxHashMap;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+-pub struct NativeEnvironmentId { pub snapshot: u64, pub index: u32 }
++pub struct NativeEnvironmentId { pub snapshot: u32, pub index: u32 }
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeGlobalBindingId { pub environment: NativeEnvironmentId, pub index: u32 }
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+-pub struct NativeValueDeclarationId { pub snapshot: u64, pub index: u32 }
++pub struct NativeValueDeclarationId { pub snapshot: u32, pub index: u32 }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub enum NativePrimitiveMemberKind { String }
+@@ -491,15 +491,10 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             // Sources that disagree, as a global each file redefines for itself may: none is the
+             // global's, every conflicting one is reported, and the global is not typed by one.
+-            let mut conflicts = Vec::new();
+-            for left in 0..values.len() {
+-                for right in left + 1..values.len() {
+-                    if !checker.is_identical(values[left].1, values[right].1) {
+-                        conflicts.extend([values[left].0, values[right].0]);
+-                    }
+-                }
+-            }
+-            if !conflicts.is_empty() {
++            // Identity is an equivalence: one that differs from the first leaves every declaration
++            // differing from another.
++            if values[1..].iter().any(|&(_, actual)| !checker.is_identical(expected, actual)) {
++                let mut conflicts: Vec<_> = values.iter().map(|&(declaration, _)| declaration).collect();
+                 conflicts.sort_unstable_by_key(|key| (key.snapshot, key.index));
+                 conflicts.dedup();
+                 return Err(NativeGlobalQueryError::ConflictingDeclarations { binding, declarations: conflicts });
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -37,7 +37,7 @@ mod generic_storage;
+ /// File-local syntax ids must be mapped explicitly into this provider-owned namespace.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeTypeDeclarationId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ 
+@@ -48,12 +48,12 @@ impl crate::local::MaybeLocal for NativeTypeDeclarationId {
+ /// Original field/indexer declaration, including explicit-owner augmentations.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeTypeMemberId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+-pub struct NativeDefinitionId { pub snapshot: u64, pub index: u32 }
++pub struct NativeDefinitionId { pub snapshot: u32, pub index: u32 }
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeDefinitionHeader { pub declaration: NativeTypeDeclarationId }
+@@ -380,7 +380,7 @@ pub(super) struct NativeNamedCache {
+     bases: FxHashMap<NativeTypeDeclarationId, Result<Vec<TypeId>, NativeNamedTypeError>>,
+     own_parameters: FxHashMap<NativeTypeDeclarationId, Vec<NativeTypeParamId>>,
+     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
+-    members: FxHashMap<TypeId, Vec<NativeObjectMember>>,
++    members: FxHashMap<TypeId, std::sync::Arc<Vec<NativeObjectMember>>>,
+     owner_applications: FxHashMap<NativeTypeMemberId, Option<NativeMemberOwnerApplication>>,
+     /// The override a resolved object's validation found incompatible; the object is its schema.
+     override_errors: FxHashMap<TypeId, NativeNamedTypeError>,
+@@ -420,7 +420,7 @@ impl NativeNamedCache {
+     }
+     fn bases(&mut self, key: NativeTypeDeclarationId, value: Result<Vec<TypeId>, NativeNamedTypeError>, _: Stored) { self.bases.insert(key, value); }
+     fn mapped_bases(&mut self, key: TypeId, value: Vec<TypeId>, _: Stored) { self.mapped_bases.insert(key, value); }
+-    fn members(&mut self, key: TypeId, value: Vec<NativeObjectMember>, _: Stored) { self.members.insert(key, value); }
++    fn members(&mut self, key: TypeId, value: std::sync::Arc<Vec<NativeObjectMember>>, _: Stored) { self.members.insert(key, value); }
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
+@@ -988,7 +988,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let members = self.native_object_members(reference)?;
+         let provider = self.native_named_provider(reference.declaration)?;
+         let mut own = None;
+-        for origin in members {
++        for origin in members.iter().cloned() {
+             let NativeTypeMemberKey::Fixed(member_key) = provider.type_member_header(self, origin.member).key else { continue };
+             if member_key.normalize() != Ok(key) { continue }
+             match origin.via {
+@@ -1352,9 +1352,9 @@ impl<'p, 's> Checker<'p, 's> {
+         Ok(bases)
+     }
+ 
+-    fn native_object_members(&mut self, reference: NativeObjectReference) -> Result<Vec<NativeObjectMember>, NativeNamedTypeError> {
++    fn native_object_members(&mut self, reference: NativeObjectReference) -> Result<std::sync::Arc<Vec<NativeObjectMember>>, NativeNamedTypeError> {
+         let ty = self.intern(TypeData::NativeObject(reference));
+-        if let Some(known) = self.native_named_cache.members.get(&ty) { return Ok(known.clone()) }
++        if let Some(known) = self.native_named_cache.members.get(&ty) { return Ok(std::sync::Arc::clone(known)) }
+         let bases = self.native_object_bases(reference)?;
+         let query = Query::NativeNamed(NativeTypeDeclarationQuery::ObjectMembers(ty));
+         if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(NativeTypeDeclarationQuery::ObjectMembers(ty))) }
+@@ -1389,13 +1389,13 @@ impl<'p, 's> Checker<'p, 's> {
+             for (index, base) in bases.into_iter().enumerate() {
+                 if self.is_error_type(base) { continue }
+                 let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
+-                for member in self.native_object_members(owner)? {
++                for member in self.native_object_members(owner)?.iter().cloned() {
+                     // Candidate origins are immutable. An inactive override
+                     // must not hide its inherited active fallback.
+                     members.push(NativeObjectMember { via: Some((index, base)), ..member });
+                 }
+             }
+-            Ok(members)
++            Ok(std::sync::Arc::new(members))
+         })();
+         if let Ok(stored) = self.leave(query) { if let Ok(members) = &result { self.native_named_cache.members(ty, members.clone(), stored); } }
+         if let Err(error) = result { self.report_native_named(error) }
+@@ -1419,7 +1419,7 @@ impl<'p, 's> Checker<'p, 's> {
+     /// admitting it by an index signature.
+     pub(super) fn native_object_declares(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> bool {
+         let Ok(members) = self.native_object_members(reference) else { return false };
+-        members.into_iter().any(|member| {
++        members.iter().any(|member| {
+             let Ok(provider) = self.native_named_provider(member.owner.declaration) else { return false };
+             matches!(provider.type_member_header(self, member.member).key, NativeTypeMemberKey::Fixed(fixed) if fixed.normalize() == Ok(key))
+         })
+@@ -1433,7 +1433,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let TypeData::NativeObject(reference) = *self.data(ty) else { return Vec::new() };
+         let Ok(members) = self.native_object_members(reference) else { return Vec::new() };
+         let mut origins = Vec::new();
+-        for member in members {
++        for member in members.iter().cloned() {
+             let Ok(provider) = self.native_named_provider(member.owner.declaration) else { continue };
+             let NativeTypeMemberKey::Fixed(key) = provider.type_member_header(self, member.member).key else { continue };
+             let Ok(NativeTableKey::String(atom)) = key.normalize() else { continue };
+@@ -1916,7 +1916,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
+                 let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
+                 let mut selected = Vec::new();
+-                for origin in members {
++                for origin in members.iter().cloned() {
+                     let keep = match provider.type_member_header(self, origin.member).key {
+                         NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
+                         NativeTypeMemberKey::Indexer { .. } if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared => true,
+@@ -1941,7 +1941,7 @@ impl<'p, 's> Checker<'p, 's> {
+             let mut found_declared = false;
+             let mut found_written = false;
+             let mut kept_own = None;
+-            for origin in members {
++            for origin in members.iter().cloned() {
+                 let metadata = provider.type_member_header(self, origin.member);
+                 if let NativeTypeMemberKey::Fixed(member_key) = metadata.key && member_key.normalize()? == key {
+                     if let Some((previous, _, _)) = &found
+@@ -2012,7 +2012,7 @@ impl<'p, 's> Checker<'p, 's> {
+             if self.stack.contains(&Query::NativeNamed(NativeTypeDeclarationQuery::ObjectMembers(object))) {
+                 let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
+                 let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
+-                let indexers: Vec<_> = members.into_iter()
++                let indexers: Vec<_> = members.iter().cloned()
+                     .filter(|origin| matches!(provider.type_member_header(self, origin.member).key, NativeTypeMemberKey::Indexer { .. }))
+                     .collect();
+                 let table = self.native_object_resolved_uncached(reference, &indexers, false).map_err(|error| error.table_error(object))?;
+@@ -2035,7 +2035,7 @@ impl<'p, 's> Checker<'p, 's> {
+             let literal = literal.normalize().ok()?;
+             let members = self.native_object_members(reference).ok()?;
+             let provider = self.native_named_provider(reference.declaration).ok()?;
+-            for origin in members {
++            for origin in members.iter().cloned() {
+                 let metadata = provider.type_member_header(self, origin.member);
+                 let NativeTypeMemberKey::Fixed(member_key) = metadata.key else { continue };
+                 if member_key.normalize().ok()? != literal { continue }
+@@ -2110,7 +2110,7 @@ impl<'p, 's> Checker<'p, 's> {
+         // type used to perform it. In particular a bad inferred override must not
+         // discard an inherited callback's parameter/return context.
+         let mut members = Vec::new();
+-        for origin in self.native_object_members(reference)? {
++        for origin in self.native_object_members(reference)?.iter().cloned() {
+             if origin.via.is_some() || self.native_object_member_effective_origin(&origin)? == Some(crate::types::NativeTableFieldOrigin::Declared) { members.push(origin); }
+         }
+         let schema = self.native_object_resolved_uncached(reference, &members, true)?;
+@@ -2289,9 +2289,16 @@ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn native_definition_flow_write(&mut self, table: TypeId, key: NativeTableKey, value: TypeId) -> TypeId {
+         if table.is_never() || self.is_error_type(table) { return table }
+         if self.is_union(table) { return self.map_type(table, |c, part| c.native_definition_flow_write(part, key, value)) }
+-        if self.native_runtime_table_ref(table).is_some() { return self.native_runtime_table_flow_write(table, key, value) }
+-        if self.native_definition_ref(table).is_none() { return table }
+-        self.native_definition_fixed_write(table, key, value).unwrap_or(table)
++        let runtime = self.native_runtime_table_ref(table).is_some();
++        if !runtime && self.native_definition_ref(table).is_none() { return table }
++        // Each walk of a flow graph passes the same writes: a table's description is copied once
++        // for each write, not once for each walk.
++        if let Some(&known) = self.native_flow_writes.get(&(table, key, value)) { return known }
++        let before = self.non_cacheable_mark();
++        let written = if runtime { self.native_runtime_table_flow_write(table, key, value) }
++            else { self.native_definition_fixed_write(table, key, value).unwrap_or(table) };
++        if before == self.non_cacheable_mark() { self.native_flow_writes.insert((table, key, value), written); }
++        written
+     }
+ 
+     /// `native_definition_flow_write` through a path of fixed members: the table each member of a
+diff --git a/src/sema/check/native_project.rs b/src/sema/check/native_project.rs
+--- a/src/sema/check/native_project.rs
++++ b/src/sema/check/native_project.rs
+@@ -10,7 +10,7 @@ use crate::util::FxHashMap;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeModuleId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ 
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -209,7 +209,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let provider = self.native_named_provider(reference.schema.declaration).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
+         // Original fixed keys and computed key domains do not demand future
+         // stored values. Their schema presence cannot prove runtime presence.
+-        for member in members {
++        for member in members.iter().cloned() {
+             let metadata = provider.type_member_header(self, member.member);
+             match metadata.key {
+                 NativeTypeMemberKey::Fixed(other) => {
+diff --git a/src/sema/check/native_signatures.rs b/src/sema/check/native_signatures.rs
+--- a/src/sema/check/native_signatures.rs
++++ b/src/sema/check/native_signatures.rs
+@@ -18,7 +18,7 @@ pub enum NativeSignatureOwner {
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeSignatureSite {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ 
+@@ -150,6 +150,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let Some((function, mapper)) = self.sig_native_decl(implementation) else { return self.type_of_signature(implementation, false) };
+         let declarations = self.native_function_provider.expect("native function provider").overload_signatures(function);
+         if declarations.is_empty() { return self.type_of_signature(implementation, false); }
++        if let Some(&known) = self.native_overload_types.borrow().get(&implementation) { return known }
+         let mut shape = Shape::new_in(self.arena);
+         for declaration in declarations {
+             self.native_signature_provider_for(declaration);
+@@ -158,7 +159,9 @@ impl<'p, 's> Checker<'p, 's> {
+         if self.native_function_provider.expect("native function provider").exposes_implementation(function) {
+             shape.call.push(implementation);
+         }
+-        self.synth(shape)
++        let ty = self.synth(shape);
++        self.native_overload_types.borrow_mut().insert(implementation, ty);
++        ty
+     }
+ 
+     pub fn native_implementation_signature(&mut self, ty: TypeId) -> Option<SigId> {
+diff --git a/src/sema/check/unions.rs b/src/sema/check/unions.rs
+--- a/src/sema/check/unions.rs
++++ b/src/sema/check/unions.rs
+@@ -2475,8 +2475,8 @@ impl<'p, 's> Checker<'p, 's> {
+         match *self.types().sig(first) {
+             crate::types::SigData::Native { declaration, .. }
+             | crate::types::SigData::NativeCaptured { declaration, .. }
+-            | crate::types::SigData::NativeContextual { declaration, .. } => Some((declaration.snapshot, declaration.index, false)),
+-            crate::types::SigData::NativeDeclarationSignature { declaration, .. } => Some((declaration.snapshot, declaration.index, true)),
++            | crate::types::SigData::NativeContextual { declaration, .. } => Some((u64::from(declaration.snapshot), declaration.index, false)),
++            crate::types::SigData::NativeDeclarationSignature { declaration, .. } => Some((u64::from(declaration.snapshot), declaration.index, true)),
+             _ => None,
+         }
+     }
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -31,13 +31,13 @@ pub struct SigId(pub u32);
+ /// A function in a foreign frontend's source snapshot, independent of TS HIR ids.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeFunctionId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ /// A written callable declaration, distinct from its optional runtime implementation.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeSignatureId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ /// A conditional or mapped type that a Lua annotation writes, whose pieces (`NativeAnnotationPiece`)
+@@ -46,9 +46,9 @@ pub struct NativeSignatureId {
+ /// rest of it, in its own terms.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeAnnotationId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+-    pub context: [Option<(u64, u32)>; 3],
++    pub context: [Option<(u32, u32)>; 3],
+ }
+ /// A piece of a `NativeAnnotationId` that is lowered when first read.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+@@ -64,17 +64,17 @@ pub enum NativeAnnotationPiece {
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeTypeParamId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeExpressionId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeBindingId {
+-    pub snapshot: u64,
++    pub snapshot: u32,
+     pub index: u32,
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

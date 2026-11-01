@@ -1069,8 +1069,8 @@ repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 
 | lua-language-server 3.19.2 `--check` | 17.5 s | 17.2 s | 732 MB |
 | EmmyLua Analyzer 0.25.1 | 0.86 s | 2.0 s | 159 MB |
 | EmmyLua Analyzer main (`1b6df85`) | 8.3 s | 8.2 s | 169 MB |
-| Luanalysis, one thread | 3.0 s | 3.0 s | 706 MB |
-| Luanalysis, ten threads | 1.3 s | 5.3 s | 959 MB |
+| Luanalysis, one thread | 2.8 s | 2.7 s | 463 MB |
+| Luanalysis, ten threads | 1.2 s | 4.9 s | 627 MB |
 
 These are medians of five fresh-process runs after one warmup, using release builds; EmmyLua
 Analyzer main is an unreleased commit built from source without changes. CPU time includes user
@@ -1080,7 +1080,7 @@ configuration with Lua 5.4 and `lua/` (a symlink to `script/`) and `make/` exclu
 those same 434 files. The checkers report different diagnostics. Other development work was
 running on the machine.
 
-On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.13 s and 110 MB,
+On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.11 s and 80 MB,
 EmmyLua Analyzer 0.25.1 takes 0.18 s and 25 MB, and its main branch takes 0.23 s and 31 MB.
 
 Diagnostics after an edit in the language server, from the change to the new diagnostics. Each
@@ -1089,21 +1089,28 @@ of 20 edits:
 
 | Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
 | --- | --- | --- | --- | --- |
-| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.3 s | 65 ms | 962 MB |
-| Another project (136 files, 33,083 lines) | 2,522 lines | 1.0 s | 400 ms | 503 MB |
+| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 56 ms | 639 MB |
+| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 284 ms | 364 MB |
 
 An edit checks the edited file using the types it reads from the rest of the project, not the file
-alone, so its time follows the size of the file: across 93 of that project's 99 source files, the
-median edit takes 29 ms. An edit that changes what a widely used module or class exposes checks its
-users as well, and costs up to one whole check.
+alone. The files above are among the largest. Editing every source file of each project in turn, in
+one session:
+
+| Project | Median | 90th percentile | Slowest |
+| --- | --- | --- | --- |
+| lua-language-server (434 files) | 17 ms | 40 ms | 206 ms |
+| Another project (99 source files of its 136) | 18 ms | 53 ms | 277 ms |
+
+An edit that changes what a widely used module or class exposes checks its users as well, and costs
+up to one whole check.
 
 Member completions in a 1,546-line file of that 136-file project, with the buffer changed before
 every request and background checking active:
 
 | Completion item details | Median | 95th percentile |
 | --- | --- | --- |
-| Included in the list | 26 ms | 35 ms |
-| Resolved separately by the client | 27 ms | 36 ms |
+| Included in the list | 24 ms | 30 ms |
+| Resolved separately by the client | 24 ms | 29 ms |
 
 Each row measures 100 requests across five language-server sessions, excluding each session's
 first request. Times include sending the changed buffer and receiving the completion list

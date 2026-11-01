@@ -804,7 +804,7 @@ pub(super) struct SignatureRecipe {
 }
 
 pub(super) struct NativeSignatures {
-    snapshot: u64,
+    snapshot: u32,
     recipes: Vec<SignatureRecipe>,
     spans: HashMap<(usize, usize), NativeSignatureKey>,
     type_contexts: HashMap<(usize, usize), NativeSignatureKey>,
@@ -860,7 +860,7 @@ impl FunctionNesting {
 
 impl NativeSignatures {
     pub(super) fn new(
-        snapshot: u64,
+        snapshot: u32,
         file: &File,
         functions: &[luanalysis_syntax::SharedFunction],
         named: &NativeNamed,

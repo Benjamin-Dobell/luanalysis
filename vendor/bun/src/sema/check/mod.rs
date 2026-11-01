@@ -1010,6 +1010,9 @@ impl<'s> Program<'s> {
             has_ambient_context: false,
             suggestions_among_globals: Default::default(),
             alias_symbols: Default::default(),
+            isolated_signature_types: Default::default(),
+            native_overload_types: Default::default(),
+            native_flow_writes: Default::default(),
             has_compared_without_total_order: std::cell::Cell::new(false),
             symbol_ids: None,
             parsed_again_for_await: None,
@@ -1838,6 +1841,12 @@ pub struct Checker<'p, 's> {
     suggestions_among_globals: errors::SuggestionsAmongGlobals,
     /// `t.alias.symbol` by type: see `alias_symbol_of_type`.
     alias_symbols: std::cell::RefCell<FxHashMap<TypeId, Option<Sym>>>,
+    /// `signature.isolatedSignatureType`, and whether it constructs.
+    isolated_signature_types: std::cell::RefCell<FxHashMap<(SigId, bool), TypeId>>,
+    /// The type of a native function with its overloads, by its implementation signature.
+    native_overload_types: std::cell::RefCell<FxHashMap<SigId, TypeId>>,
+    /// A table's type after a write of a value at a key.
+    native_flow_writes: FxHashMap<(TypeId, native_tables::NativeTableKey, TypeId), TypeId>,
     /// Set by `compare_type_names` where `CompareTypes` is not transitive.
     has_compared_without_total_order: std::cell::Cell<bool>,
     /// `Some`: this checker hands out symbol ids. See check/symbol_ids.rs.

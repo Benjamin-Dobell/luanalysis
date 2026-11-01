@@ -23,7 +23,7 @@ pub(super) struct SourceExpression {
 /// Source recipes never contain backend IDs or a mutable "last context". They are built once per
 /// source revision and shared by every session over it (`NativeExpressions` adds a session's state).
 pub(super) struct ExpressionRecipes {
-    snapshot: u64,
+    snapshot: u32,
     /// The tree the expressions are in.
     tree: std::sync::Arc<File>,
     expressions: Vec<SourceExpression>,
@@ -256,7 +256,7 @@ impl ExpressionRecipes {
     pub(super) fn contextual_function_for(&self, key: NativeExpressionKey) -> Option<NativeFunctionKey> {
         self.function_for(key).or_else(|| self.statement_functions.get(&key).copied())
     }
-    pub(super) fn new(snapshot: u64, file: &std::sync::Arc<File>, functions: &HashMap<(usize, usize), u32>) -> Self {
+    pub(super) fn new(snapshot: u32, file: &std::sync::Arc<File>, functions: &HashMap<(usize, usize), u32>) -> Self {
         let mut recipes = Self {
             snapshot,
             tree: std::sync::Arc::clone(file),
@@ -609,6 +609,22 @@ impl NativeRegistry {
         self.build_source_function_value(function, mode, queries, true)
     }
 
+    /// Whether a local holds what `require` returned, or a part of it.
+    fn binding_loads_module(&self, binding: crate::bind::BindingId) -> bool {
+        let sources = self.iterator_sources();
+        let Some(initializer) = sources.declaration_initializer(binding) else { return false };
+        let mut expression: &Expr = &sources.program.expression(initializer.expression).expression;
+        loop {
+            match &expression.kind {
+                ExprKind::Parenthesized(inner) => expression = inner,
+                ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => expression = base,
+                ExprKind::Call { callee, .. } => return matches!(&callee.kind, ExprKind::Name(name)
+                    if name.text == "require" && self.bound().binding_at(name.span.start).is_none()),
+                _ => return false,
+            }
+        }
+    }
+
     fn build_source_function_value(
         &self,
         function: &Function,
@@ -636,11 +652,15 @@ impl NativeRegistry {
         if bindings.is_empty() && lexical_parent.is_none() {
             return Type::NativeFunction(key);
         }
-        if lexical_parent.is_none() && contextual.is_none() && captured.is_none() && !bindings.iter().any(|binding| self.binding_is_automatic(*binding)) {
+        let declaration_space = lexical_parent.is_none() && contextual.is_none() && captured.is_none();
+        if declaration_space && !bindings.iter().any(|binding| self.binding_is_automatic(*binding)) {
             return Type::NativeFunction(key);
         }
         let mut environment = Vec::with_capacity(bindings.len());
         for binding in bindings {
+            // Outside any frame, a capture's value is its declaration's, which a read resolves if
+            // it comes to that: resolving it here would load each module the function captures.
+            if declaration_space && self.binding_loads_module(binding) { continue }
             let source = self.source_binding_key(binding);
             let value = captured.and_then(|context| queries.captured_binding(&context, source));
             let value = match value {

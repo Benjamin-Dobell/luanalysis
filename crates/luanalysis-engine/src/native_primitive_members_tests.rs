@@ -1,7 +1,7 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 
-const SNAPSHOT: u64 = 9_841;
+const SNAPSHOT: u32 = 9_841;
 fn environment() -> NativeEnvironmentKey {
     NativeEnvironmentKey {
         snapshot: SNAPSHOT,

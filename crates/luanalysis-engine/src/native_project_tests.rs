@@ -1,7 +1,7 @@
 use crate::*;
 use std::cell::{Cell, RefCell};
 
-const SNAPSHOT: u64 = 718;
+const SNAPSHOT: u32 = 718;
 fn module(index: u32) -> NativeModuleKey {
     NativeModuleKey {
         snapshot: SNAPSHOT,

@@ -62,13 +62,13 @@ pub(super) struct OriginalMemberSource {
     pub candidates: Vec<OriginalMemberInput>,
 }
 pub(super) struct NativeMembers {
-    snapshot: u64,
+    snapshot: u32,
     base: u32,
     sources: Vec<OriginalMemberSource>,
     inputs: Vec<OriginalMemberInput>,
 }
 impl NativeMembers {
-    pub(super) fn new(snapshot: u64, named: &NativeNamed, mut inputs: Vec<OriginalMemberInput>, base: u32) -> Self {
+    pub(super) fn new(snapshot: u32, named: &NativeNamed, mut inputs: Vec<OriginalMemberInput>, base: u32) -> Self {
         assert!(base >= named.member_namespace_end(), "original member namespaces are disjoint");
         inputs.sort_by_key(|input| (input.span.start, input.span.end));
         let mut result = Self { snapshot, base, sources: Vec::new(), inputs: inputs.clone() };

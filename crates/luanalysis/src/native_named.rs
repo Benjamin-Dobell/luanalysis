@@ -12,19 +12,19 @@ use luanalysis_engine::FxHashMap as HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct NativeNamedKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct NativeNamedMemberKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct NativeAugmentationKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -32,13 +32,13 @@ pub(super) struct NativeAugmentationKey {
 /// named keys, while the source uses a distinct Rust key type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct NativeAnonymousHeadKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct NativeAnonymousMemberKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -214,7 +214,7 @@ pub(super) enum NamedRegistryError {
 }
 
 pub(super) struct NativeNamed {
-    snapshot: u64,
+    snapshot: u32,
     declarations: Vec<NamedDeclarationSource>,
     names: HashMap<String, Vec<NativeNamedKey>>,
     syntax_keys: HashMap<NamedTypeDeclarationId, NativeNamedKey>,
@@ -229,7 +229,7 @@ pub(super) struct NativeNamed {
 
 impl NativeNamed {
     pub(super) fn new(
-        snapshot: u64,
+        snapshot: u32,
         file: &luanalysis_syntax::File,
         bound: &BoundFile,
         functions: &HashMap<(usize, usize), NativeFunctionKey>,

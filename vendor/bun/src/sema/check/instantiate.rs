@@ -134,7 +134,7 @@ impl<'p, 's> Checker<'p, 's> {
             TypeData::TypeParam(file, tp, _) => (0u8, u64::from(file.0), tp.0, 0),
             TypeData::NativeTypeParam { declaration, .. } => (
                 1,
-                declaration.snapshot,
+                u64::from(declaration.snapshot),
                 self.native_type_parameter_order(declaration),
                 declaration.index,
             ),

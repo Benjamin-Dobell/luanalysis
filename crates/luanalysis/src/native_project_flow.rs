@@ -12,19 +12,19 @@ use luanalysis_engine::{
 };
 
 impl ProjectRegistry {
-    fn original_flow_registry(&self, snapshot: u64) -> Option<&super::NativeRegistry> {
+    fn original_flow_registry(&self, snapshot: u32) -> Option<&super::NativeRegistry> {
         // Graph/value/reference snapshots belong to flow::ProgramFlow, not
         // the independently allocated native declaration namespace.
         Some(self.files[*self.flow_snapshots.get(&snapshot)?].source(self))
     }
-    fn original_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
+    fn original_flow(&self, snapshot: u32) -> Option<FlowAdapter<'_>> {
         let source = self.original_flow_registry(snapshot)?;
         Some(FlowAdapter {
             sources: source.iterator_sources(),
             values: source,
         })
     }
-    fn original_function_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
+    fn original_function_flow(&self, snapshot: u32) -> Option<FlowAdapter<'_>> {
         let source = self.owner_if(snapshot)?;
         Some(FlowAdapter {
             sources: source.iterator_sources(),
@@ -112,7 +112,7 @@ impl NativeFlowProvider for ProjectRegistry {
         else {
             return None;
         };
-        let evaluation = source.iterator_sources().program.evaluation(*evaluation);
+        let evaluation = source.iterator_sources().program.evaluation(evaluation);
         let expression = &source
             .iterator_sources()
             .program
@@ -169,7 +169,7 @@ impl NativeFlowProvider for ProjectRegistry {
                 source
                     .iterator_sources()
                     .program
-                    .evaluation(*evaluation)
+                    .evaluation(evaluation)
                     .expression,
             )
             .expression;

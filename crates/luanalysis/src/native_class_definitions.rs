@@ -10,7 +10,7 @@ use luanalysis_project::SourceRole;
 use luanalysis_syntax::{NamedRecordKind, NamedTypeDeclarationKind, Span};
 
 pub(super) struct NativeClassDefinitions {
-    snapshot: u64,
+    snapshot: u32,
     sources: Vec<NativeNamedKey>,
     /// Each source's directive, and the sources by initializer and by binding, so that
     /// finding the definition an expression initializes does not recompute every directive.
@@ -24,7 +24,7 @@ struct ClassDefinitionIndex {
     by_binding: std::collections::HashMap<BindingId, usize>,
 }
 impl NativeClassDefinitions {
-    pub(super) fn new(snapshot: u64, named: &NativeNamed) -> Self {
+    pub(super) fn new(snapshot: u32, named: &NativeNamed) -> Self {
         Self {
             snapshot,
             sources: named

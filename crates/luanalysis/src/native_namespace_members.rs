@@ -18,7 +18,7 @@ pub(in crate::native_functions) struct NamespaceTarget {
 
 pub(super) fn declaration_target(
     expression: &Expr,
-    snapshot: u64,
+    snapshot: u32,
     member_start: u32,
     ordinal: usize,
 ) -> Option<(Name, Option<NamespaceTarget>)> {

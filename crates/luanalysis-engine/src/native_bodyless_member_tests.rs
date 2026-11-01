@@ -7,10 +7,10 @@ fn declaration(index: u32) -> NativeTypeDeclarationKey {
         index,
     }
 }
-fn member(snapshot: u64) -> NativeTypeMemberKey {
+fn member(snapshot: u32) -> NativeTypeMemberKey {
     NativeTypeMemberKey { snapshot, index: 0 }
 }
-fn signature(snapshot: u64) -> NativeSignatureKey {
+fn signature(snapshot: u32) -> NativeSignatureKey {
     NativeSignatureKey { snapshot, index: 0 }
 }
 fn parameter(index: u32) -> NativeTypeParameterKey {

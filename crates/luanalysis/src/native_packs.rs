@@ -22,7 +22,7 @@ pub(super) enum Adjustment {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct SourcePackListKey {
-    pub snapshot: u64,
+    pub snapshot: u32,
     pub index: u32,
 }
 
@@ -208,7 +208,7 @@ pub(super) enum InitializerContext {
 
 /// The source index stores recipes, never an inferred type or an active facet.
 pub(super) struct NativePacks {
-    snapshot: u64,
+    snapshot: u32,
     lists: Vec<ExpressionList>,
     list_spans: HashMap<(usize, usize), SourcePackListKey>,
     table_sequences: HashMap<(usize, usize), TableSequence>,
@@ -219,7 +219,7 @@ pub(super) struct NativePacks {
 
 impl NativePacks {
     pub(super) fn new(
-        snapshot: u64,
+        snapshot: u32,
         file: &File,
         functions: &HashMap<(usize, usize), u32>,
         expression_key: &dyn Fn(&Expr) -> NativeExpressionKey,

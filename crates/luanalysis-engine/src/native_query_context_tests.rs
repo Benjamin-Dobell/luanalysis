@@ -4,7 +4,7 @@
 use super::*;
 use std::cell::Cell;
 
-const SNAPSHOT: u64 = 12_439;
+const SNAPSHOT: u32 = 12_439;
 fn function(index: u32) -> NativeFunctionKey {
     NativeFunctionKey {
         snapshot: SNAPSHOT,
