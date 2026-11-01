@@ -1090,19 +1090,20 @@ of 20 edits:
 | Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
 | --- | --- | --- | --- | --- |
 | lua-language-server (434 files, 106,789 lines) | 999 lines | 1.3 s | 65 ms | 962 MB |
-| Another project (136 files, 33,083 lines) | 2,522 lines | 6.1 s | 1.13 s | 1.94 GB |
+| Another project (136 files, 33,083 lines) | 2,522 lines | 1.0 s | 400 ms | 503 MB |
 
 An edit checks the edited file using the types it reads from the rest of the project, not the file
-alone. An edit that changes what a widely used module or class exposes checks its users as well,
-and costs up to one whole check.
+alone, so its time follows the size of the file: across 93 of that project's 99 source files, the
+median edit takes 29 ms. An edit that changes what a widely used module or class exposes checks its
+users as well, and costs up to one whole check.
 
 Member completions in a 1,546-line file of that 136-file project, with the buffer changed before
 every request and background checking active:
 
 | Completion item details | Median | 95th percentile |
 | --- | --- | --- |
-| Included in the list | 27 ms | 33 ms |
-| Resolved separately by the client | 26 ms | 31 ms |
+| Included in the list | 26 ms | 35 ms |
+| Resolved separately by the client | 27 ms | 36 ms |
 
 Each row measures 100 requests across five language-server sessions, excluding each session's
 first request. Times include sending the changed buffer and receiving the completion list
