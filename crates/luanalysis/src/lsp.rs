@@ -499,8 +499,10 @@ struct Server {
     snapshot_described: bool,
     /// Whether a description has been asked for and not yet ended.
     describe_requested: bool,
-    /// The document opened last, until a check has checked it (`Job::Base`).
+    /// The document opened or looked at last, until a check has checked it (`Job::Base`).
     pending_base: Option<PathBuf>,
+    /// The revision at which each document's base was last asked for.
+    based: HashMap<PathBuf, u64>,
     /// Hovers over a checked document that wait for its types.
     deferred_hovers: Vec<(Json, Json)>,
     /// Documents opened before the first check, whose warm-up waits for it.
@@ -556,6 +558,7 @@ impl Server {
             snapshot_described: false,
             describe_requested: false,
             pending_base: None,
+            based: HashMap::new(),
             deferred_hovers: Vec::new(),
             pending_warm: Vec::new(),
             base: None,
@@ -659,6 +662,9 @@ impl Server {
         }
         if self.shutdown {
             return self.respond_error(id, INVALID_REQUEST, "the server is shut down");
+        }
+        if let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) {
+            self.look_at(path);
         }
         match method {
             "shutdown" => {
@@ -823,6 +829,7 @@ impl Server {
                 if let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path)
                     && self.documents.remove(&path).is_some()
                 {
+                    self.based.remove(&path);
                     self.revision += 1;
                     self.disk_generation += 1;
                 }
@@ -1114,9 +1121,25 @@ impl Server {
         self.snapshot_described = false;
         self.describe_requested = false;
         self.answer_deferred_hovers();
-        if self.requested == Some(self.revision) && let Some(path) = self.pending_base.take() && let Some(jobs) = &self.jobs {
-            let _ = jobs.send(Job::Base(path));
+        if self.requested == Some(self.revision) && let Some(path) = self.pending_base.take() {
+            self.base(path);
         }
+    }
+
+    /// A request about an open document: the editor shows it, and its next edit may follow. Its
+    /// check publishes for that edit, as on opening it, once the check in progress is done.
+    fn look_at(&mut self, path: PathBuf) {
+        if !self.documents.contains_key(&path) || self.based.get(&path) == Some(&self.revision) { return; }
+        if self.checking || self.requested != Some(self.revision) {
+            self.pending_base = Some(path);
+        } else {
+            self.base(path);
+        }
+    }
+
+    fn base(&mut self, path: PathBuf) {
+        let Some(jobs) = &self.jobs else { return };
+        if jobs.send(Job::Base(path.clone())).is_ok() { self.based.insert(path, self.revision); }
     }
 
     fn answer_deferred_hovers(&mut self) {
@@ -1879,7 +1902,17 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     let mut lines = HashMap::new();
     // The project the last check checked, which a description describes.
     let mut checked_project: Option<Project> = None;
-    while let Ok(mut job) = jobs.recv() {
+    // A base a description came before: it follows the description, unless a check does first.
+    let mut deferred_base: Option<PathBuf> = None;
+    loop {
+        let mut job = match jobs.try_recv() {
+            Ok(job) => job,
+            Err(mpsc::TryRecvError::Disconnected) => return,
+            Err(mpsc::TryRecvError::Empty) => match deferred_base.take() {
+                Some(path) => Job::Base(path),
+                None => match jobs.recv() { Ok(job) => job, Err(_) => return },
+            },
+        };
         // Only the latest revision is worth checking. A description asked for before it is for
         // the snapshot it replaces: the server asks again.
         while let Ok(newer) = jobs.try_recv() {
@@ -1889,8 +1922,15 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
                     Job::Describe(paths)
                 }
                 (Job::Check(check), Job::Describe(_) | Job::Base(_)) => Job::Check(check),
-                (Job::Describe(paths), Job::Base(_)) => Job::Describe(paths),
-                (_, newer) => newer,
+                // A hover asks for the document's base, then for its types: the types first.
+                (Job::Describe(paths), Job::Base(path)) | (Job::Base(path), Job::Describe(paths)) => {
+                    deferred_base = Some(path);
+                    Job::Describe(paths)
+                }
+                (_, newer) => {
+                    if matches!(newer, Job::Check(_)) { deferred_base = None; }
+                    newer
+                }
             };
         }
         describing.reset();

@@ -908,6 +908,34 @@ fn a_file_published_for_before_its_first_edit_reads_it_then() {
 }
 
 #[test]
+fn a_base_for_another_open_file_keeps_the_edited_files() {
+    let fixture = Fixture::new();
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    fixture.file("m.lua", "local M = {}\nfunction M.size() return 1 end\nreturn M\n");
+    let edited = |extra: &str| format!("local m = require('m')\nlocal n = m.size()\n---@type string\nlocal bad = n\n{extra}\nreturn bad\n");
+    fixture.file("a.lua", &edited(""));
+    fixture.file("b.lua", "local m = require('m')\n---@type string\nlocal also = m.size()\nreturn also\n");
+    let entries = ["a.lua", "b.lua", "m.lua", "rest.lua"];
+    let plan = || fixture.plan(&entries, &[]);
+    let resolver = fixture.resolver();
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    fixture.file("a.lua", &edited("local x = 1"));
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    // The editor shows b.lua, with nothing changed since: its next edit has a base of its own.
+    let project = Project::load_plan(&resolver, plan(), |source| workspace.static_require_requests(source));
+    workspace.publish_for_edits(project, modules(), &fs::canonicalize(fixture.0.join("b.lua")).unwrap());
+    // Back in a.lua, whose base still holds.
+    fixture.file("a.lua", &edited("local x = 2"));
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    assert!(workspace.last_incremental_read_published());
+    // And in b.lua, whose base a.lua's edit replaced.
+    fixture.file("b.lua", "local m = require('m')\n---@type string\nlocal also = m.size()\nlocal y = 1\nreturn also\n");
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    assert!(!workspace.last_incremental_read_published());
+}
+
+#[test]
 fn a_description_over_what_was_published_matches_a_cold_one() {
     let fixture = Fixture::new();
     fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));

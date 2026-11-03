@@ -588,9 +588,13 @@ pub(crate) struct IncrementalState {
     pub(crate) checked: usize,
     /// Whether that check read what the check before published (`EditBase`).
     pub(crate) read_published: bool,
-    /// What the first check of the file being edited published for its next.
-    base: Option<std::sync::Arc<EditBase>>,
+    /// What the first check of each of the files last edited or looked at published for its next,
+    /// the most recent first: switching to another open file finds its own.
+    bases: Vec<std::sync::Arc<EditBase>>,
 }
+
+/// How many files keep what their checks published.
+const BASES: usize = 4;
 
 /// What a check of a file published for the checks of its next edits, each of which is then a task
 /// over it, as a task of a later step is over what the steps before it published. It mentions no
@@ -603,6 +607,34 @@ struct EditBase {
     others: Vec<u64>,
     /// The names the file shared. Others' global names are numbered with them.
     names: std::sync::Arc<crate::affected::FileNames>,
+}
+
+impl IncrementalState {
+    fn base(&self, file: &std::path::Path) -> Option<&std::sync::Arc<EditBase>> {
+        self.bases.iter().find(|base| base.file == file)
+    }
+
+    fn take_base(&mut self, file: &std::path::Path) -> Option<std::sync::Arc<EditBase>> {
+        let position = self.bases.iter().position(|base| base.file == file)?;
+        Some(self.bases.remove(position))
+    }
+
+    /// Keeps `base` first, with those that may still hold: a base holds while the other files'
+    /// revisions do, so one that misses any of `base`'s file's revision and others' is gone.
+    fn keep_base(&mut self, base: std::sync::Arc<EditBase>, revision: u64) {
+        let mut all = base.others.clone();
+        let at = all.partition_point(|&other| other < revision);
+        all.insert(at, revision);
+        self.bases.retain(|kept| kept.file != base.file && kept.others.len() + 1 == all.len() && is_sorted_subset(&kept.others, &all));
+        self.bases.insert(0, base);
+        self.bases.truncate(BASES);
+    }
+}
+
+/// Whether every element of `part` is in `all`, both sorted.
+fn is_sorted_subset(part: &[u64], all: &[u64]) -> bool {
+    let mut all = all.iter();
+    part.iter().all(|wanted| all.by_ref().any(|other| other == wanted))
 }
 
 impl EditBase {
@@ -664,11 +696,11 @@ pub(crate) fn publish_for_edits(
     let state = workspace.incremental_state();
     // A file that the last check did not check has no signature for the next to compare with.
     let Some(names) = state.files.get(&path).filter(|known| known.revision == revision && known.signature.is_some()).map(|known| std::sync::Arc::clone(&known.names)) else { return };
-    if state.base.as_ref().is_some_and(|base| base.holds_for(&path, &others, &names)) { return }
+    if state.base(&path).is_some_and(|base| base.holds_for(&path, &others, &names)) { return }
     let program = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).keep_program();
     run_checks(&project, &mut prepared, &[file], true, false, &options, workspace, CheckSession::Publishing(&program, &[source]));
     if !options.cancellation.is_cancelled() {
-        workspace.incremental_state_mut().base = Some(std::sync::Arc::new(EditBase { program, file: path, others, names }));
+        workspace.incremental_state_mut().keep_base(std::sync::Arc::new(EditBase { program, file: path, others, names }), revision);
     }
 }
 
@@ -743,7 +775,7 @@ pub(crate) fn check_project_incrementally(
     let mut parallelism = 1;
     let mut read_published = false;
     if whole {
-        state.base = None;
+        state.bases.clear();
         let run = run_checks(&project, &mut prepared, &roots, false, true, &options, workspace, CheckSession::Own);
         checked_count = roots.len();
         signatures = run.signatures;
@@ -782,7 +814,8 @@ pub(crate) fn check_project_incrementally(
         // reads the other files as they were, so it stands only if the file's signature does.
         let edited = match pending[..] { [file] => Some(file), _ => None };
         let others = edited.map(|file| other_revisions(&prepared, file));
-        let base = state.base.take().filter(|base| edited.zip(others.as_ref()).is_some_and(|(file, others)| base.holds_for(&path(file), others, &names[&file])));
+        let base = edited.and_then(|file| state.take_base(&path(file)))
+            .filter(|base| edited.zip(others.as_ref()).is_some_and(|(file, others)| base.holds_for(&path(file), others, &names[&file])));
         if let (Some(file), Some(base)) = (edited, base) {
             let run = run_checks(&project, &mut prepared, &pending, true, true, &options, workspace, CheckSession::Reading(&base.program));
             let signature = run.signatures.get(&file).copied();
@@ -797,7 +830,8 @@ pub(crate) fn check_project_incrementally(
                 checked.extend(run.reports.into_iter().filter(|report| report.file == file).map(|report| (report.file, report)));
                 pending.clear();
                 if reshaped { pending = affected_by(file, known); }
-                state.base = Some(base);
+                let revision = prepared.sources.get(&file).map(|snapshot| snapshot.revision()).expect("an edited file's revision");
+                state.keep_base(base, revision);
                 read_published = true;
             }
         }
@@ -826,8 +860,10 @@ pub(crate) fn check_project_incrementally(
                 _ => CheckSession::Own,
             };
             let run = run_checks(&project, &mut prepared, &pending, true, true, &options, workspace, session);
-            if let (Some(program), Some((file, _)), Some(others)) = (program, publishing, &others) {
-                state.base = Some(std::sync::Arc::new(EditBase { program, file: path(file), others: others.clone(), names: std::sync::Arc::clone(&names[&file]) }));
+            if let (Some(program), Some((file, _)), Some(others)) = (program, publishing, &others)
+                && let Some(revision) = prepared.sources.get(&file).map(|snapshot| snapshot.revision())
+            {
+                state.keep_base(std::sync::Arc::new(EditBase { program, file: path(file), others: others.clone(), names: std::sync::Arc::clone(&names[&file]) }), revision);
             }
             if profile {
                 round_profile.push(format!("{} files: factory={:.3}s checking={:.3}s (signatures {:.3}s) flows={:.3}s", pending.len(), run.factory_seconds, run.checking.as_secs_f64(), run.signature_seconds, run.flow_prepare.as_secs_f64()));
@@ -949,7 +985,7 @@ pub(crate) fn describe_incrementally(
             [file] => {
                 let others = other_revisions(&prepared, file);
                 let path = project.file(file).expect("a program file").path.clone();
-                workspace.incremental_state().base.clone().filter(|base| base.file == path && base.others == others)
+                workspace.incremental_state().base(&path).cloned().filter(|base| base.others == others)
             }
             _ => None,
         };
