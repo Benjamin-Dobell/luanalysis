@@ -19,6 +19,8 @@ mod native_plan_tests;
 #[cfg(test)]
 mod parallel_tests;
 #[cfg(test)]
+mod sharded_map_tests;
+#[cfg(test)]
 mod native_overload_failure_tests;
 mod native_assertions;
 mod native_language_service;
