@@ -171,6 +171,8 @@ pub struct CheckReport {
     /// replacement is an ordinary call and names no module.
     pub imports: Vec<Span>,
     pub bound: Option<std::sync::Arc<BoundFile>>,
+    /// The function a check of one region checked alone (`project_check::check_region`).
+    pub(crate) region: Option<Span>,
     pending_bindings: Vec<(BindingId, Type)>,
     pending_types: Vec<(Span, Type)>,
     pending_diagnostics: Vec<diagnostic_types::PendingDiagnostic>,
@@ -186,6 +188,7 @@ impl CheckReport {
         self.bindings.append(&mut other.bindings);
         self.types.append(&mut other.types);
         self.imports.append(&mut other.imports);
+        self.region = self.region.or(other.region);
         self.pending_bindings.append(&mut other.pending_bindings);
         self.pending_types.append(&mut other.pending_types);
         self.pending_diagnostics.append(&mut other.pending_diagnostics);
@@ -388,6 +391,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
             types: Vec::new(),
             imports: Vec::new(),
             bound: None,
+            region: None,
             pending_bindings: Vec::new(),
             pending_types: Vec::new(),
             pending_diagnostics: Vec::new(),

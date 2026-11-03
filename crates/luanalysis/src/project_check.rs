@@ -435,6 +435,8 @@ enum CheckSession<'a> {
     Reading(&'a luanalysis_engine::KeptProgram),
     /// Publishes, for the checks after it, what it finds that does not mention these sources.
     Publishing(&'a luanalysis_engine::KeptProgram, &'a [u32]),
+    /// Reads as `Reading` does, checking only the function of the file that holds the span.
+    Region(&'a luanalysis_engine::KeptProgram, FileId, luanalysis_syntax::Span),
 }
 
 /// Checks `roots` in one native session, or in planned parallel tasks that each check the roots
@@ -471,6 +473,7 @@ fn run_checks(
     let snapshot = &prepared.snapshot;
     let factory_nanos = AtomicU64::new(0);
     let factories = AtomicU64::new(0);
+    let region = match session { CheckSession::Region(_, file, changed) => Some((file, changed)), _ => None };
     let make_registry = |_| {
         let started = profile.then(Instant::now);
         options.cancellation.enter();
@@ -480,6 +483,7 @@ fn run_checks(
         registry.set_inspections(options.inspections);
         registry.set_no_unsafe_any(options.no_unsafe_any);
         registry.set_cancellation(&options.cancellation);
+        registry.set_region(region);
         if let Some(started) = started {
             factory_nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
             factories.fetch_add(1, Ordering::Relaxed);
@@ -507,7 +511,7 @@ fn run_checks(
         };
         let ((reports, signed), flows) = match session {
             CheckSession::Own => Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(|| make_registry(0), work),
-            CheckSession::Reading(program) => program.reading_task(|| make_registry(0), work),
+            CheckSession::Reading(program) | CheckSession::Region(program, ..) => program.reading_task(|| make_registry(0), work),
             CheckSession::Publishing(program, withheld) => program.publishing_task(withheld, || make_registry(0), work),
         };
         workspace.retain_sources(&prepared.revisions, flows);
@@ -680,6 +684,42 @@ fn other_revisions(prepared: &PreparedProgram, file: FileId) -> Vec<u64> {
 
 /// Publishes what the next edit of the file at `path` reads (`EditBase`), as the check of that edit
 /// would. Its report is the file's report already.
+/// What checking the function around an edit found, before the whole file is checked: the span of
+/// that function, and the diagnostics within it.
+pub(crate) struct RegionReport {
+    pub(crate) region: luanalysis_syntax::Span,
+    pub(crate) diagnostics: Vec<crate::Diagnostic>,
+}
+
+/// Checks only the innermost function of `path` that holds `changed`, as a task over what the
+/// file's last check published, when that still holds: as TypeScript reports the diagnostics of the
+/// region an editor shows before the whole file's. Nothing if the file has no such function or base.
+pub(crate) fn check_region(
+    mut project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
+    path: &std::path::Path,
+    changed: luanalysis_syntax::Span,
+) -> Option<RegionReport> {
+    options.cancellation.enter();
+    workspace.set_parse_options(options.parse_options());
+    let mut prepared = prepare_program(&mut project, &options, workspace);
+    let (file, path) = project.file_by_path(path).map(|file| (file.id, file.path.clone()))?;
+    // A file with syntax errors reports only those.
+    if prepared.unparsed.contains(&file) { return None }
+    let snapshot = prepared.sources.get(&file)?;
+    let names = snapshot.bound().map(|bound| crate::affected::FileNames::of(snapshot.syntax(), bound, snapshot.source())).unwrap_or_default();
+    let others = other_revisions(&prepared, file);
+    let base = workspace.incremental_state().base(&path).filter(|base| base.holds_for(&path, &others, &names)).cloned()?;
+    let options = ProjectCheckOptions { describe_types: false, ..options };
+    let run = run_checks(&project, &mut prepared, &[file], true, false, &options, workspace, CheckSession::Region(&base.program, file, changed));
+    if options.cancellation.is_cancelled() { return None }
+    let report = run.reports.into_iter().find(|report| report.file == file)?.report;
+    let region = report.region?;
+    let diagnostics = report.diagnostics.into_iter().filter(|diagnostic| region.start <= diagnostic.span.start && diagnostic.span.end <= region.end).collect();
+    Some(RegionReport { region, diagnostics })
+}
+
 pub(crate) fn publish_for_edits(
     mut project: Project,
     options: ProjectCheckOptions,

@@ -268,6 +268,19 @@ impl ProjectWorkspace {
         crate::project_check::describe_incrementally(project, options, self, paths)
     }
 
+    /// The diagnostics of the innermost function declaration of the file at `path` that holds
+    /// `changed`, and its span, from a check of that function alone over what the file's last
+    /// check published, if that still holds.
+    pub fn check_region(
+        &mut self,
+        project: Project,
+        options: crate::project_check::ProjectCheckOptions,
+        path: &std::path::Path,
+        changed: luanalysis_syntax::Span,
+    ) -> Option<(luanalysis_syntax::Span, Vec<crate::Diagnostic>)> {
+        crate::project_check::check_region(project, options, self, path, changed).map(|found| (found.region, found.diagnostics))
+    }
+
     /// Publishes what the next edit of the file at `path` reads, as checking that edit would.
     pub fn publish_for_edits(
         &mut self,

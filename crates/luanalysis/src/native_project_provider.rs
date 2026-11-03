@@ -475,6 +475,9 @@ pub(crate) struct ProjectRegistry {
     /// Whether reports describe binding and expression types. Diagnostics never
     /// depend on it; only callers that print or query types need them.
     describe_types: bool,
+    /// A file and the span of an edit in it: of its bodies, only those of the function around the
+    /// edit are checked (`project_check::check_region`).
+    region: Option<(FileId, luanalysis_syntax::Span)>,
     /// The global names each source's flow recipes were seeded with.
     global_names: Vec<Vec<u8>>,
     /// Stops a check in progress: files not yet begun are skipped.
@@ -504,6 +507,7 @@ impl ProjectRegistry {
         self.describe_types = describe;
         for source in self.files.iter_mut().filter_map(|file| file.built.get_mut()) { source.set_describes_types(describe); }
     }
+    pub(crate) fn set_region(&mut self, region: Option<(FileId, luanalysis_syntax::Span)>) { self.region = region; }
     pub(crate) fn set_inspections(&mut self, enabled: bool) {
         self.inspections = enabled;
         for source in self.files.iter_mut().filter_map(|file| file.built.get_mut()) { source.set_inspections(enabled); }
@@ -751,6 +755,7 @@ impl ProjectRegistry {
             modules,
             scopes: shared,
             describe_types: true,
+            region: None,
             global_names: original_names,
             cancellation: crate::project_check::Cancellation::default(),
             overload_mode,
@@ -1051,7 +1056,12 @@ impl ProjectRegistry {
                 source.report_shadowed_generic_parameters();
                 source.report_reserved_field_names();
                 source.report_repeated_functions(queries);
-                if file.role == SourceRole::Implementation {
+                let region = self.region.filter(|(file_id, _)| *file_id == file.id).and_then(|(_, changed)| source.region_around(changed));
+                if file.role == SourceRole::Implementation && let Some(region) = region {
+                    // Only the function around an edit, which its check reads the rest for.
+                    source.check_region_bodies(queries, region);
+                    reports[index].report.region = Some(region);
+                } else if file.role == SourceRole::Implementation {
                     let mut checker = source.checker(queries);
                     checker.flow_at = Some(source.flow_entry(None, None));
                     checker.statements(source.statements());

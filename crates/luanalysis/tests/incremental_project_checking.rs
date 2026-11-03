@@ -936,6 +936,44 @@ fn a_base_for_another_open_file_keeps_the_edited_files() {
 }
 
 #[test]
+fn a_check_of_the_function_around_an_edit_finds_what_the_whole_check_finds_there() {
+    let fixture = Fixture::new();
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    fixture.file("m.lua", "local M = {}\nfunction M.size() return 1 end\nreturn M\n");
+    // A method that calls another and passes a callback, whose parameter its call site types.
+    let edited = |inside: &str| format!(
+        "local m = require('m')\nlocal M = {{}}\n---@type string\nlocal early = 1\n---@param n number\nfunction M.half(n) return n / 2 end\n---@param each fun(n: number): number\nlocal function apply(each) return each(1) end\nfunction M.method()\n  local n = m.size()\n{inside}  return apply(function(x) return x + M.half(n) end)\nend\n---@type string\nlocal late = 2\nreturn M\n");
+    fixture.file("a.lua", &edited(""));
+    let entries = ["a.lua", "m.lua", "rest.lua"];
+    let plan = || fixture.plan(&entries, &[]);
+    let resolver = fixture.resolver();
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    fixture.file("a.lua", &edited("  local x = 1\n"));
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    let inside = "  ---@type string\n  local bad = n\n  local wrong = M.half('two')\n";
+    let text = edited(inside);
+    fixture.file("a.lua", &text);
+    let path = fs::canonicalize(fixture.0.join("a.lua")).unwrap();
+    let at = text.find(inside).unwrap();
+    let project = Project::load_plan(&resolver, plan(), |source| workspace.static_require_requests(source));
+    let (region, found) = workspace.check_region(project, modules(), &path, luanalysis_syntax::Span { start: at, end: at + inside.len() }).expect("a base for a.lua");
+    assert_eq!(&text[region.start..region.start + 17], "function M.method");
+    let report = Project::load_plan(&resolver, plan(), |source| workspace.static_require_requests(source));
+    let report = workspace.check_project_incrementally(report, modules());
+    let key = |diagnostic: &Diagnostic| (diagnostic.span.start, diagnostic.span.end, diagnostic.code, diagnostic.message.clone());
+    let mut whole: Vec<_> = report.files.iter().filter(|file| report.source(file.file).unwrap().path == path)
+        .flat_map(|file| file.report.diagnostics.iter())
+        .filter(|diagnostic| region.start <= diagnostic.span.start && diagnostic.span.end <= region.end)
+        .map(key).collect();
+    let mut found: Vec<_> = found.iter().map(key).collect();
+    whole.sort();
+    found.sort();
+    assert_eq!(found, whole);
+    assert_eq!(found.len(), 2, "{found:?}");
+}
+
+#[test]
 fn a_description_over_what_was_published_matches_a_cold_one() {
     let fixture = Fixture::new();
     fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));

@@ -2090,10 +2090,33 @@ impl NativeRegistry {
         self.check_bodies(queries, true);
     }
 
+    /// The innermost function declaration (`local function`, `function target()`) whose text
+    /// holds `changed`. Its body is checked in no context but its own, as the whole file's check
+    /// checks it, and a function written within it is checked where its value is written.
+    pub(super) fn region_around(&self, changed: luanalysis_syntax::Span) -> Option<luanalysis_syntax::Span> {
+        self.declaration_functions.iter().map(|&index| self.functions[index as usize].span)
+            .filter(|span| span.start <= changed.start && changed.end <= span.end)
+            .min_by_key(|span| span.end - span.start)
+    }
+
+    /// The bodies within `region` alone, which the types they read are inferred for: their
+    /// diagnostics are shown before the whole file's (`project_check::check_region`).
+    pub(super) fn check_region_bodies(&self, queries: &mut dyn TypeQueries, region: luanalysis_syntax::Span) {
+        self.check_bodies_within(queries, false, Some(region));
+    }
+
     fn check_bodies(&self, queries: &mut dyn TypeQueries, selected_only: bool) {
+        self.check_bodies_within(queries, selected_only, None);
+    }
+
+    fn check_bodies_within(&self, queries: &mut dyn TypeQueries, selected_only: bool, within: Option<luanalysis_syntax::Span>) {
         for index in 0..self.functions.len() {
             if self.cancellation.is_cancelled() { return; }
             let key = self.key(index as u32);
+            if let Some(region) = within {
+                let span = self.function(key).span;
+                if span.start < region.start || region.end < span.end { continue; }
+            }
             if selected_only && self.expressions.final_facets(key).is_empty() { continue; }
             for parameter in self.types.own_parameters(key) {
                 queries.type_parameter_constraint(parameter);

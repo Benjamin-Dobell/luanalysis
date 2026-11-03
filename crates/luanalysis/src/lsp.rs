@@ -200,6 +200,8 @@ enum Event {
     Malformed(String),
     Closed,
     Checked(Box<Snapshot>, u64),
+    /// What a check of the function around an edit found, before the whole file's check.
+    Region(Box<RegionChecked>, u64),
     /// The types of open documents that a check published without them, for hover.
     Described(Box<Snapshot>, u64),
     /// A response computed off the main thread.
@@ -265,6 +267,9 @@ enum Job {
 /// A check of the workspace with the editor's buffers.
 struct CheckJob {
     overlays: HashMap<PathBuf, String>,
+    /// The one document edited since the last check, when it is large, and the bytes of its text
+    /// the edits replaced: the function around them is checked first (`project_check::check_region`).
+    region: Option<(PathBuf, usize, usize)>,
     /// The server's `disk_generation`, when the client reports changes on disk: a check may then
     /// reuse the project it loaded at the same generation (`LoadedCheck`).
     disk: Option<u64>,
@@ -594,6 +599,7 @@ impl Server {
                         if let Some(code) = self.message(message) { return code; }
                     }
                     Event::Checked(snapshot, generation) => if generation == self.worker_generation { self.checked(*snapshot) },
+                    Event::Region(found, generation) => if generation == self.worker_generation { self.region_checked(*found) },
                     Event::Described(described, generation) => if generation == self.worker_generation { self.described(*described) },
                     Event::Answered(id, result) => self.respond(id, result),
                     Event::RevisionAnswer(id, result, revision) => {
@@ -616,7 +622,8 @@ impl Server {
         let Some(jobs) = &self.jobs else { return; };
         let overlays = self.documents.iter().map(|(path, document)| (path.clone(), document.text.clone())).collect();
         let disk = self.watching.then_some(self.disk_generation);
-        if jobs.send(Job::Check(CheckJob { overlays, disk })).is_ok() {
+        let region = self.edited_region();
+        if jobs.send(Job::Check(CheckJob { overlays, disk, region })).is_ok() {
             // A newer edit makes the last check's type descriptions out of date: they stop.
             self.describing.cancel();
             self.requested = Some(self.revision);
@@ -1088,24 +1095,8 @@ impl Server {
             };
             if self.published.contains(path) && self.published_results.get(path) == Some(&result) { continue; }
             self.published_results.insert(path.clone(), result);
-            let diagnostics = file.diagnostics.iter().map(|diagnostic| {
-                // LSP severities: 1 error, 2 warning, 4 hint. Tag 1 shows unnecessary code faded.
-                let severity = match diagnostic.category {
-                    DiagnosticCategory::Error => 1usize,
-                    DiagnosticCategory::Warning => 2,
-                    DiagnosticCategory::Suggestion => 4,
-                };
-                let mut fields = vec![
-                    ("range".to_owned(), file.range(diagnostic.start, diagnostic.end, self.encoding)),
-                    ("severity".to_owned(), Json::from(severity)),
-                    ("code".to_owned(), Json::from(diagnostic.code)),
-                    ("source".to_owned(), Json::from("luanalysis")),
-                    ("message".to_owned(), Json::from(diagnostic.message.as_str())),
-                ];
-                if diagnostic.unnecessary { fields.push(("tags".to_owned(), Json::Array(vec![Json::from(1usize)]))); }
-                Json::Object(fields)
-            }).collect();
-            self.publish(path, Json::Array(diagnostics), &file.lines.text);
+            let diagnostics = diagnostics_json(&file.lines, &file.diagnostics, self.encoding);
+            self.publish(path, diagnostics, &file.lines.text);
         }
         for path in self.published.difference(&published).cloned().collect::<Vec<_>>() {
             self.published_results.remove(&path);
@@ -1164,6 +1155,49 @@ impl Server {
             }
         }
         self.answer_deferred_hovers();
+    }
+
+    /// The one open document whose text differs from the last check's, when it is large enough for
+    /// its edit's function to be worth checking first, and the bytes of it the edits replaced.
+    fn edited_region(&self) -> Option<(PathBuf, usize, usize)> {
+        let snapshot = self.snapshot.as_ref()?;
+        let mut edited = self.documents.iter().filter(|(path, document)| {
+            snapshot.files.get(*path).is_none_or(|file| *file.lines.text != *document.text)
+        });
+        let (path, document) = edited.next()?;
+        if edited.next().is_some() || document.text.len() < REGION_FIRST_BYTES { return None; }
+        let (start, _, end) = changed_bytes(&snapshot.files.get(path)?.lines.text, &document.text);
+        Some((path.clone(), start, end))
+    }
+
+    /// Publishes the diagnostics of the function around an edit with the last check's elsewhere in
+    /// the file, those after the edit moved with it, until the whole file's check replaces them.
+    fn region_checked(&mut self, found: RegionChecked) {
+        let RegionChecked { path, text, region, diagnostics } = found;
+        // A newer edit makes it out of date, and with no check before there is nothing around it.
+        if self.documents.get(&path).is_none_or(|document| document.text != text) { return; }
+        let Some(last) = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)) else { return };
+        let (start, old_end, new_end) = changed_bytes(&last.lines.text, &text);
+        let moved = |offset: usize| offset + new_end - old_end;
+        let outside = |start_byte: usize, end_byte: usize| end_byte <= region.0 || region.1 <= start_byte;
+        let mut kept: Vec<CheckedDiagnostic> = last.diagnostics.iter().filter_map(|diagnostic| {
+            let (from, to) = if diagnostic.end <= start {
+                (diagnostic.start, diagnostic.end)
+            } else if old_end <= diagnostic.start {
+                (moved(diagnostic.start), moved(diagnostic.end))
+            } else {
+                return None;
+            };
+            outside(from, to).then(|| CheckedDiagnostic { start: from, end: to, message: diagnostic.message.clone(), ..*diagnostic })
+        }).collect();
+        kept.extend(diagnostics);
+        kept.sort_by_key(|diagnostic| (diagnostic.start, diagnostic.end));
+        let lines = LineIndex::new(Arc::from(text.as_str()));
+        let json = diagnostics_json(&lines, &kept, self.encoding);
+        // The whole file's check publishes whatever it finds, even what was published before.
+        self.published_results.remove(&path);
+        self.published.insert(path.clone());
+        self.publish(&path, json, &text);
     }
 
     fn publish(&mut self, path: &Path, diagnostics: Json, checked: &str) {
@@ -1980,7 +2014,8 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
                 continue;
             }
         };
-        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&inputs, diagnostics.clone(), &mut workspace, &mut loaded, &job)));
+        let early = |found: RegionChecked| { let _ = events.send(Event::Region(Box::new(found), generation)); };
+        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&inputs, diagnostics.clone(), &mut workspace, &mut loaded, &job, &early)));
         // A cancelled check is incomplete: newer settings or a stopping server have replaced it.
         if options.cancellation.is_cancelled() { return; }
         let snapshot_started = std::time::Instant::now();
@@ -2560,7 +2595,7 @@ struct LoadedCheck {
     project: Project,
 }
 
-fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedCheck>, job: &CheckJob) -> Result<ProjectCheckReport, String> {
+fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedCheck>, job: &CheckJob, early: &dyn Fn(RegionChecked)) -> Result<ProjectCheckReport, String> {
     let started = std::time::Instant::now();
     let project = match reloaded(inputs, workspace, loaded, job) {
         Some(project) => project,
@@ -2575,6 +2610,26 @@ fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut Pro
         }
     };
     let loaded = started.elapsed();
+    // One large document edited: the function around the edit is checked first, and its
+    // diagnostics published before the whole file's.
+    if let Some((path, start, end)) = &job.region && let Some(text) = job.overlays.get(path) {
+        let region_started = std::time::Instant::now();
+        let found = crate::project_check::check_region(project.clone(), options.clone(), workspace, path, luanalysis_syntax::Span { start: *start, end: *end });
+        if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
+            eprintln!("luanalysis profile: server region found={:?} seconds={:.3}", found.as_ref().map(|found| (found.region.start, found.region.end, found.diagnostics.len())), region_started.elapsed().as_secs_f64());
+        }
+        if let Some(found) = found {
+            early(RegionChecked {
+                path: path.clone(),
+                text: text.clone(),
+                region: (found.region.start, found.region.end),
+                diagnostics: found.diagnostics.iter().map(|diagnostic| CheckedDiagnostic {
+                    start: diagnostic.span.start, end: diagnostic.span.end, code: diagnostic.code, message: diagnostic.message.clone(),
+                    category: diagnostic.category(), unnecessary: diagnostic.is_unnecessary(),
+                }).collect(),
+            });
+        }
+    }
     let report = workspace.check_project_incrementally(project, options);
     if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
         eprintln!("luanalysis profile: server check load={:.3}s check={:.3}s", loaded.as_secs_f64(), (started.elapsed() - loaded).as_secs_f64());
@@ -2663,6 +2718,50 @@ struct CheckedFile {
 }
 
 struct CheckedDiagnostic { start: usize, end: usize, code: &'static str, message: String, category: DiagnosticCategory, unnecessary: bool }
+
+/// What `project_check::check_region` found, in the text it checked.
+struct RegionChecked {
+    path: PathBuf,
+    text: String,
+    /// The bytes of the function it checked.
+    region: (usize, usize),
+    diagnostics: Vec<CheckedDiagnostic>,
+}
+
+/// A document of this many bytes or more has the function around an edit checked first.
+const REGION_FIRST_BYTES: usize = 32 << 10;
+
+/// Where `new` differs from `old`: the first byte that differs, and where the text after the
+/// difference begins in `old` and in `new`, on character boundaries.
+fn changed_bytes(old: &str, new: &str) -> (usize, usize, usize) {
+    let mut start = old.bytes().zip(new.bytes()).take_while(|(left, right)| left == right).count();
+    while !old.is_char_boundary(start) || !new.is_char_boundary(start) { start -= 1; }
+    let most = old.len().min(new.len()) - start;
+    let mut same = old.bytes().rev().zip(new.bytes().rev()).take(most).take_while(|(left, right)| left == right).count();
+    while !old.is_char_boundary(old.len() - same) || !new.is_char_boundary(new.len() - same) { same -= 1; }
+    (start, old.len() - same, new.len() - same)
+}
+
+/// Diagnostics as `textDocument/publishDiagnostics` sends them.
+fn diagnostics_json(lines: &LineIndex, diagnostics: &[CheckedDiagnostic], encoding: Encoding) -> Json {
+    Json::Array(diagnostics.iter().map(|diagnostic| {
+        // LSP severities: 1 error, 2 warning, 4 hint. Tag 1 shows unnecessary code faded.
+        let severity = match diagnostic.category {
+            DiagnosticCategory::Error => 1usize,
+            DiagnosticCategory::Warning => 2,
+            DiagnosticCategory::Suggestion => 4,
+        };
+        let mut fields = vec![
+            ("range".to_owned(), lines.range(diagnostic.start, diagnostic.end, encoding)),
+            ("severity".to_owned(), Json::from(severity)),
+            ("code".to_owned(), Json::from(diagnostic.code)),
+            ("source".to_owned(), Json::from("luanalysis")),
+            ("message".to_owned(), Json::from(diagnostic.message.as_str())),
+        ];
+        if diagnostic.unnecessary { fields.push(("tags".to_owned(), Json::Array(vec![Json::from(1usize)]))); }
+        Json::Object(fields)
+    }).collect())
+}
 struct CheckedBinding { start: usize, end: usize, name: String, ty: String }
 struct CheckedType { start: usize, end: usize, ty: String }
 struct CheckedRequire { start: usize, end: usize, target: PathBuf }
@@ -2881,6 +2980,15 @@ fn path_to_uri(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edit_is_where_two_texts_differ_on_character_boundaries() {
+        assert_eq!(changed_bytes("local a = 1", "local ab = 1"), (7, 7, 8));
+        assert_eq!(changed_bytes("local ab = 1", "local a = 1"), (7, 8, 7));
+        assert_eq!(changed_bytes("same", "same"), (4, 4, 4));
+        assert_eq!(changed_bytes("x = 'é'", "x = 'è'"), (5, 7, 7));
+        assert_eq!(changed_bytes("aaa", "aaaa"), (3, 3, 4));
+    }
 
     #[test]
     fn line_index_round_trips_lf_crlf_and_cr_with_unicode() {
