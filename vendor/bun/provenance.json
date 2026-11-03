@@ -3404,6 +3404,18 @@
       "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
       "reason": "Read and store a runtime table's member types through the published table.",
       "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
+    },
+    {
+      "path": "src/sema/util/memory.rs",
+      "patch": "vendor/patches/bun-sema-small-shard-chunks.patch",
+      "reason": "Let a `Stable` vector's first chunk have another length than 1,024 elements.",
+      "patch_sha256": "7c0551613b2d9abd2c102cf57d0692e42c0b4df6db051e526f3c19ab57e5b9f7"
+    },
+    {
+      "path": "src/sema/util.rs",
+      "patch": "vendor/patches/bun-sema-small-shard-chunks.patch",
+      "reason": "Start each of a `ShardedMap`'s 256 shards with room for 16 entries rather than 1,024, so that a small map a kept program holds does not take 256 * 1,024 entries.",
+      "patch_sha256": "7c0551613b2d9abd2c102cf57d0692e42c0b4df6db051e526f3c19ab57e5b9f7"
     }
   ],
   "source_additions": {
@@ -4648,12 +4660,12 @@
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",
       "sha256": "092e835e7663ff9ef307e89875495554f16e9d754d3c64a4cdfd1368daf4fdd6",
-      "extracted_sha256": "092e835e7663ff9ef307e89875495554f16e9d754d3c64a4cdfd1368daf4fdd6"
+      "extracted_sha256": "f8749a8cbe386b720916a8a5134025f4ca3b9c408f7f49801603c371760e15e8"
     },
     "src/sema/util/memory.rs": {
       "upstream": "src/sema/util/memory.rs",
       "sha256": "22658b3ce036a77804a670cd022ef61517aa0d28d127425ffd08a41920fdbae4",
-      "extracted_sha256": "22658b3ce036a77804a670cd022ef61517aa0d28d127425ffd08a41920fdbae4"
+      "extracted_sha256": "0369dfcae0ef0c350f37b7c6e824bc73e6a0a29b1845ab011979d4c464a89dbf"
     },
     "src/sema/verify.rs": {
       "upstream": "src/sema/verify.rs",

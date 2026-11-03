@@ -1061,6 +1061,16 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
     "reason": "Read and store a runtime table's member types through the published table.",
 })
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/util/memory.rs",
+    "patch": "vendor/patches/bun-sema-small-shard-chunks.patch",
+    "reason": "Let a `Stable` vector's first chunk have another length than 1,024 elements.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/util.rs",
+    "patch": "vendor/patches/bun-sema-small-shard-chunks.patch",
+    "reason": "Start each of a `ShardedMap`'s 256 shards with room for 16 entries rather than 1,024, so that a small map a kept program holds does not take 256 * 1,024 entries.",
+})
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

@@ -209,9 +209,10 @@ unsafe impl Length for Cell<u32> {
 
 const FIRST_CHUNK_BITS: u32 = 10;
 
-/// A vector that is appended to through a shared reference and whose elements never move.
-pub struct Stable<T, L: Length, A: Allocator + Clone = Global> {
-    chunks: Chunks<MaybeUninit<T>, FIRST_CHUNK_BITS, A>,
+/// A vector that is appended to through a shared reference and whose elements never move. Its first
+/// chunk holds `1 << FIRST` elements.
+pub struct Stable<T, L: Length, A: Allocator + Clone = Global, const FIRST: u32 = FIRST_CHUNK_BITS> {
+    chunks: Chunks<MaybeUninit<T>, FIRST, A>,
     /// The elements below it are initialized, except for those that a `push` in progress or the
     /// caller of `reserve` has yet to write.
     len: L,
@@ -225,13 +226,13 @@ pub type AppendVec<T, A = Global> = Stable<T, AtomicU32, A>;
 /// For one thread. It can be emptied and used again.
 pub type LocalVec<T, A = Global> = Stable<T, Cell<u32>, A>;
 
-impl<T, L: Length, A: Allocator + Clone + Default> Default for Stable<T, L, A> {
+impl<T, L: Length, A: Allocator + Clone + Default, const FIRST: u32> Default for Stable<T, L, A, FIRST> {
     fn default() -> Self {
         Self::new_in(A::default())
     }
 }
 
-impl<T, L: Length, A: Allocator + Clone> Stable<T, L, A> {
+impl<T, L: Length, A: Allocator + Clone, const FIRST: u32> Stable<T, L, A, FIRST> {
     pub fn new() -> Self
     where
         A: Default,
@@ -320,7 +321,7 @@ impl<T, L: Length, A: Allocator + Clone> Stable<T, L, A> {
     }
 }
 
-impl<T, L: Length, A: Allocator + Clone> Drop for Stable<T, L, A> {
+impl<T, L: Length, A: Allocator + Clone, const FIRST: u32> Drop for Stable<T, L, A, FIRST> {
     fn drop(&mut self) {
         self.clear();
     }

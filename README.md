@@ -1089,8 +1089,8 @@ of 20 edits:
 
 | Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
 | --- | --- | --- | --- | --- |
-| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 28 ms | 507 MB |
-| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 211 ms | 329 MB |
+| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 28 ms | 504 MB |
+| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 211 ms | 299 MB |
 
 An edit checks the edited file using the types it reads from the rest of the project, not the file
 alone. As a task of Bun's checker reads what the steps before it published, an edit reads what the

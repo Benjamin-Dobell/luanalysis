@@ -462,9 +462,14 @@ pub(crate) fn spread_hash<T: std::hash::Hash + ?Sized>(value: &T) -> u64 {
 
 pub(crate) const SHARDS: usize = MAP_SHARDS;
 
+/// The first chunk of a shard's entries holds `1 << SHARD_FIRST_BITS`. A map whose entries reach
+/// every shard allocates every first chunk, and a program keeps many maps that stay small: with
+/// `AppendVec`'s first chunk, each such map would take 256 * 1024 entries.
+const SHARD_FIRST_BITS: u32 = 4;
+
 struct MapShard<K, V, A: Allocator + Clone> {
     places: GrowingPlaces<A>,
-    entries: AppendVec<(K, V), A>,
+    entries: memory::Stable<(K, V), std::sync::atomic::AtomicU32, A, SHARD_FIRST_BITS>,
 }
 
 /// A concurrent memo table. Two threads may compute the same entry; they compute the same value. A
@@ -483,7 +488,7 @@ impl<K, V, A: Allocator + Clone> ShardedMap<K, V, A> {
     pub fn new_in(alloc: A) -> Self {
         let shard = |_| MapShard {
             places: GrowingPlaces::new_in(alloc.clone()),
-            entries: AppendVec::new_in(alloc.clone()),
+            entries: memory::Stable::new_in(alloc.clone()),
         };
         ShardedMap {
             shards: Box::new_in(std::array::from_fn(shard), alloc.clone()),
