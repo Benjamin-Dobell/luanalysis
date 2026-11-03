@@ -311,7 +311,7 @@ fn actual_cli_checks_definition_initializer_then_instance_completeness() {
     assert_eq!(rejected.status.code(), Some(1));
     let errors = String::from_utf8_lossy(&rejected.stderr);
     assert!(
-        errors.contains("class.ttslua:3:13: error[TS2322]"),
+        errors.contains("class.ttslua:3:14: error[TS2322]"),
         "{errors}"
     );
     assert_eq!(

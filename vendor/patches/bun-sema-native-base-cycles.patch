@@ -1,0 +1,19 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -1371,6 +1371,15 @@ impl<'p, 's> Checker<'p, 's> {
+         let query = Query::NativeNamed(native_query);
+         if !self.enter(query) {
+             let error = if self.found_cycle { NativeNamedTypeError::CircularBase(declaration) } else { NativeNamedTypeError::TooDeep(native_query) };
++            // `resolveBaseTypesOfInterface` reports each interface whose bases reach itself: every
++            // declaration of the cycle, whose bases are in progress above this one's.
++            if self.found_cycle && let Some(start) = self.stack.iter().rposition(|&entered| entered == query) {
++                let cycle: Vec<_> = self.stack[start + 1..].iter().filter_map(|entered| match entered {
++                    Query::NativeNamed(NativeTypeDeclarationQuery::Bases(member)) => Some(*member),
++                    _ => None,
++                }).collect();
++                for member in cycle { self.report_native_named(NativeNamedTypeError::CircularBase(member)) }
++            }
+             self.report_native_named(error);
+             return Err(error);
+         }

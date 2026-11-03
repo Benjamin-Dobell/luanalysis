@@ -1,0 +1,24 @@
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1935,8 +1935,9 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+                     let value = self.type_to_node(tail.value);
+                     members.push(cat!(if tail.readonly { &b"readonly "[..] } else { &b""[..] }, b"[", tail.start.to_string().as_bytes(), if tail.sparse { &b"..integer]?: "[..] } else { &b"..integer]: "[..] }, value.text));
+                 }
+-                // As the Lua printer writes a table's fields.
+-                Node::simple(cat!(b"{ ", members.join(&b", "[..]), b" }"))
++                // As the Lua printer writes a table's fields; an empty one as TypeScript prints an
++                // empty type literal.
++                if members.is_empty() { Node::simple(b"{}") } else { Node::simple(cat!(b"{ ", members.join(&b", "[..]), b" }")) }
+             }
+             TypeData::NativeArray { element, readonly } => {
+                 let element = self.type_to_node(*element);
+@@ -4286,6 +4287,8 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+             // A Lua table type separates its fields with commas, as the Lua printer writes them.
+             if self.flags & NATIVE_LUA_TYPES != 0 {
+                 let fields: Vec<&[u8]> = members.iter().map(|member| member.strip_suffix(b";").unwrap_or(member)).collect();
++                // An empty one prints as TypeScript prints an empty type literal.
++                if fields.is_empty() { return b"{}".to_vec(); }
+                 return cat!(b"{ ", fields.join(&b", "[..]), b" }");
+             }
+             return cat!(b"{ ", members.join(&b" "[..]), b" }");

@@ -531,3 +531,18 @@ fn actual_cli_reports_the_inherited_field_at_original_source_then_accepts_correc
     );
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn every_class_of_a_base_cycle_is_reported_and_one_that_only_reaches_it_is_not() {
+    // As TypeScript's `resolveBaseTypesOfInterface` reports each interface whose bases reach
+    // itself, rather than only the first whose bases were resolved.
+    let source = "---@class C1 : C3\n\n---@class C2 : C1\n\n---@class C3 : C2\n\n---@class Outside : C1\n";
+    let report = check(source);
+    let mut reported: Vec<_> = report.diagnostics.iter().map(|diagnostic| (diagnostic.code, diagnostic.message.as_str())).collect();
+    reported.sort_unstable();
+    assert_eq!(reported, [
+        ("TS2310", "Type 'C1' recursively references itself as a base type."),
+        ("TS2310", "Type 'C2' recursively references itself as a base type."),
+        ("TS2310", "Type 'C3' recursively references itself as a base type."),
+    ]);
+}

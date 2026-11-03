@@ -1200,7 +1200,8 @@ impl Checker<'_> {
             ExprKind::Error => Type::Any,
         };
         let ty = self.finish_runtime_table_initializer(expr,expected,ty);
-        let ty = self.finish_class_definition_initializer(expr.span, ty);
+        let fields = match &expr.kind { ExprKind::Table(fields) => Some(fields.as_slice()), _ => None };
+        let ty = self.finish_class_definition_initializer(expr.span, fields, ty);
         self.record_expression_type(expr.span, &ty);
         if capture_origin && !matches!(expr.kind, ExprKind::Parenthesized(_)) {
             environment = self.engine.global_environment_origin(&ty);
@@ -1246,6 +1247,8 @@ impl Checker<'_> {
         };
         let target = &target;
         let mut reported = false;
+        // Fields with no key in the target, which a table may have more of than its type has.
+        let mut strays: Vec<(luanalysis_engine::LuaKey, Span, &'static str, String)> = Vec::new();
         for (position, field) in fields.iter().enumerate() {
             // A call or `...` ending the sequence is all of its values, as a spread is in an array
             // literal, which TypeScript does not elaborate.
@@ -1270,7 +1273,13 @@ impl Checker<'_> {
                     }
                 }
             };
-            let Some(expected) = self.engine.indexed_access_type(target, &key) else { continue };
+            let Some(expected) = self.engine.indexed_access_type(target, &key) else {
+                if let Type::StringLiteral(name) = &key {
+                    let message = format!("Object literal may only specify known properties, and '{}' does not exist in type '{{}}'.", String::from_utf8_lossy(name));
+                    strays.push((luanalysis_engine::LuaKey::String(name.clone()), at, "TS2353", message));
+                }
+                continue;
+            };
             let Some(actual) = self.engine.indexed_access_type(source, &key) else { continue };
             if self.engine.is_assignable(&actual, &expected) { continue; }
             if let ExprKind::Table(inner) = &unparenthesized(&field.value).kind
@@ -1282,7 +1291,54 @@ impl Checker<'_> {
             self.error_types("TS2322", at, "Type '{}' is not assignable to type '{}'.", &[&actual, &expected]);
             reported = true;
         }
-        reported
+        // Nor is a field a stray of a union of tables, which one member may have that another
+        // lacks: TypeScript elaborates no such union.
+        if reported || matches!(self.engine.inspect_type(target), Type::Union(_)) { return reported; }
+        // An index past the end of the sequence leaves a gap, which an array cannot have.
+        // A key written as a number, negated or not.
+        let literal = |key: &Expr| match &unparenthesized(key).kind {
+            ExprKind::Number(spelling) => number(spelling),
+            ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Negate, value, .. } => match &unparenthesized(value).kind {
+                ExprKind::Number(spelling) => number(spelling).map(|value| -value),
+                _ => None,
+            },
+            _ => None,
+        };
+        let integer = |field: &luanalysis_syntax::TableField| match &field.kind {
+            luanalysis_syntax::TableFieldKind::Sequence { index } => i64::try_from(*index).ok(),
+            luanalysis_syntax::TableFieldKind::Keyed(key) => literal(key).filter(|value| value.fract() == 0.0 && value.abs() < 1e15).map(|value| value as i64),
+            luanalysis_syntax::TableFieldKind::Named(_) => None,
+        };
+        let indexes: HashSet<i64> = fields.iter().filter_map(integer).collect();
+        let next = (1..).find(|index| !indexes.contains(index)).unwrap_or(1);
+        for field in fields {
+            let luanalysis_syntax::TableFieldKind::Keyed(key) = &field.kind else { continue };
+            let Some(value) = literal(key) else { continue };
+            let at = field.key_span.unwrap_or(key.span);
+            match integer(field) {
+                Some(index) if index > next => strays.push((luanalysis_engine::LuaKey::Integer(index), at, "TS2322",
+                    format!("Index {index} leaves a gap in '{{}}': its next index is {next}."))),
+                Some(index) if index < 1 => strays.push((luanalysis_engine::LuaKey::Integer(index), at, "TS2322",
+                    format!("Key {index} is not an index of '{{}}': an array's indexes are the whole numbers from 1."))),
+                None => strays.push((luanalysis_engine::LuaKey::Number(value), at, "TS2322",
+                    format!("Key {value} is not an index of '{{}}': an array's indexes are the whole numbers from 1."))),
+                _ => {}
+            }
+        }
+        // Each such field is the error when the table is assignable without them, as TypeScript's
+        // check of excess properties reports an object literal's.
+        if strays.is_empty() { return false; }
+        let Type::Table(mut without) = self.engine.inspect_type(source) else { return false };
+        without.fields.retain(|field| !strays.iter().any(|(key, ..)| match (key, &field.key) {
+            (luanalysis_engine::LuaKey::Integer(index), luanalysis_engine::LuaKey::Number(value))
+            | (luanalysis_engine::LuaKey::Number(value), luanalysis_engine::LuaKey::Integer(index)) => *index as f64 == *value,
+            (key, other) => key == other,
+        }));
+        if !self.engine.is_assignable(&Type::Table(without), target) { return false; }
+        for (_, at, code, message) in strays {
+            self.error_types(code, at, message, &[target]);
+        }
+        true
     }
 
     fn compatible(&mut self, value: &Type, target: &Type, origin: Span) -> bool {
@@ -1704,6 +1760,7 @@ pub fn describe(ty: &Type) -> String {
         Type::Table(table) => native_tables::describe_table(table, |ty| {
             describe_at_precedence(ty, TypePrecedence::Union)
         }),
+        Type::Shape(properties) | Type::FreshShape(properties) if properties.is_empty() => "{}".into(),
         Type::Shape(properties) | Type::FreshShape(properties) => format!(
             "{{ {} }}",
             properties
@@ -1893,6 +1950,7 @@ fn describe_native_at_precedence(
             TypePrecedence::Intersection,
             minimum,
         ),
+        Type::Shape(properties) | Type::FreshShape(properties) if properties.is_empty() => "{}".into(),
         Type::Shape(properties) | Type::FreshShape(properties) => format!(
             "{{ {} }}",
             properties

@@ -461,6 +461,15 @@ impl Checker<'_> {
             self.incomplete_flow = true;
             return;
         }
+        // A name no index of the table accepts is a property it does not have, as TypeScript
+        // reports one that a `Record<K, V>` of literal keys, or an index of numbers, lacks.
+        if let (TableError::KeyType { key, .. }, Some(owner)) = (&error, owner)
+            && let Type::StringLiteral(name) = self.engine.inspect_type(key)
+        {
+            let name = String::from_utf8_lossy(&name);
+            self.error_types("TS2339", key_span, format!("Property '{name}' does not exist on type '{{}}'."), &[owner]);
+            return;
+        }
         let (code, origin) = match &error {
             TableError::PendingContext => unreachable!("pending member context handled above"),
             TableError::InvalidKey { .. } | TableError::KeyType { .. } => ("TS2538", key_span),
@@ -614,6 +623,8 @@ pub(super) fn describe_table(table: &TableType, mut render: impl FnMut(&Type) ->
             render(&tail.value)
         ));
     }
+    // An empty table prints as TypeScript prints an empty type literal.
+    if members.is_empty() { return "{}".into(); }
     format!("{{ {} }}", members.join(", "))
 }
 

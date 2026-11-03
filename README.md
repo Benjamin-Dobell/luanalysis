@@ -1230,6 +1230,24 @@ Some checks deliberately differ from Luanalysis for IntelliJ's. Stricter, as Typ
   Luanalysis for IntelliJ inferred `1 | "x"`. See [Generics](#generics).
 - A function's inferred result widens its literals, as TypeScript's does:
   `function() return 1 end` returns `number`, where Luanalysis for IntelliJ inferred `1`.
+- More arguments than parameters are an error where a call's results are expanded into them,
+  as TypeScript's spread of a longer tuple is; so is calling a function declared with `.` and no
+  parameters with `:`, which passes `self`.
+
+Reported elsewhere, as TypeScript reports them:
+
+- A table constructor that does not match its type is reported at the field that does not: at
+  its name, or a sequence element at its value. A field an array or dictionary cannot have (a
+  name, a gap, a key below 1) is reported at its key. A union of several table types is
+  reported whole, as TypeScript elaborates no such union.
+- An `and` or `or` expression is reported whole, and the results of one call, assigned to
+  several variables, at the call.
+- An assignment narrows: after `x = false`, a `boolean` `x` is `false` until it is assigned
+  again.
+
+`crates/luanalysis-fixtures/tests/v1_cases.rs` checks all 99 of Luanalysis for IntelliJ's own
+cases: 67 match it, and each difference in the other 32 is listed, with its reason, in
+`tests/legacy/v2-differences.txt`.
 
 More permissive:
 

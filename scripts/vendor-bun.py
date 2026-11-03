@@ -1079,6 +1079,21 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/native_flow.rs",
     "src/sema/check/native_runtime.rs",
 ])
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-base-cycles.patch",
+    "reason": "Report each named declaration of a base cycle, as TypeScript's `resolveBaseTypesOfInterface` reports each interface whose bases reach itself, rather than only the one whose bases were resolved first.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/infer.rs",
+    "patch": "vendor/patches/bun-sema-native-table-key-inference.patch",
+    "reason": "Infer a `table<K, V>` parameter's `K` from a Lua table's keys at the priority of a mapped type's constraint, as `inferToMappedType` infers `Record<K, V>`'s, so that a candidate found directly takes precedence.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/print.rs",
+    "patch": "vendor/patches/bun-sema-native-empty-tables.patch",
+    "reason": "Print an empty Lua table type as `{}`, as TypeScript prints an empty type literal, rather than with a space for members inside its braces.",
+})
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

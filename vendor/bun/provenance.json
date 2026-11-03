@@ -3428,6 +3428,24 @@
       "patch": "vendor/patches/bun-sema-native-cdata-runtime-domain.patch",
       "reason": "Add LuaJIT's C data as a third opaque runtime domain beside userdata and threads, so that `type(v) == \"cdata\"` narrows to and from its selected root declaration.",
       "patch_sha256": "9cd6228f86568ae3d535c0eaa0d605a602eb49ea624d77f2b7b8975e97450a62"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-base-cycles.patch",
+      "reason": "Report each named declaration of a base cycle, as TypeScript's `resolveBaseTypesOfInterface` reports each interface whose bases reach itself, rather than only the one whose bases were resolved first.",
+      "patch_sha256": "0490144656fe92acd0c77b69adde9f8be40ac9c5992c488bf1ff37eb532f951d"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-table-key-inference.patch",
+      "reason": "Infer a `table<K, V>` parameter's `K` from a Lua table's keys at the priority of a mapped type's constraint, as `inferToMappedType` infers `Record<K, V>`'s, so that a candidate found directly takes precedence.",
+      "patch_sha256": "0d4d479d4fe484ced5b5de479d28b5e2d9bbf0563c60beefcc14b2119298c94c"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-empty-tables.patch",
+      "reason": "Print an empty Lua table type as `{}`, as TypeScript prints an empty type literal, rather than with a space for members inside its braces.",
+      "patch_sha256": "c352ccf8c33b3276a992ccde2744c5712c4e60b8f21f2b85e2dc6b7c5830a00e"
     }
   ],
   "source_additions": {
@@ -3468,7 +3486,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "a79b3aa7d9de9fcd93e41eb3e83afe4f7981f7520e1c2e5b5b0a0d68259f7d93",
+      "extracted_sha256": "cd9f1d6c57efaf96f79be7d1c64a6c79e871e3f7fd006f01af90bf58d8236002",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -4427,7 +4445,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "a8125c8f7174a6ff5474082d7aa5bdbc72da291021bf212b80f274f79c583935"
+      "extracted_sha256": "66cf446c75be85d43546ae3a9942917a1b93696bcef1d53d782cd6d2911422a3"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
@@ -4472,7 +4490,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "672e7c2914c633cdbf0c48aa5c390862c784d42fb6df88c7c45359d76f15388f"
+      "extracted_sha256": "085409bb85d1b9c8a618126ed1f5176fc2890fe09ed1b9e97d46094b8d24d36d"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",

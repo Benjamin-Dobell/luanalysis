@@ -176,13 +176,15 @@ local valid={tag='number',value=1}
     );
 }
 #[test]
-fn inheritance_cycles_are_rejected_once_per_component_and_acyclic_bases_are_valid() {
+fn every_class_of_an_inheritance_cycle_is_rejected_and_acyclic_bases_are_valid() {
+    // At each class's base, as v1 reports each and TypeScript's `resolveBaseTypesOfInterface`
+    // reports each interface whose bases reach itself.
     exact(
         r#"---@class A:B
 ---@class B:C
 ---@class C:A
 "#,
-        &[("TS2310", "B")],
+        &[("TS2310", "B"), ("TS2310", "C"), ("TS2310", "A")],
     );
     exact(
         r#"---@class A:B

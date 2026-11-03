@@ -1,0 +1,665 @@
+# How v2 differs from v1 on v1's own cases (cases.tsv), as `tests/v1_cases.rs` checks them.
+#
+# Each case not listed here matches v1. A listed case differs in exactly the lines under it:
+# MISSING is a v1 expectation v2 does not report, EXTRA a diagnostic v2 reports that v1 did
+# not expect, COMPLETION a completion requirement v2 does not meet. The comment above each
+# group says why v2 behaves as it does. Most follow TypeScript where v1 did otherwise.
+
+## TestCompletion/testAnnotationDict
+# v1's fixture iterates with `pair`, which no Lua declares, so the value has no members
+# (a_table_iterated_with_pairs_completes_the_members_of_its_values checks `pairs`).
+COMPLETION missing completion "age"
+COMPLETION missing completion "name"
+COMPLETION missing completion "sayHello"
+
+## TestCompletion/test_attribute_completion
+# Local attributes are completed where Lua has them, from 5.4; this case checks 5.3.
+COMPLETION missing completion "close"
+COMPLETION missing completion "const"
+
+## TestModule/test_module_type
+# Not implemented: Lua 5.1's `module()` environments and v1's `---@module` (docs:
+# legacy-deficiencies D3).
+COMPLETION missing completion "name"
+
+## TestModule/test_module_members_visibility
+# Not implemented: Lua 5.1's `module()` environments and v1's `---@module` (docs:
+# legacy-deficiencies D3).
+COMPLETION expected at least one of ["myFieldName", "myFunction"] to be absent
+
+## DuplicateTypeTest/testDuplicateTypes
+# Repeated `---@class` declarations merge, as TypeScript merges interface declarations
+# (crates/luanalysis/tests/merged_classes.rs).
+MISSING main.lua:8:19 Error "DuplicateClass"
+MISSING main.lua:10:19 Error "DuplicateClass"
+
+## IllegalInheritanceTest/testIllegalInheritance
+# `table<K, V>` may be a base, as TypeScript's `Record<K, V>` may (docs: emmylua-gaps G13).
+MISSING illegal_inheritance.lua:13:5 Error "class GenericTableInheritance : table<st"...
+
+## TypeSafetyTest/testAlias
+# Assignment narrows, as in TypeScript: assigned a value, a variable has that value's type until
+# it is assigned again, so a later read of it is not the declared type v1 compared.
+MISSING alias.lua:27:11 Error "unionAlias"
+MISSING alias.lua:30:20 Error "unionAlias"
+MISSING alias.lua:33:11 Error "unionAlias"
+MISSING alias.lua:79:10 Error "identifiedTuple[1]"
+MISSING alias.lua:82:22 Error "NUMBER"
+# A union of several tables is not elaborated, as TypeScript elaborates no such union: the
+# constructor is reported once, whole.
+EXTRA alias.lua:70:19 TS2322 "{NUMBER, \"a string\"}"
+MISSING alias.lua:70:20 Error "NUMBER"
+MISSING alias.lua:70:28 Error "\"a string\""
+EXTRA alias.lua:72:19 TS2322 "{STRING, 1}"
+MISSING alias.lua:72:20 Error "STRING"
+MISSING alias.lua:72:28 Error "1"
+
+## TypeSafetyTest/testBoolean
+# Assignment narrows, as in TypeScript: assigned a value, a variable has that value's type until
+# it is assigned again, so a later read of it is not the declared type v1 compared.
+MISSING boolean.lua:37:16 Error "unknownBoolean"
+MISSING boolean.lua:38:16 Error "unknownLiteralBoolean"
+
+## TypeSafetyTest/testDocTables
+# A table constructor's field that is not assignable is reported at its name, or a sequence field
+# at its value, as TypeScript's elaborateError reports an object literal's property: v1 marked the
+# value.
+EXTRA doc_tables.lua:19:14 TS2322 "a"
+MISSING doc_tables.lua:19:18 Error "\"not a number\""
+EXTRA doc_tables.lua:34:26 TS2322 "a"
+MISSING doc_tables.lua:34:30 Error "aString"
+EXTRA doc_tables.lua:39:26 TS2322 "a"
+MISSING doc_tables.lua:39:30 Error "aNumber"
+EXTRA doc_tables.lua:47:17 TS2322 "a"
+MISSING doc_tables.lua:47:21 Error "aNumber"
+EXTRA doc_tables.lua:72:18 TS2322 "a"
+MISSING doc_tables.lua:72:22 Error "aString"
+EXTRA doc_tables.lua:80:18 TS2322 "a"
+MISSING doc_tables.lua:80:22 Error "aString"
+EXTRA doc_tables.lua:81:25 TS2322 "b"
+MISSING doc_tables.lua:81:29 Error "1"
+EXTRA doc_tables.lua:87:22 TS2322 "a"
+MISSING doc_tables.lua:87:26 Error "{}"
+EXTRA doc_tables.lua:88:35 TS2322 "b"
+MISSING doc_tables.lua:88:39 Error "aNumber"
+EXTRA doc_tables.lua:101:5 TS2322 "optional"
+MISSING doc_tables.lua:101:16 Error "aString"
+EXTRA doc_tables.lua:121:13 TS2322 "a"
+MISSING doc_tables.lua:121:17 Error "\"some string\""
+EXTRA doc_tables.lua:169:5 TS2322 "primitiveField"
+MISSING doc_tables.lua:169:22 Error "1"
+EXTRA doc_tables.lua:193:21 TS2322 "value"
+MISSING doc_tables.lua:193:29 Error "\"invalid\""
+# A constructor that lacks a field, written as another field's value, is reported at that field's
+# name, as TypeScript reports a nested object literal it cannot elaborate further.
+EXTRA doc_tables.lua:73:5 TS2322 "docTable2"
+MISSING doc_tables.lua:73:17 Error "{a = aNumber}"
+# v1's fixture has malformed annotations (`[5] = number` for `[5]: number`, an extra `}`); v2
+# reports them (docs: LEGACY-AUDIT).
+EXTRA doc_tables.lua:150:73 LUA1001 "="
+EXTRA doc_tables.lua:150:73 LUA1001 "="
+EXTRA doc_tables.lua:150:75 LUA1001 "number"
+EXTRA doc_tables.lua:251:41 LUA1001 "}"
+# Elaborated against a union of tables, a field is compared with what the union has at its key, as
+# TypeScript's getBestMatchIndexedAccessTypeOrUndefined compares it: one error at the field, where
+# v1 reported one per union candidate.
+MISSING doc_tables.lua:180:15 Error "\"Number\""
+EXTRA doc_tables.lua:181:9 TS2322 "value"
+MISSING doc_tables.lua:181:17 Error "{}"
+MISSING doc_tables.lua:181:17 Error "{}"
+# A field an array or dictionary cannot have (a gap, a name) is reported at its key or name, as
+# TypeScript reports an excess property: v1 marked the whole field, or for a dictionary the
+# constructor.
+EXTRA doc_tables.lua:200:25 TS2353 "value"
+MISSING doc_tables.lua:200:25 Error "value = {}"
+# Generic inference follows TypeScript: several candidates for one type parameter give their
+# common supertype, or else the first, and an argument that does not match it is the error, where
+# v1 inferred their union.
+EXTRA doc_tables.lua:269:62 TS2345 "genericResultABC"
+EXTRA doc_tables.lua:272:28 TS2322 "genericResultABC"
+MISSING doc_tables.lua:274:20 Error "genericResult123ABCUnion"
+
+## TypeSafetyTest/testFunctionGenerics
+# Generic inference follows TypeScript: several candidates for one type parameter give their
+# common supertype, or else the first, and an argument that does not match it is the error, where
+# v1 inferred their union.
+EXTRA function_generics.lua:83:14 TS2345 "string1"
+EXTRA function_generics.lua:149:26 TS2345 "string1"
+MISSING function_generics.lua:149:13 Error "fn6(number1, string1)"
+EXTRA function_generics.lua:150:26 TS2345 "string1"
+EXTRA function_generics.lua:151:33 TS2345 "string1"
+MISSING function_generics.lua:350:21 Error "merge(stringStringTable, strictAnonymous"...
+# `table<K, V>` is a `Record<K, V>`, whose keys infer K below a candidate found directly, as
+# TypeScript's inferToMappedType infers a mapped type's constraint: K is the argument's string,
+# the number array is the error, and the call's table<string, number> is no error.
+MISSING function_generics.lua:233:21 Error "fn8(anyString, number1, numberArray)"
+# A candidate that fails its constraint gives way to the constraint, as in TypeScript: the
+# argument is the error, and the call's result is not.
+MISSING function_generics.lua:251:21 Error "fn9(anyString, stringNumberTable)"
+# `table<K, V>` is an indexer `{ [K]: V }`, and a domain of literal keys requires no field, so
+# table<string, string> and table<"string1", string> are assignable to each other.
+MISSING function_generics.lua:259:22 Error "fn9(string1, stringStringTable)"
+MISSING function_generics.lua:260:21 Error "fn9(string1, string1StringTable)"
+# An overload must be compatible with its implementation, as TypeScript's
+# isImplementationCompatibleWithOverload requires (docs: NATIVE-IMPLEMENTATION-ARITY); v1 did not
+# check it.
+EXTRA function_generics.lua:420:4 TS2394 "@overload fun<K, V>(a: table<K, V>, b: t"...
+EXTRA function_generics.lua:445:4 TS2394 "@overload fun<T : number>(value: T): voi"...
+# A call that no signature accepts is one error, at the call, as TypeScript reports it: v1
+# reported each candidate's.
+MISSING function_generics.lua:452:21 Error ")"
+# `{a = 1}` is assignable to table<string, number>, as TypeScript's implicit index signature makes
+# an object literal type assignable to `{ [k: string]: number }`.
+MISSING function_generics.lua:465:21 Error "build(function()\n    return {a = 1}\nend)"
+# An assignment's error is reported at its value. The results of one call, or `...`, are one
+# value, which v2 reports once for each result that does not match; v1 also marked each target.
+MISSING function_generics.lua:509:24 Error "anyString"
+MISSING function_generics.lua:514:24 Error "nilOrString"
+MISSING function_generics.lua:516:50 Error "nilOrString"
+MISSING function_generics.lua:519:35 Error "anyString"
+MISSING function_generics.lua:530:26 Error "nilOrNumber"
+MISSING function_generics.lua:793:1 Error "anyString"
+MISSING function_generics.lua:793:12 Error "anyNumber"
+# Circular constraints are TS2313 at the type parameters, as TypeScript reports them, and a call
+# is not checked against them.
+EXTRA function_generics.lua:626:13 TS2313 "A"
+EXTRA function_generics.lua:626:19 TS2313 "B"
+MISSING function_generics.lua:632:26 Error "1"
+MISSING function_generics.lua:632:29 Error "1"
+# `arg.b()` calls an array of functions: an error in v1's fixture that v1 did not report.
+EXTRA function_generics.lua:752:22 TS2349 "arg.b"
+
+## TypeSafetyTest/testFunctionMultipleReturns
+# An assignment's error is reported at its value. The results of one call, or `...`, are one
+# value, which v2 reports once for each result that does not match; v1 also marked each target.
+MISSING function_multiple_returns.lua:16:1 Error "classWithAField"
+MISSING function_multiple_returns.lua:16:18 Error "aNumber"
+EXTRA function_multiple_returns.lua:17:37 TS2322 "multipleReturns()"
+MISSING function_multiple_returns.lua:157:1 Error "aNumber"
+MISSING function_multiple_returns.lua:157:10 Error "aString"
+# A `---@type` on a return statement is one result-pack diagnostic, as TypeScript reports a tuple
+# once: v1 reported the count and each value.
+EXTRA function_multiple_returns.lua:60:12 TS2322 "@type string"
+MISSING function_multiple_returns.lua:60:18 Error "string"
+MISSING function_multiple_returns.lua:60:18 Error "string"
+MISSING function_multiple_returns.lua:61:19 Error "\"a string\""
+MISSING function_multiple_returns.lua:61:31 Error "true"
+# A missing argument is TS2554 at the call, as TypeScript reports it: v1 marked the closing
+# parenthesis.
+EXTRA function_multiple_returns.lua:73:1 TS2554 "acceptsNumberString((returnsNumberString"...
+MISSING function_multiple_returns.lua:73:44 Error ")"
+# The results a call expands to are arguments: more than there are parameters is TS2554, as
+# TypeScript reports a spread of a longer tuple; v1 gave a weak warning or nothing.
+EXTRA function_multiple_returns.lua:75:1 TS2554 "acceptsNumberString(returnsNumberStringB"...
+MISSING function_multiple_returns.lua:75:21 WeakWarning "returnsNumberStringBoolean()"
+# A type parameter is one value, as in TypeScript: the T of `fun(): T` is the first result, so no
+# results are discarded.
+MISSING function_multiple_returns.lua:120:32 WeakWarning "returnStringOrGeneric(returns123)"
+# A result pack that matches no member of a union of packs is one error, not one per member.
+MISSING function_multiple_returns.lua:134:12 Error "aNumber"
+MISSING function_multiple_returns.lua:134:12 Error "aNumber, aNumber"
+MISSING function_multiple_returns.lua:146:12 Error "returnUnionOfMultipleResults(val)"
+MISSING function_multiple_returns.lua:146:12 Error "returnUnionOfMultipleResults(val)"
+MISSING function_multiple_returns.lua:146:5 Error "return returnUnionOfMultipleResults(val)"
+MISSING function_multiple_returns.lua:146:5 Error "return returnUnionOfMultipleResults(val)"
+
+## TypeSafetyTest/testFunctionPartiallyTyped
+# An unannotated callback's extra parameters are optional (legacy_semantics.rs:
+# untyped_callback_extra_parameters_are_optional_but_written_contracts_are_checked).
+MISSING function_partially_typed.lua:60:49 Error "function(arg1, arg2)\n    return true\nend"
+
+## TypeSafetyTest/testGenericAlias
+# A table constructor's field that is not assignable is reported at its name, or a sequence field
+# at its value, as TypeScript's elaborateError reports an object literal's property: v1 marked the
+# value.
+EXTRA generic_alias.lua:32:5 TS2322 "parameterOrNumber"
+MISSING generic_alias.lua:32:25 Error "'invalid'"
+EXTRA generic_alias.lua:38:5 TS2322 "aKnownStringLiteral"
+MISSING generic_alias.lua:38:27 Error "'invalid'"
+EXTRA generic_alias.lua:42:5 TS2322 "parameterOrNumber"
+MISSING generic_alias.lua:42:25 Error "'owner'"
+# A constructor assigned to a union of a string and a shape is elaborated into the shape. Its
+# field's error is the only one, as TypeScript reports no missing field once it has elaborated
+# one, and an assignment is one error, not one per union candidate.
+MISSING generic_alias.lua:41:16 Error "{\n    parameterOrNumber = 'owner'\n}"
+MISSING generic_alias.lua:41:16 Error "{\n    parameterOrNumber = 'owner'\n}"
+MISSING generic_alias.lua:47:16 Error "{}"
+MISSING generic_alias.lua:47:16 Error "{}"
+
+## TypeSafetyTest/testIndexedFields
+# An undeclared name is TS2304 alone; calling it is not an error as well (legacy_semantics.rs:
+# name_errors_do_not_need_a_duplicate_call_error_but_real_noncallables_are_checked).
+MISSING indexed_fields.lua:55:25 Error "Undeclared()"
+
+## TypeSafetyTest/testLambdaClass
+# A missing argument is TS2554 at the call, as TypeScript reports it: v1 marked the closing
+# parenthesis.
+EXTRA lambda_class.lua:19:20 TS2554 "LambdaClass()"
+MISSING lambda_class.lua:19:32 Error ")"
+# A member a type lacks is TS2339 at its name, as TypeScript reports a missing property; calling
+# it is not an error as well.
+MISSING lambda_class.lua:72:1 Error "lambdaClassWithStatic__static.method()"
+MISSING lambda_class.lua:73:1 Error "parentLambdaClassWithStatic.method()"
+MISSING lambda_class.lua:74:1 Error "parentLambdaClassWithStatic__static.meth"...
+MISSING lambda_class.lua:76:1 Error "lambdaClassWithStatic.staticMethod()"
+MISSING lambda_class.lua:78:1 Error "parentLambdaClassWithStatic.staticMethod"...
+MISSING lambda_class.lua:79:1 Error "parentLambdaClassWithStatic__static.stat"...
+
+## TypeSafetyTest/testModules
+# Not implemented: Lua 5.1's `module()` environments and v1's `---@module` (docs:
+# legacy-deficiencies D3).
+EXTRA moduleA.lua:1:12 LUA2031 "ModuleA"
+EXTRA moduleA_reference.lua:6:9 TS2339 "module_scoped_var"
+
+## TypeSafetyTest/testModuleSupportUnavailableLua53
+# An undeclared name is TS2304 alone; calling it is not an error as well (legacy_semantics.rs:
+# name_errors_do_not_need_a_duplicate_call_error_but_real_noncallables_are_checked).
+MISSING module_unavailable.lua:1:1 Error "module(\"Whatever\")"
+
+## TypeSafetyTest/testNumbers
+# Arithmetic needs numbers: a string operand is reported at the operand (TS2356, TS2362), as
+# TypeScript reports an arithmetic operand, where v1 reported the result's type.
+EXTRA numbers.lua:32:16 TS2356 "\"- -1\""
+MISSING numbers.lua:32:15 Error "-\"- -1\""
+
+## TypeSafetyTest/testOps
+# Arithmetic needs numbers: a string operand is reported at the operand (TS2356, TS2362), as
+# TypeScript reports an arithmetic operand, where v1 reported the result's type.
+EXTRA ops.lua:66:11 TS2362 "aStringOrNumber"
+MISSING ops.lua:66:11 Error "aStringOrNumber + 1"
+EXTRA ops.lua:70:11 TS2362 "aStringOrNumber"
+MISSING ops.lua:70:11 Error "aStringOrNumber + 1"
+# `and` and `or` are reported at the whole expression, as TypeScript elaborates no `&&` or `||`:
+# v1 marked the operand that did not match.
+EXTRA ops.lua:91:15 TS2322 "true or {1, 2}"
+MISSING ops.lua:91:15 Error "true"
+EXTRA ops.lua:93:15 TS2322 "aBoolean or {1, 2}"
+MISSING ops.lua:93:15 Error "aBoolean"
+EXTRA ops.lua:96:15 TS2322 "false and {1, 2}"
+MISSING ops.lua:96:15 Error "false"
+EXTRA ops.lua:97:15 TS2322 "{1, 2} and false"
+MISSING ops.lua:97:26 Error "false"
+EXTRA ops.lua:99:15 TS2322 "{1, 2} and true"
+MISSING ops.lua:99:26 Error "true"
+EXTRA ops.lua:100:15 TS2322 "aBoolean and {1, 2}"
+MISSING ops.lua:100:15 Error "aBoolean"
+EXTRA ops.lua:101:15 TS2322 "{1, 2} and aBoolean"
+MISSING ops.lua:101:26 Error "aBoolean"
+EXTRA ops.lua:105:10 TS2322 "true or {x = 1}"
+MISSING ops.lua:105:10 Error "true"
+EXTRA ops.lua:107:10 TS2322 "aBoolean or {x = 1}"
+MISSING ops.lua:107:10 Error "aBoolean"
+EXTRA ops.lua:110:10 TS2322 "false and {x = 1}"
+MISSING ops.lua:110:10 Error "false"
+EXTRA ops.lua:111:10 TS2322 "{x = 1} and false"
+MISSING ops.lua:111:22 Error "false"
+EXTRA ops.lua:113:10 TS2322 "{x = 1} and true"
+MISSING ops.lua:113:22 Error "true"
+EXTRA ops.lua:114:10 TS2322 "aBoolean and {x = 1}"
+MISSING ops.lua:114:10 Error "aBoolean"
+EXTRA ops.lua:115:10 TS2322 "{x = 1} and aBoolean"
+MISSING ops.lua:115:22 Error "aBoolean"
+EXTRA ops.lua:117:10 TS2322 "false or {invalid = 1}"
+MISSING ops.lua:117:19 Error "{invalid = 1}"
+EXTRA ops.lua:118:10 TS2322 "{invalid = 1} or false"
+MISSING ops.lua:118:10 Error "{invalid = 1}"
+EXTRA ops.lua:119:10 TS2322 "true or {invalid = 1}"
+MISSING ops.lua:119:10 Error "true"
+EXTRA ops.lua:120:10 TS2322 "{invalid = 1} or true"
+MISSING ops.lua:120:10 Error "{invalid = 1}"
+EXTRA ops.lua:121:10 TS2322 "aBoolean or {invalid = 1}"
+MISSING ops.lua:121:10 Error "aBoolean"
+MISSING ops.lua:121:22 Error "{invalid = 1}"
+EXTRA ops.lua:122:10 TS2322 "{invalid = 1} or aBoolean"
+MISSING ops.lua:122:10 Error "{invalid = 1}"
+EXTRA ops.lua:124:10 TS2322 "false and {invalid = 1}"
+MISSING ops.lua:124:10 Error "false"
+EXTRA ops.lua:125:10 TS2322 "{invalid = 1} and false"
+MISSING ops.lua:125:28 Error "false"
+EXTRA ops.lua:126:10 TS2322 "true and {invalid = 1}"
+MISSING ops.lua:126:19 Error "{invalid = 1}"
+EXTRA ops.lua:127:10 TS2322 "{invalid = 1} and true"
+MISSING ops.lua:127:28 Error "true"
+EXTRA ops.lua:128:10 TS2322 "aBoolean and {invalid = 1}"
+MISSING ops.lua:128:10 Error "aBoolean"
+MISSING ops.lua:128:23 Error "{invalid = 1}"
+EXTRA ops.lua:129:10 TS2322 "{invalid = 1} and aBoolean"
+MISSING ops.lua:129:28 Error "aBoolean"
+EXTRA ops.lua:133:15 TS2322 "false and {1, 2} or {invalid = 1}"
+MISSING ops.lua:133:36 Error "invalid = 1"
+EXTRA ops.lua:134:15 TS2322 "{1, 2} and false or {invalid = 1}"
+MISSING ops.lua:134:36 Error "invalid = 1"
+EXTRA ops.lua:136:15 TS2322 "{1, 2} and {invalid = 1} or false"
+MISSING ops.lua:136:27 Error "invalid = 1"
+EXTRA ops.lua:139:15 TS2322 "true and {invalid = 1} or {1, 2}"
+MISSING ops.lua:139:25 Error "invalid = 1"
+EXTRA ops.lua:141:15 TS2322 "{1, 2} and true or {invalid = 1}"
+MISSING ops.lua:141:26 Error "true"
+EXTRA ops.lua:142:15 TS2322 "{invalid = 1} and true or {1, 2}"
+MISSING ops.lua:142:33 Error "true"
+EXTRA ops.lua:143:15 TS2322 "{1, 2} and {invalid = 1} or true"
+MISSING ops.lua:143:27 Error "invalid = 1"
+EXTRA ops.lua:147:15 TS2322 "nil and {1, 2} or {invalid = 1}"
+MISSING ops.lua:147:34 Error "invalid = 1"
+EXTRA ops.lua:148:15 TS2322 "{1, 2} and nil or {invalid = 1}"
+MISSING ops.lua:148:34 Error "invalid = 1"
+EXTRA ops.lua:150:15 TS2322 "{1, 2} and {invalid = 1} or nil"
+MISSING ops.lua:150:27 Error "invalid = 1"
+EXTRA ops.lua:153:15 TS2322 "aBoolean and {invalid = 1} or {1, 2}"
+MISSING ops.lua:153:29 Error "invalid = 1"
+EXTRA ops.lua:154:15 TS2322 "aBoolean and {1, 2} or {invalid = 1}"
+MISSING ops.lua:154:39 Error "invalid = 1"
+EXTRA ops.lua:155:15 TS2322 "{1, 2} and aBoolean or {invalid = 1}"
+MISSING ops.lua:155:26 Error "aBoolean"
+MISSING ops.lua:155:39 Error "invalid = 1"
+EXTRA ops.lua:156:15 TS2322 "{invalid = 1} and aBoolean or {1, 2}"
+MISSING ops.lua:156:33 Error "aBoolean"
+EXTRA ops.lua:157:15 TS2322 "{1, 2} and {invalid = 1} or aBoolean"
+MISSING ops.lua:157:27 Error "invalid = 1"
+EXTRA ops.lua:162:15 TS2322 "false or {1, 2} and {invalid = 1}"
+MISSING ops.lua:162:36 Error "invalid = 1"
+EXTRA ops.lua:164:15 TS2322 "{invalid = 1} or false and {1, 2}"
+MISSING ops.lua:164:16 Error "invalid = 1"
+EXTRA ops.lua:166:15 TS2322 "{invalid = 1} or {1, 2} and false"
+MISSING ops.lua:166:16 Error "invalid = 1"
+EXTRA ops.lua:168:15 TS2322 "true or {invalid = 1} and {1, 2}"
+MISSING ops.lua:168:15 Error "true"
+EXTRA ops.lua:169:15 TS2322 "true or {1, 2} and {invalid = 1}"
+MISSING ops.lua:169:15 Error "true"
+EXTRA ops.lua:171:15 TS2322 "{invalid = 1} or true and {1, 2}"
+MISSING ops.lua:171:16 Error "invalid = 1"
+EXTRA ops.lua:173:15 TS2322 "{invalid = 1} or {1, 2} and true"
+MISSING ops.lua:173:16 Error "invalid = 1"
+EXTRA ops.lua:176:15 TS2322 "nil or {1, 2} and {invalid = 1}"
+MISSING ops.lua:176:34 Error "invalid = 1"
+EXTRA ops.lua:178:15 TS2322 "{invalid = 1} or nil and {1, 2}"
+MISSING ops.lua:178:16 Error "invalid = 1"
+EXTRA ops.lua:180:15 TS2322 "{invalid = 1} or {1, 2} and nil"
+MISSING ops.lua:180:16 Error "invalid = 1"
+EXTRA ops.lua:182:15 TS2322 "aBoolean or {invalid = 1} and {1, 2}"
+MISSING ops.lua:182:15 Error "aBoolean"
+EXTRA ops.lua:183:15 TS2322 "aBoolean or {1, 2} and {invalid = 1}"
+MISSING ops.lua:183:15 Error "aBoolean"
+MISSING ops.lua:183:39 Error "invalid = 1"
+EXTRA ops.lua:185:15 TS2322 "{invalid = 1} or aBoolean and {1, 2}"
+MISSING ops.lua:185:16 Error "invalid = 1"
+EXTRA ops.lua:187:15 TS2322 "{invalid = 1} or {1, 2} and aBoolean"
+MISSING ops.lua:187:16 Error "invalid = 1"
+EXTRA ops.lua:190:15 TS2322 "aBoolean and ({invalid = 1} or {1, 2})"
+MISSING ops.lua:190:15 Error "aBoolean"
+MISSING ops.lua:190:30 Error "invalid = 1"
+EXTRA ops.lua:191:15 TS2322 "aBoolean and ({1, 2} or {invalid = 1})"
+MISSING ops.lua:191:15 Error "aBoolean"
+EXTRA ops.lua:192:15 TS2322 "{1, 2} and (aBoolean or {invalid = 1})"
+MISSING ops.lua:192:27 Error "aBoolean"
+MISSING ops.lua:192:40 Error "invalid = 1"
+EXTRA ops.lua:193:15 TS2322 "{invalid = 1} and (aBoolean or {1, 2})"
+MISSING ops.lua:193:34 Error "aBoolean"
+EXTRA ops.lua:194:15 TS2322 "{1, 2} and ({invalid = 1} or aBoolean)"
+MISSING ops.lua:194:28 Error "invalid = 1"
+EXTRA ops.lua:198:15 TS2322 "aBoolean or ({invalid = 1} and {1, 2})"
+MISSING ops.lua:198:15 Error "aBoolean"
+EXTRA ops.lua:199:15 TS2322 "aBoolean or ({1, 2} and {invalid = 1})"
+MISSING ops.lua:199:15 Error "aBoolean"
+MISSING ops.lua:199:40 Error "invalid = 1"
+EXTRA ops.lua:201:15 TS2322 "{invalid = 1} or (aBoolean and {1, 2})"
+MISSING ops.lua:201:16 Error "invalid = 1"
+EXTRA ops.lua:203:15 TS2322 "{invalid = 1} or ({1, 2} and aBoolean)"
+MISSING ops.lua:203:16 Error "invalid = 1"
+EXTRA ops.lua:210:12 TS2322 "aBoolean and {1, 2} or {invalid = 1}"
+MISSING ops.lua:210:36 Error "invalid = 1"
+
+## TypeSafetyTest/testOverloads
+# An overload must be compatible with its implementation, as TypeScript's
+# isImplementationCompatibleWithOverload requires (docs: NATIVE-IMPLEMENTATION-ARITY); v1 did not
+# check it.
+EXTRA overloads.lua:107:4 TS2394 "@overload fun(a: number): boolean"
+EXTRA overloads.lua:108:4 TS2394 "@overload fun(a: number, b: number): num"...
+EXTRA overloads.lua:125:4 TS2394 "@overload fun(a: number, b: number): num"...
+EXTRA overloads.lua:126:4 TS2394 "@overload fun(a: number): boolean"
+# The results a call expands to are arguments: more than there are parameters is TS2554, as
+# TypeScript reports a spread of a longer tuple; v1 gave a weak warning or nothing.
+EXTRA overloads.lua:158:11 TS2554 "overloadedWithDifferentReturnTypes(someS"...
+EXTRA overloads.lua:159:11 TS2554 "overloadedWithDifferentReturnTypes(someS"...
+EXTRA overloads.lua:160:12 TS2554 "overloadedWithDifferentReturnTypes(someS"...
+EXTRA overloads.lua:174:11 TS2554 "overloadedWithDifferentReturnTypes2(some"...
+EXTRA overloads.lua:175:11 TS2554 "overloadedWithDifferentReturnTypes2(some"...
+EXTRA overloads.lua:176:12 TS2554 "overloadedWithDifferentReturnTypes2(some"...
+
+## TypeSafetyTest/testOverrides
+# A function's literal results widen, as TypeScript's do: `function() return 1 end` returns number
+# (docs: legacy-deficiencies).
+EXTRA overrides.lua:425:7 TS2322 "tableImplicitFieldChildTableImplicitFiel"...
+EXTRA overrides.lua:627:7 TS2322 "tableImplicitFieldChildAssignedImplicitF"...
+EXTRA overrides.lua:628:7 TS2322 "tableImplicitFieldChildAssignedImplicitF"...
+# An override that does not match its base is reported once: TS2416 at a declared function, TS2322
+# for an assigned one. v1's span began at the `---@return` above it.
+MISSING overrides.lua:724:1 Error "---@return string\nfunction IllegalDeclar"...
+EXTRA overrides.lua:725:1 TS2416 "function IllegalDeclaredExplicitMethodCh"...
+EXTRA overrides.lua:732:1 TS2322 "function IllegalDeclaredImplicitMethodCh"...
+MISSING overrides.lua:732:1 Error "function IllegalDeclaredImplicitMethodCh"...
+EXTRA overrides.lua:746:1 TS2322 "function IllegalMultipleResultsOverride."...
+MISSING overrides.lua:746:1 Error "function IllegalMultipleResultsOverride."...
+# Assignment narrows, as in TypeScript: assigned a value, a variable has that value's type until
+# it is assigned again, so a later read of it is not the declared type v1 compared.
+MISSING overrides.lua:756:17 Error "optionalStringParam"
+MISSING overrides.lua:764:17 Error "overiddenOptionStringParam"
+
+## TypeSafetyTest/testPoorlyNamedParams
+# A `---@param` that names no parameter of its function is LUA2011: v1's fixture has such tags.
+EXTRA poorly_named_params.lua:22:11 LUA2011 "fun"
+EXTRA poorly_named_params.lua:27:11 LUA2011 "vararg"
+# An assignment's error is reported at its value. The results of one call, or `...`, are one
+# value, which v2 reports once for each result that does not match; v1 also marked each target.
+EXTRA poorly_named_params.lua:35:20 TS2322 "poorlyNamedParamFunction3(aString, aBool"...
+MISSING poorly_named_params.lua:35:10 Error "aString"
+
+## TypeSafetyTest/testRecursiveAlias
+# A union of several tables is not elaborated, as TypeScript elaborates no such union: the
+# constructor is reported once, whole.
+EXTRA recursive_alias.lua:73:9 TS2322 "{\n    [3] = \"bad\"\n}"
+MISSING recursive_alias.lua:74:5 Error "[3] = \"bad\""
+
+## TypeSafetyTest/testSelf
+# Calling a function declared with `.` and no parameters with `:` passes self as an extra
+# argument: TS2554.
+EXTRA self.lua:77:9 TS2554 "SelfB:dotMethod()"
+EXTRA self.lua:78:9 TS2554 "SelfB:lambdaMethod()"
+EXTRA self.lua:82:9 TS2554 "SelfB:dotMethod()"
+EXTRA self.lua:83:9 TS2554 "SelfB:lambdaMethod()"
+EXTRA self.lua:87:9 TS2554 "SelfA:dotMethod()"
+EXTRA self.lua:88:9 TS2554 "SelfA:lambdaMethod()"
+EXTRA self.lua:92:9 TS2554 "selfB:dotMethod()"
+EXTRA self.lua:93:9 TS2554 "selfB:lambdaMethod()"
+EXTRA self.lua:97:9 TS2554 "selfB:dotMethod()"
+EXTRA self.lua:98:9 TS2554 "selfB:lambdaMethod()"
+EXTRA self.lua:102:9 TS2554 "selfA:dotMethod()"
+EXTRA self.lua:103:9 TS2554 "selfA:lambdaMethod()"
+# A missing argument is TS2554 at the call, as TypeScript reports it: v1 marked the closing
+# parenthesis.
+EXTRA self.lua:119:1 TS2554 "classWithInstanceMethods.withoutParam()"
+MISSING self.lua:119:39 Error ")"
+EXTRA self.lua:120:1 TS2554 "classWithInstanceMethods.withParam(\"abc\""...
+MISSING self.lua:120:36 Error "\"abc\""
+MISSING self.lua:120:41 Error ")"
+
+## TypeSafetyTest/testShape
+# A table constructor's field that is not assignable is reported at its name, or a sequence field
+# at its value, as TypeScript's elaborateError reports an object literal's property: v1 marked the
+# value.
+EXTRA shape.lua:20:11 TS2322 "a"
+MISSING shape.lua:20:15 Error "\"not a number\""
+EXTRA shape.lua:36:18 TS2322 "b"
+MISSING shape.lua:36:22 Error "2"
+EXTRA shape.lua:51:23 TS2322 "a"
+MISSING shape.lua:51:27 Error "aString"
+EXTRA shape.lua:56:23 TS2322 "a"
+MISSING shape.lua:56:27 Error "aNumber"
+EXTRA shape.lua:68:31 TS2322 "b"
+MISSING shape.lua:68:35 Error "aString"
+EXTRA shape.lua:76:14 TS2322 "a"
+EXTRA shape.lua:76:27 TS2322 "b"
+MISSING shape.lua:76:18 Error "aNumber"
+MISSING shape.lua:76:31 Error "aNumber"
+EXTRA shape.lua:103:15 TS2322 "a"
+MISSING shape.lua:103:19 Error "aString"
+EXTRA shape.lua:111:15 TS2322 "a"
+MISSING shape.lua:111:19 Error "aString"
+EXTRA shape.lua:112:22 TS2322 "b"
+MISSING shape.lua:112:26 Error "1"
+EXTRA shape.lua:118:19 TS2322 "a"
+MISSING shape.lua:118:23 Error "{}"
+EXTRA shape.lua:119:32 TS2322 "b"
+MISSING shape.lua:119:36 Error "aNumber"
+EXTRA shape.lua:134:5 TS2322 "optional"
+MISSING shape.lua:134:16 Error "aString"
+EXTRA shape.lua:156:13 TS2322 "a"
+MISSING shape.lua:156:17 Error "\"some string\""
+EXTRA shape.lua:213:5 TS2322 "primitiveField"
+MISSING shape.lua:213:22 Error "1"
+EXTRA shape.lua:242:21 TS2322 "value"
+MISSING shape.lua:242:29 Error "\"invalid\""
+# A constructor that lacks a field, written as another field's value, is reported at that field's
+# name, as TypeScript reports a nested object literal it cannot elaborate further.
+EXTRA shape.lua:104:5 TS2322 "shape2"
+MISSING shape.lua:104:14 Error "{a = aNumber}"
+# Elaborated against a union of tables, a field is compared with what the union has at its key, as
+# TypeScript's getBestMatchIndexedAccessTypeOrUndefined compares it: one error at the field, where
+# v1 reported one per union candidate.
+MISSING shape.lua:228:15 Error "\"Number\""
+EXTRA shape.lua:229:9 TS2322 "value"
+MISSING shape.lua:229:17 Error "{}"
+MISSING shape.lua:229:17 Error "{}"
+# A field an array or dictionary cannot have (a gap, a name) is reported at its key or name, as
+# TypeScript reports an excess property: v1 marked the whole field, or for a dictionary the
+# constructor.
+EXTRA shape.lua:249:25 TS2353 "value"
+MISSING shape.lua:249:25 Error "value = {}"
+
+## TypeSafetyTest/testTables
+# nil deletes an array element (docs: legacy-deficiencies D8).
+MISSING tables.lua:38:18 Error "nil"
+# A field an array or dictionary cannot have (a gap, a name) is reported at its key or name, as
+# TypeScript reports an excess property: v1 marked the whole field, or for a dictionary the
+# constructor.
+EXTRA tables.lua:56:25 TS2322 "[3]"
+MISSING tables.lua:56:25 Error "[3] = 3"
+EXTRA tables.lua:59:16 TS2353 "one"
+EXTRA tables.lua:59:25 TS2353 "two"
+EXTRA tables.lua:59:34 TS2353 "three"
+MISSING tables.lua:59:16 Error "one = 1"
+MISSING tables.lua:59:25 Error "two = 2"
+MISSING tables.lua:59:34 Error "three = 3"
+EXTRA tables.lua:60:22 TS2353 "one"
+EXTRA tables.lua:60:31 TS2353 "two"
+EXTRA tables.lua:60:40 TS2353 "three"
+MISSING tables.lua:60:21 Error "{one = 1, two = 2, three = 3}"
+EXTRA tables.lua:66:29 TS2322 "[3]"
+MISSING tables.lua:66:29 Error "[3] = \"three\""
+EXTRA tables.lua:151:23 TS2322 "[5]"
+MISSING tables.lua:151:23 Error "[5]=1"
+
+## TypeSafetyTest/testTypeCasts
+# A cast comment has no span: an error in its operand is reported at the operand.
+EXTRA type_casts.lua:14:34 TS2345 "stringOrNumber(false)"
+MISSING type_casts.lua:14:13 Error "--[[---@not number]] stringOrNumber(fals"...
+EXTRA type_casts.lua:21:39 TS2345 "1"
+MISSING type_casts.lua:21:13 Error "--[[---@type fun(): any]] 1"
+# An assignment's error is reported at its value. The results of one call, or `...`, are one
+# value, which v2 reports once for each result that does not match; v1 also marked each target.
+MISSING type_casts.lua:41:1 Error "aString"
+MISSING type_casts.lua:41:10 Error "aNumber"
+EXTRA type_casts.lua:43:50 TS2322 "multiReturn()"
+MISSING type_casts.lua:43:10 Error "aNumber"
+MISSING type_casts.lua:43:20 Error "--[[---@type string, string]] multiRetur"...
+MISSING type_casts.lua:59:1 Error "aNumber"
+MISSING type_casts.lua:59:10 Error "aNumber"
+MISSING type_casts.lua:59:20 Error "multiReturn2(true)"
+
+## TypeSafetyTest/testUnions
+# A table constructor's field that is not assignable is reported at its name, or a sequence field
+# at its value, as TypeScript's elaborateError reports an object literal's property: v1 marked the
+# value.
+EXTRA unions.lua:50:5 TS2322 "occupant"
+MISSING unions.lua:50:16 Error "\"invalid\""
+
+## TypeSafetyTest/testUnknown
+# Without strict nil, a nil assigned is still nil in flow (non_strict_nil.rs:
+# permissive_assignments_keep_actual_nil_for_guards_and_type_exclusion), so the later assignment
+# is of nil.
+MISSING unknown.lua:30:11 Error "aNumber"
+# A local with no value is nil: indexing it is a Lua runtime error, and with strict nil it is no
+# number or string. v1 treated it as unknown.
+EXTRA unknown.lua:49:17 TS7053 "aVar"
+EXTRA unknown.lua:50:17 TS2339 "doThing"
+EXTRA unknown.lua:51:17 TS2339 "doThing"
+
+## TypeSafetyTest/testUnknownStrict
+# A local with no value is nil: indexing it is a Lua runtime error, and with strict nil it is no
+# number or string. v1 treated it as unknown.
+EXTRA unknown_strict.lua:20:13 TS2345 "implicitUnknown"
+EXTRA unknown_strict.lua:27:11 TS2322 "implicitUnknown"
+EXTRA unknown_strict.lua:33:11 TS2322 "implicitUnknown"
+EXTRA unknown_strict.lua:49:17 TS7053 "aVar"
+MISSING unknown_strict.lua:49:1 Error "implicitUnknown.aVar"
+# A member a type lacks is TS2339 at its name, as TypeScript reports a missing property; calling
+# it is not an error as well.
+MISSING unknown_strict.lua:50:1 Error "implicitUnknown.doThing()"
+MISSING unknown_strict.lua:51:1 Error "implicitUnknown:doThing()"
+# With --no-unsafe-any, a member of `any` is TS2339 once at its name; calling it is not reported
+# again (docs: legacy-deficiencies D2).
+MISSING unknown_strict.lua:59:5 Error "param.doThing()"
+MISSING unknown_strict.lua:60:5 Error "param:doThing()"
+
+## TypeSafetyTest/testVarargs
+# An assignment's error is reported at its value. The results of one call, or `...`, are one
+# value, which v2 reports once for each result that does not match; v1 also marked each target.
+MISSING varargs.lua:72:19 Error "nilOrBoolean"
+MISSING varargs.lua:72:34 Error "..."
+MISSING varargs.lua:72:5 Error "nilOrBoolean"
+MISSING varargs.lua:73:19 Error "nilOrBoolean"
+MISSING varargs.lua:73:34 Error "..."
+MISSING varargs.lua:73:5 Error "nilOrBoolean"
+# A call that no signature accepts is one error, at the call, as TypeScript reports it: v1
+# reported each candidate's.
+EXTRA varargs.lua:77:5 TS2554 "wantsNilOrNumberAndOptionallyNilOrBoolea"...
+MISSING varargs.lua:77:47 Error "..."
+MISSING varargs.lua:77:50 Error ")"
+MISSING varargs.lua:77:50 Error ")"
+MISSING varargs.lua:77:50 Error ")"
+# `----@type` (four dashes) is a plain comment, as lua-language-server reads more dashes than
+# `---`: the local is nil, and calling it is an error.
+EXTRA varargs.lua:93:11 TS2349 "genericVarargFunction2"
+EXTRA varargs.lua:94:11 TS2349 "genericVarargFunction2"
+MISSING varargs.lua:94:11 Error "genericVarargFunction2(1, true, false, t"...
+EXTRA varargs.lua:95:12 TS2349 "genericVarargFunction2"
+MISSING varargs.lua:95:12 Error "genericVarargFunction2(1, 1, 2, 3)"
+EXTRA varargs.lua:96:12 TS2349 "genericVarargFunction2"
+# An overload must be compatible with its implementation, as TypeScript's
+# isImplementationCompatibleWithOverload requires (docs: NATIVE-IMPLEMENTATION-ARITY); v1 did not
+# check it.
+EXTRA varargs.lua:175:4 TS2394 "@overload fun<K, V>(...: table<K, V>): t"...
+EXTRA varargs.lua:219:4 TS2394 "@overload fun(): boolean"
+EXTRA varargs.lua:224:4 TS2394 "@overload fun(): boolean"
+# A trailing `...` is all of the varargs, as a spread is, which TypeScript does not elaborate: the
+# constructor is reported.
+EXTRA varargs.lua:232:47 TS2345 "{...}"
+MISSING varargs.lua:232:48 Error "..."
+
+## TypeSafetyTest/testVarreturn
+# An assignment's error is reported at its value. The results of one call, or `...`, are one
+# value, which v2 reports once for each result that does not match; v1 also marked each target.
+MISSING varreturn.lua:17:38 Error "nilOrNumber"
+MISSING varreturn.lua:37:38 Error "nilOrNumber"
+MISSING varreturn.lua:55:29 Error "nilOrNumber"
+MISSING varreturn.lua:71:29 Error "nilOrNumber"
+MISSING varreturn.lua:81:14 Error "nilOrBoolean"
+# A `---@param` that names no parameter of its function is LUA2011: v1's fixture has such tags.
+EXTRA varreturn.lua:20:11 LUA2011 "numberParam"
+# A call that returns `T...` may expand to fewer arguments than are needed: TS2554 at the call, as
+# TypeScript reports a spread of a tuple of no fixed length; v1 reported each parameter.
+EXTRA varreturn.lua:43:1 TS2554 "acceptsNumberString(varreturnFunction2()"...
+MISSING varreturn.lua:43:21 Error "varreturnFunction2()"
+MISSING varreturn.lua:43:41 Error ")"
+EXTRA varreturn.lua:96:1 TS2554 "nilOrBooleanParameter(booleanVarreturn()"...
+MISSING varreturn.lua:96:41 Error ")"

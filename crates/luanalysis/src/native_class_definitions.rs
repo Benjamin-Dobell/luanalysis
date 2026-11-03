@@ -216,6 +216,24 @@ impl NativeRegistry {
     pub(crate) fn is_class_definition_initializer(&self, span: Span) -> bool {
         self.class_definition_for_initializer(span).is_some()
     }
+    /// Whether the class `declaration` has field `name` only from a base: its declarations, all of
+    /// this file, have a base and declare no such field. The check of its overrides reports a
+    /// definition's value for such a field.
+    pub(crate) fn inherits_field_only(&self, declaration: NativeTypeDeclarationKey, name: &[u8]) -> bool {
+        let canonical = self.canonical_declaration(declaration);
+        let merged = self.project_names.as_ref().map_or(&[][..], |names| names.merged_into(canonical));
+        let mut has_base = false;
+        for key in std::iter::once(canonical).chain(merged.iter().copied()) {
+            let Some(source) = self.named.declaration(NativeNamedKey { snapshot: key.snapshot, index: key.index }) else { return false };
+            if let NamedTypeDeclarationKind::Record { bases, .. } = &source.syntax.kind { has_base |= !bases.is_empty(); }
+            if source.members.iter().filter_map(|&member| self.named.member(member)).any(|member| {
+                matches!(&member.field.key, luanalysis_syntax::TypeFieldKey::Named(field) if field.text.as_bytes() == name)
+            }) {
+                return false;
+            }
+        }
+        has_base
+    }
     fn class_definition_for_initializer(&self, span: Span) -> Option<ClassDefinitionDirective> {
         let index = self.class_definition_index();
         index.directives[*index.by_initializer.get(&(span.start, span.end))?].clone().ok().flatten()
@@ -233,7 +251,7 @@ impl Checker<'_> {
         // A checked class attachment has exactly one original destination.
         // Lua discards extra call results here; validate its actual first value.
         let actual = self.engine.pack_slot(&pack, 0);
-        let value = self.finish_class_definition_initializer(span, actual);
+        let value = self.finish_class_definition_initializer(span, None, actual);
         self.record_expression_type(span, &value);
         luanalysis_engine::ValuePack::single(value)
     }
@@ -269,7 +287,8 @@ impl Checker<'_> {
         let directive = self.native?.class_definition_for_binding(binding)?;
         self.engine.class_definition_member_contract(directive.key, actual)
     }
-    pub(crate) fn finish_class_definition_initializer(&mut self, span: Span, actual: Type) -> Type {
+    /// `fields`: the initializer's, when it is a table constructor.
+    pub(crate) fn finish_class_definition_initializer(&mut self, span: Span, fields: Option<&[luanalysis_syntax::TableField]>, actual: Type) -> Type {
         let Some(directive) = self
             .native
             .and_then(|native| native.class_definition_for_initializer(span))
@@ -295,7 +314,9 @@ impl Checker<'_> {
             // A field that fails its contract is reported once; the table is still the class's
             // definition, as a TypeScript class with an incompatible member is still the class.
             Err(error @ NamedTypeError::DefinitionField { .. }) if !reopened => {
-                self.class_definition_error(error, span);
+                if !fields.is_some_and(|fields| self.elaborate_class_definition(&directive, fields, &actual, &error)) {
+                    self.class_definition_error(error, span);
+                }
                 self.engine.class_definition_value_recovered(directive.key, &class, &actual).unwrap_or(actual)
             }
             Err(error) => {
@@ -303,6 +324,26 @@ impl Checker<'_> {
                 actual
             }
         }
+    }
+    /// A definition table that does not match its class, elaborated into its fields as an
+    /// assignment of the constructor is (`elaborate_table`). A field the class has only from a
+    /// base is left to the check of its overrides, which reports it. Whether a field was either.
+    fn elaborate_class_definition(&mut self, directive: &ClassDefinitionDirective, fields: &[luanalysis_syntax::TableField], actual: &Type, error: &NamedTypeError) -> bool {
+        let NamedTypeError::DefinitionField { error: luanalysis_engine::TableError::ValueType { value, expected }, .. } = error else { return false };
+        if value != actual { return false; }
+        let Some(native) = self.native else { return false };
+        let (inherited, own): (Vec<_>, Vec<_>) = fields.iter().cloned().partition(|field| {
+            matches!(&field.kind, luanalysis_syntax::TableFieldKind::Named(name) if native.inherits_field_only(directive.declaration, name.text.as_bytes()))
+        });
+        let overridden = inherited.iter().any(|field| {
+            let luanalysis_syntax::TableFieldKind::Named(name) = &field.kind else { return false };
+            let key = Type::StringLiteral(name.text.as_bytes().to_vec());
+            match (self.engine.indexed_access_type(actual, &key), self.engine.indexed_access_type(expected, &key)) {
+                (Some(actual), Some(expected)) => !self.engine.is_assignable(&actual, &expected),
+                _ => false,
+            }
+        });
+        self.elaborate_table(&own, actual, expected) || overridden
     }
     fn class_definition_error(&mut self, error: NamedTypeError, span: Span) {
         match error {

@@ -222,14 +222,16 @@ fn nominal_instances_definitions_and_named_or_mixed_fields_are_not_arrays() {
 #[test]
 fn concrete_array_candidates_reject_holes_nonpositive_and_fractional_keys() {
     let fixture = Fixture::new();
-    for literal in [
-        "{[1]=1,[3]=3}",
-        "{[2]=2}",
-        "{[0]=0,[1]=1}",
-        "{[-1]=1,[1]=1}",
-        "{[1.5]=1}",
-        "{label='text'}",
-        "{[1]=1,label='text'}",
+    // Each is reported at the key an array cannot have, as TypeScript reports an object
+    // literal's excess property.
+    for (literal, code, key) in [
+        ("{[1]=1,[3]=3}", "TS2322", "[3]"),
+        ("{[2]=2}", "TS2322", "[2]"),
+        ("{[0]=0,[1]=1}", "TS2322", "[0]"),
+        ("{[-1]=1,[1]=1}", "TS2322", "[-1]"),
+        ("{[1.5]=1}", "TS2322", "[1.5]"),
+        ("{label='text'}", "TS2353", "label"),
+        ("{[1]=1,label='text'}", "TS2353", "label"),
     ] {
         let call = format!("takeArray({literal})");
         let source = format!("{CONSUMERS}{call}\n");
@@ -238,9 +240,9 @@ fn concrete_array_candidates_reject_holes_nonpositive_and_fractional_keys() {
             error_at(
                 &fixture.check(&source, profile),
                 &source,
-                "TS2345",
+                code,
                 &call,
-                literal,
+                key,
             );
             clean(&fixture.check(&corrected, profile));
         }
@@ -658,7 +660,7 @@ fn nullable_array_elements_do_not_make_explicit_constructor_gaps_dense() {
     for (source, code, statement) in [
         (
             "local take = --[[---@type fun(values:(number|nil)[]):void]] (nil)\ntake({[2]=1})\n",
-            "TS2345",
+            "TS2322",
             "take({[2]=1})",
         ),
         (
@@ -674,7 +676,7 @@ fn nullable_array_elements_do_not_make_explicit_constructor_gaps_dense() {
                 source,
                 code,
                 statement,
-                "{[2]=1}",
+                "[2]",
             );
             clean(&fixture.check(&corrected, profile));
         }

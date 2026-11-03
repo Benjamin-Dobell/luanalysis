@@ -22,6 +22,10 @@ fn clean(source: &str) -> CheckReport {
 }
 
 fn assignment_error(source: &str, expression: &str) {
+    assignment_error_coded(source, "TS2322", expression);
+}
+
+fn assignment_error_coded(source: &str, code: &str, expression: &str) {
     let report = check(source);
     assert_eq!(
         report.diagnostics.len(),
@@ -30,20 +34,22 @@ fn assignment_error(source: &str, expression: &str) {
         report.diagnostics
     );
     let error = &report.diagnostics[0];
-    assert_eq!(error.code, "TS2322", "{error:#?}");
+    assert_eq!(error.code, code, "{error:#?}");
     assert_eq!(&source[error.span.start..error.span.end], expression);
 }
 
 #[test]
 fn a_nonempty_disjoint_source_cannot_satisfy_an_unrelated_dictionary_domain() {
-    for (annotation, wrong, corrected) in [
-        ("table<number,number>", "{word=1}", "{[1]=1}"),
-        ("table<'a',1>", "{b=1}", "{a=1}"),
-        ("table<number,number>", "{[true]=1}", "{[1]=1}"),
-        ("table<string,number>", "{[1]=1}", "{one=1}"),
+    // A name the domain lacks is reported at its field, as TypeScript reports an object literal's
+    // excess property; a key of another kind, at the constructor.
+    for (annotation, wrong, corrected, code, at) in [
+        ("table<number,number>", "{word=1}", "{[1]=1}", "TS2353", "word"),
+        ("table<'a',1>", "{b=1}", "{a=1}", "TS2353", "b"),
+        ("table<number,number>", "{[true]=1}", "{[1]=1}", "TS2322", "{[true]=1}"),
+        ("table<string,number>", "{[1]=1}", "{one=1}", "TS2322", "{[1]=1}"),
     ] {
         let source = format!("---@type {annotation}\nlocal values={wrong}\n");
-        assignment_error(&source, wrong);
+        assignment_error_coded(&source, code, at);
         clean(&source.replace(wrong, corrected));
 
         let source =
@@ -396,11 +402,35 @@ fn cli_rejects_a_dictionary_that_would_give_pairs_the_wrong_key_type() {
     let rejected = run(source);
     let stdout = String::from_utf8(rejected.stdout).unwrap();
     assert_eq!(rejected.status.code(), Some(1), "{stdout}");
-    assert!(stdout.contains("\"code\":\"TS2322\""), "{stdout}");
+    assert!(stdout.contains("\"code\":\"TS2353\""), "{stdout}");
     assert!(rejected.stderr.is_empty(), "{:?}", rejected.stderr);
     let corrected = run(&source.replace("word=1", "[1]=1"));
     let stdout = String::from_utf8(corrected.stdout).unwrap();
     assert_eq!(corrected.status.code(), Some(0), "{stdout}");
     assert!(stdout.contains("\"diagnostics\":[]"), "{stdout}");
     assert!(corrected.stderr.is_empty(), "{:?}", corrected.stderr);
+}
+
+#[test]
+fn a_table_key_infers_k_below_a_candidate_found_directly() {
+    // `table<K, V>` is a `Record<K, V>`: as TypeScript infers a mapped type's constraint, `K` takes
+    // the argument found for it directly, and the table that does not match is the error.
+    let source = "---@generic K, V\n---@param key K\n---@param tab table<K, V>\n---@return table<K, V>\nlocal function keyed(key, tab) return tab end\n---@type string\nlocal name\n---@type number[]\nlocal numbers\nlocal result = keyed(name, numbers)\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2345");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "numbers");
+    // With no other candidate, the keys are its alternatives, combined.
+    let report = check("---@generic K, V\n---@param tab table<K, V>\n---@return K\nlocal function key(tab) end\nlocal k = key({a = 1, b = 2})\n");
+    assert_eq!(report.bindings.iter().find(|binding| binding.name == "k").unwrap().ty, "\"a\" | \"b\"");
+}
+
+#[test]
+fn a_name_a_table_of_literal_keys_lacks_is_no_property_of_it() {
+    // As TypeScript reports a property that a `Record<K, V>` of literal keys lacks.
+    let source = "---@type table<'a'|'b', number>\nlocal m = {a = 1, b = 2}\nm.e = 1\nlocal read = m.e\nm['e'] = 1\n";
+    let report = check(source);
+    let reported: Vec<_> = report.diagnostics.iter().map(|diagnostic| (diagnostic.code, &source[diagnostic.span.start..diagnostic.span.end])).collect();
+    assert_eq!(reported, [("TS2339", "e"), ("TS2339", "e"), ("TS2339", "'e'")]);
+    assert!(report.diagnostics.iter().all(|diagnostic| diagnostic.message == "Property 'e' does not exist on type 'table<\"a\" | \"b\", number>'."));
 }

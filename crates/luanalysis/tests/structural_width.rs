@@ -126,10 +126,11 @@ fn indexer_values_nominal_origins_and_array_form_remain_checked() {
         "TS2322",
         "{value=1,extra=true}",
     );
+    // An array can have no named field: it is reported, as TypeScript reports an excess property.
     one_error_at(
         "---@type number[]\nlocal values={1,extra=true}\n",
-        "TS2322",
-        "{1,extra=true}",
+        "TS2353",
+        "extra",
     );
     clean("---@type number[]\nlocal values={1,2}\n");
 }

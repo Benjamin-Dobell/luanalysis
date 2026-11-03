@@ -662,6 +662,9 @@ impl<'p, 's> Checker<'p, 's> {
                 if target.is_array && !self.native_array_source_is_sequence(source) { return }
                 let mut sources = Vec::new();
                 let mut targets = Vec::new();
+                // `table<K, V>` is a `Record<K, V>`: as `inferToMappedType` infers to its
+                // constraint, a key infers `K` below a candidate found directly.
+                let mut keys = Vec::new();
                 for field in &target.fields {
                     if let Some(environment) = source.environment_origin {
                         sources.push(self.native_global_environment_member(environment, NativeTableAccessKey::Literal(field.key)));
@@ -682,22 +685,19 @@ impl<'p, 's> Checker<'p, 's> {
                     }
                     for actual in &source.indexers {
                         if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
-                        sources.push(actual.key);
-                        targets.push(indexer.key);
+                        keys.push((actual.key, indexer.key));
                         values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
                     }
                     for actual in &source.fields {
                         let key = self.native_table_key_type(actual.key);
                         if !self.native_table_inference_key_matches(key, indexer.key) { continue }
-                        sources.push(key);
-                        targets.push(indexer.key);
+                        keys.push((key, indexer.key));
                         values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
                     }
                     for actual in &source.sequence_tails {
                         if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
                             || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
-                        sources.push(TypeId::NUMBER);
-                        targets.push(indexer.key);
+                        keys.push((TypeId::NUMBER, indexer.key));
                         values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
                     }
                     if !values.is_empty() {
@@ -726,6 +726,7 @@ impl<'p, 's> Checker<'p, 's> {
                     }
                 }
                 self.infer_from_type_arguments(n, &sources, &targets, &[]);
+                for (source, target) in keys { self.infer_with_priority(n, source, target, PRIORITY_MAPPED_CONSTRAINT) }
             }
             (TypeData::NativeArray { element: source, .. }, TypeData::NativeArray { element: target, .. }) => {
                 self.infer_from_type_arguments(n, &[*source], &[*target], &[]);

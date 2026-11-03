@@ -39,7 +39,7 @@ numbers:set(42)\nstrings:set('text')\n\
 fn generic_runtime_definition_parameters_stay_rigid_and_keep_nominal_ownership() {
     rejected_at(&format!("{BOX}Box.value=42\n"), "TS2322", "42");
     let supplied = "---@class Supplied<T:number>\n---@field value T\nlocal Supplied={value=42}\n";
-    rejected_at(supplied, "TS2322", "{value=42}");
+    rejected_at(supplied, "TS2322", "value");
     let unrelated = format!("{BOX}\
 ---@class Other<T>\n---@field value T\nlocal Other={{}}\n\
 ---@type Other<number>\nlocal other\n\
@@ -66,7 +66,7 @@ fn initialized_generic_constraints_validate_arguments_and_supplied_fields() {
 ---@class ChildNumeric<U:number>:Numeric<U>\nlocal ChildNumeric={}\n";
     accepted(&format!("{declaration}---@type ChildNumeric<number>\nlocal child\n"));
     rejected_at(&format!("{declaration}---@type ChildNumeric<string>\nlocal child\n"), "TS2344", "string");
-    rejected_at(&declaration.replace("{count=42}", "{count='wrong'}"), "TS2322", "{count='wrong'}");
+    rejected_at(&declaration.replace("{count=42}", "{count='wrong'}"), "TS2322", "count");
     let unbounded = "---@class Numeric<T:number>\nlocal Numeric={}\n---@class ChildNumeric<U>:Numeric<U>\nlocal ChildNumeric={}\n";
     rejected_at(unbounded, "TS2344", "U");
 }

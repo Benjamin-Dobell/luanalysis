@@ -278,8 +278,8 @@ return Colors
 "#;
     assert_eq!(check(source, false).diagnostics, [
         "TS2502 Counter | 'Counter' is referenced directly or indirectly in its own type annotation.",
-        "TS2456 Color | Type alias circularly references itself.",
-        "TS2456 Keys | Type alias circularly references itself.",
+        "TS2456 Color | Type alias 'Color' circularly references itself.",
+        "TS2456 Keys | Type alias 'Keys' circularly references itself.",
     ]);
 }
 

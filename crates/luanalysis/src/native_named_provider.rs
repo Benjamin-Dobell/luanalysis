@@ -826,6 +826,9 @@ impl NativeRegistry {
             .or_else(|| self.members.get(key).map(|source| source.candidates[0].span))
             .unwrap_or(self.file.span)
     }
+    fn named_name(&self, key: NativeTypeDeclarationKey) -> Option<&str> {
+        self.named.declaration(named_key(key)).map(|source| source.syntax.name.text.as_str())
+    }
     fn named_base_origin(&self, key: NativeTypeDeclarationKey, index: usize) -> Span {
         self.named
             .declaration(named_key(key))
@@ -900,12 +903,12 @@ impl NativeRegistry {
             NamedTypeError::CircularAlias(key) => (
                 "TS2456",
                 self.named_origin(key),
-                "Type alias circularly references itself.".into(),
+                self.named_name(key).map_or("Type alias circularly references itself.".into(), |name| format!("Type alias '{name}' circularly references itself.")),
             ),
             NamedTypeError::CircularBase(key) => (
                 "TS2310",
                 self.named_base_origin(key, 0),
-                "Type recursively references itself as a base type.".into(),
+                self.named_name(key).map_or("Type recursively references itself as a base type.".into(), |name| format!("Type '{name}' recursively references itself as a base type.")),
             ),
             NamedTypeError::InvalidBase { declaration, index, .. } => (
                 "TS2312",

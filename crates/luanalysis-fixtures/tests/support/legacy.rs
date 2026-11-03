@@ -92,6 +92,9 @@ pub struct Result {
     pub missing: usize,
     pub unexpected: usize,
     pub detail: String,
+    /// Each difference from v1 as a stable line: what, where and its code or severity, but not
+    /// the wording of a message (`tests/v1_cases.rs`).
+    pub differences: Vec<String>,
 }
 impl Result {
     fn new() -> Self {
@@ -101,12 +104,17 @@ impl Result {
             missing: 0,
             unexpected: 0,
             detail: String::new(),
+            differences: Vec::new(),
         }
     }
     fn fail(&mut self, message: impl AsRef<str>) {
         self.passed = false;
         self.detail.push_str(message.as_ref());
         self.detail.push('\n');
+    }
+    fn differ(&mut self, message: impl AsRef<str>, difference: String) {
+        self.fail(message);
+        self.differences.push(difference);
     }
 }
 fn options(case: &Case) -> ProjectCheckOptions {
@@ -395,6 +403,15 @@ pub fn compare(fixture: &Fixture, actual: &[Diagnostic], weak: bool) -> (Vec<usi
     )
 }
 
+/// A snippet short enough for a line of `v2-differences.txt`.
+fn short(snippet: &str) -> String {
+    let short: String = snippet.chars().take(40).collect();
+    if short.len() < snippet.len() { format!("{short:?}...") } else { format!("{short:?}") }
+}
+fn line_column(source: &str, span: Span) -> String {
+    let (line, column) = luanalysis::location(source, luanalysis_syntax::Span { start: span.start, end: span.end });
+    format!("{line}:{column}")
+}
 fn location(source: &str, span: Span) -> String {
     let (line, column) = luanalysis::location(
         source,
@@ -420,15 +437,17 @@ fn append_diagnostics(
         .count();
     result.missing += missing.len();
     result.unexpected += unexpected.len();
+    let file = Path::new(path).file_name().unwrap().to_string_lossy();
     for i in missing {
         let diagnostic = &fixture.diagnostics[i];
-        result.fail(format!(
+        let difference = format!("MISSING {file}:{} {:?} {}", line_column(&fixture.source, diagnostic.span), diagnostic.severity, short(fixture.snippet(diagnostic)));
+        result.differ(format!(
             "  MISSING {path}:{} {:?} {:?}: {}",
             location(&fixture.source, diagnostic.span),
             diagnostic.severity,
             fixture.snippet(diagnostic),
             diagnostic.description.as_deref().unwrap_or("<bare marker>")
-        ));
+        ), difference);
     }
     for i in unexpected {
         let diagnostic = &actual[i];
@@ -436,7 +455,9 @@ fn append_diagnostics(
             start: diagnostic.span.start,
             end: diagnostic.span.end,
         };
-        result.fail(format!(
+        let snippet = fixture.source.get(span.start..span.end).unwrap_or("<invalid span>");
+        let difference = format!("EXTRA {file}:{} {} {}", line_column(&fixture.source, span), diagnostic.code, short(snippet));
+        result.differ(format!(
             "  EXTRA {path}:{} {} {:?}: {}",
             location(&fixture.source, span),
             diagnostic.code,
@@ -445,7 +466,7 @@ fn append_diagnostics(
                 .get(span.start..span.end)
                 .unwrap_or("<invalid span>"),
             diagnostic.message
-        ));
+        ), difference);
     }
 }
 
@@ -529,10 +550,10 @@ pub fn run_with_sources(
         let symbols = document_symbols(source);
         assert_eq!(case.required.len(), 2);
         if !symbol_hierarchy_matches(&symbols, source, case.required[0], case.required[1]) {
-            result.fail(format!(
+            result.differ(format!(
                 "  Expected class {:?} with child method {:?}; observed outline: {symbols:?}",
                 case.required[0], case.required[1]
-            ));
+            ), format!("OUTLINE lacks class {:?} with method {:?}", case.required[0], case.required[1]));
         }
         return result;
     }
@@ -540,7 +561,7 @@ pub fn run_with_sources(
         let (index, offset) = caret.expect("completion case without caret");
         let source = &fixtures[index].source;
         let Some(site) = completion_site(source, offset) else {
-            result.fail(format!(
+            result.differ(format!(
                 "  No native completion site at {}",
                 location(
                     source,
@@ -549,7 +570,7 @@ pub fn run_with_sources(
                         end: offset
                     }
                 )
-            ));
+            ), "COMPLETION no site".into());
             return result;
         };
         fs::write(&entries[index], &site.text).unwrap();
@@ -582,7 +603,7 @@ pub fn run_with_sources(
             },
         );
         for error in missing_labels(case, &labels) {
-            result.fail(format!("  {error}"));
+            result.differ(format!("  {error}"), format!("COMPLETION {error}"));
         }
         if !result.passed {
             result
@@ -633,10 +654,10 @@ pub fn run_with_sources(
         || !report.project.entry_errors.is_empty()
         || !report.project.library_errors.is_empty()
     {
-        result.fail(format!(
+        result.differ(format!(
             "  Host errors: {:?}; {:?}; {:?}",
             report.environment_errors, report.project.entry_errors, report.project.library_errors
-        ));
+        ), "HOST errors".into());
     }
     result
 }
