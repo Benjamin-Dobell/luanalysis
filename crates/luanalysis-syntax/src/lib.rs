@@ -720,6 +720,8 @@ pub struct TableField {
     /// describes the stored member, independently from a cast on its value.
     pub annotation: Option<TypeAnnotation>,
     pub span: Span,
+    /// A bracketed key with its brackets, `[k]`, as TypeScript's computed property name is.
+    pub key_span: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

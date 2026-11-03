@@ -51,10 +51,11 @@ local own=value.label
         "TS2322",
         "{label=\"text\"}",
     );
+    // At the field, as TypeScript reports an object literal's property.
     rejects_at(
         &source.replace("value=42", "value=\"wrong\""),
         "TS2322",
-        "{value=\"wrong\",label=\"text\"}",
+        "value",
     );
 }
 

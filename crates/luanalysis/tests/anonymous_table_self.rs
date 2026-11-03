@@ -44,7 +44,8 @@ fn literal_field_self_rejects_an_argument_with_a_wrong_declared_field() {
         "handlers.read({id = 'wrong', read = handlers.read})",
     );
     let report = check(&wrong);
-    assert!(report.diagnostics.iter().any(|error| error.code == "TS2345"), "{:#?}", report.diagnostics);
+    // At the field, as TypeScript elaborates an argument's error into the literal written.
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2322" && &wrong[error.span.start..error.span.end] == "id"), "{:#?}", report.diagnostics);
     clean(HANDLERS);
 }
 

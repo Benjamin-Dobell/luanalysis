@@ -95,7 +95,8 @@ fn a_table_type_is_a_base_as_a_record_type_is() {
         assert!(report.contains(expected), "{expected}\n{report}");
     }
     let errors = errors(&report);
-    assert!(errors.iter().any(|error| error.starts_with("main.lua:14:15: error[TS2322]")), "{report}");
+    // At the field, as TypeScript reports an object literal's property.
+    assert!(errors.iter().any(|error| error.starts_with("main.lua:14:24: error[TS2322]")), "{report}");
     assert_eq!(errors.len(), 1, "{report}");
 }
 

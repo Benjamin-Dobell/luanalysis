@@ -680,5 +680,6 @@ fn unions_of_unnamed_types_print_alike_in_every_task() {
     fixture.file("second.lua", "require 'path'\nrequire 'dummy'\n---@param target Path|Dummy\nlocal function name(target) return target:name(true) end\nlocal strings = { 'a' }\n");
     let entries = ["path.lua", "dummy.lua", "lists.lua", "first.lua", "second.lua"];
     let report = fixture.minimal(&entries, &[]);
-    error_at(&report, "lists.lua", "TS2345", "{ true }");
+    // At the element, as TypeScript elaborates an argument's error into the array literal.
+    error_at(&report, "lists.lua", "TS2322", "true");
 }

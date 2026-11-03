@@ -153,10 +153,13 @@ local absent={a=1}
 ---@type Pair
 local valid={a=1,b='ok'}
 "#,
+        // Each wrong field, as v1 reported them and TypeScript reports an object literal's
+        // properties; a missing one has no field to report at.
         &[
-            ("TS2322", "{a='bad',b=42}"),
-            ("TS2322", "{a='bad',b='ok'}"),
-            ("TS2322", "{a=1,b=42}"),
+            ("TS2322", "a"),
+            ("TS2322", "b"),
+            ("TS2322", "a"),
+            ("TS2322", "b"),
             ("TS2322", "{a=1}"),
         ],
     );
@@ -167,7 +170,9 @@ local invalid={tag='number',value={}}
 ---@type Choice
 local valid={tag='number',value=1}
 "#,
-        &[("TS2322", "{tag='number',value={}}")],
+        // At the field, against what the union has there, as TypeScript elaborates first into
+        // the whole union's property type.
+        &[("TS2322", "value")],
     );
 }
 #[test]

@@ -2806,7 +2806,7 @@ impl FlowValueQueries for NativeRegistry {
         let feedback = stage == luanalysis_engine::NativeIteratorStage::Next && matches!(&error, luanalysis_engine::CallError::Argument { index: 1, .. });
         let mut checker = self.checker_at_flow(at, queries);
         let first_diagnostic = checker.report.diagnostics.len();
-        checker.call_result(luanalysis_engine::CallResult { return_type: Type::Any, errors: vec![error], predicate: None }, callee, &arguments, callee_origin, callee_origin);
+        checker.call_result(luanalysis_engine::CallResult { return_type: Type::Any, errors: vec![error], predicate: None }, callee, &arguments, &[], callee_origin, callee_origin);
         if feedback {
             for index in first_diagnostic..checker.report.diagnostics.len() {
                 checker.report.append_diagnostic_note(index, " The previous first iterator result supplies the next control argument.");

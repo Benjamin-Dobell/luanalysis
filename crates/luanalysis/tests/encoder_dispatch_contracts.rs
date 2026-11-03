@@ -61,23 +61,14 @@ fn private_metatable_members_preserve_the_public_handler_contract() {
     let wrong = SOURCE.replace("number=numberHandler", "number=stringHandler");
     let report = check(&wrong);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    // At the handler's field, against the public handler it implements, as TypeScript reports
+    // an object literal's property.
     assert_eq!(report.diagnostics[0].code, "TS2322");
-    assert!(
-        report.diagnostics[0]
-            .message
-            .contains("ImplementationDispatcher")
-    );
     assert_eq!(
-        &wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
-        wrong
-            .split_once("local dispatcher=")
-            .unwrap()
-            .1
-            .split_once("\n\n---@type PublicDispatcher")
-            .unwrap()
-            .0
-            .trim(),
+        report.diagnostics[0].message,
+        "Type 'fun(value: string): void' is not assignable to type 'fun(value: number): void'."
     );
+    assert_eq!(&wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "number");
     clean(SOURCE);
 }
 

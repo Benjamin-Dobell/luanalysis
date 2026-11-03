@@ -74,10 +74,8 @@ fn implicit_shape_checks_foreign_nominal_member_origins() {
         .flat_map(|file| &file.report.diagnostics)
         .find(|diagnostic| diagnostic.code == "TS2322")
         .expect("different source class origins must fail inside the attached shape");
-    assert_eq!(
-        &source[diagnostic.span.start..diagnostic.span.end],
-        "{token=token}"
-    );
+    // At the field, as TypeScript reports an object literal's property.
+    assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], "token");
     let corrected = fixture.check(
         declaration,
         &source.replace("@param token Wrong", "@param token Token"),

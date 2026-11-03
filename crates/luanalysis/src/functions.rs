@@ -182,7 +182,7 @@ impl Checker<'_> {
         self.report_unplaced_limit(limits, span);
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
         let checked = result.errors.is_empty();
-        let pack = self.pack_call_result(result, &callee_type, &origins, callee.span, span);
+        let pack = self.pack_call_result(result, &callee_type, &origins, args, callee.span, span);
         if checked && let Some(pack) = self.standard_pattern_call(callee, args) { return pack }
         let first = self.engine.pack_slot(&pack, 0);
         // A class definition's table is the class's, not a runtime table's.
@@ -225,6 +225,7 @@ impl Checker<'_> {
         result: PackCallResult,
         callee: &Type,
         origins: &[Span],
+        arguments: &[Expr],
         callee_span: Span,
         span: Span,
     ) -> ValuePack {
@@ -237,6 +238,7 @@ impl Checker<'_> {
             },
             callee,
             origins,
+            arguments,
             callee_span,
             span,
         );
@@ -554,7 +556,7 @@ impl Checker<'_> {
         } else { self.function_expression(function) };
         // A repeated function statement is compared with the first (`report_repeated_functions`).
         let ty = expected.filter(|_| self.native.is_some_and(|native| native.repeats_function(function.span))).unwrap_or(ty);
-        self.assign_values(std::slice::from_ref(target), vec![(ty, function.span)]);
+        self.assign_values(std::slice::from_ref(target), vec![(ty, function.span)], &[]);
     }
 
     fn function_body(&mut self, function: &Function, signature: &FunctionType) {
@@ -625,7 +627,16 @@ impl Checker<'_> {
             .map(|context| self.engine.contextual_return_pack(&context)));
         let pack = self.return_expression_pack(values, span, context.as_ref());
         if let Some(expected) = expected_pack {
-            if !self.engine.result_list_assignable(&pack, &expected) {
+            // One table constructor returned where one result is declared: its error is
+            // elaborated into it, as TypeScript elaborates a returned object literal's.
+            let elaborated = |checker: &mut Self| match values {
+                [value] if let ExprKind::Table(fields) = &crate::unparenthesized(value.borrow()).kind => {
+                    let (actual, declared) = (checker.engine.pack_slot(&pack, 0), checker.engine.pack_slot(&expected, 0));
+                    !checker.engine.is_assignable(&actual, &declared) && checker.elaborate_table(fields, &actual, &declared)
+                }
+                _ => false,
+            };
+            if !self.engine.result_list_assignable(&pack, &expected) && !elaborated(self) {
                 let origin = self.return_contract_origin(span).unwrap_or_else(|| {
                     self.return_pack_error_origin(values, span, &pack, &expected)
                 });
@@ -638,11 +649,8 @@ impl Checker<'_> {
             }
         } else if let Some(expected) = self.return_type.clone() {
             let value = self.engine.pack_slot(&pack, 0);
-            self.compatible(
-                &value,
-                &expected,
-                self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.borrow().span)),
-            );
+            let origin = self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.borrow().span));
+            self.compatible_expression(&value, &expected, values.first().map(|value| value.borrow()), origin);
         }
         self.return_values.push(self.engine.pack_slot(&pack, 0));
         self.return_packs.push(pack);
@@ -682,7 +690,7 @@ impl Checker<'_> {
         self.report_unplaced_limit(limits, span);
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
         let checked = result.errors.is_empty();
-        let ty = self.call_result(result, &callee_type, &origins, callee.span, span);
+        let ty = self.call_result(result, &callee_type, &origins, args, callee.span, span);
         if checked && let Some(pack) = self.standard_pattern_call(callee, args) { return self.engine.pack_slot(&pack, 0) }
         if self.native.is_some_and(|native| native.is_class_definition_initializer(span)) { return ty }
         self.setmetatable_result(callee, &callee_type, args, ty)
@@ -763,11 +771,14 @@ impl Checker<'_> {
         written.annotation.types.iter().map(|ty| self.annotation(ty)).collect()
     }
 
+    /// `arguments`: the argument expressions, which an argument's error is elaborated into
+    /// (`compatible_expression`), found by their spans.
     pub(super) fn call_result(
         &mut self,
         result: CallResult,
         callee_type: &Type,
         argument_spans: &[Span],
+        arguments: &[Expr],
         callee_span: Span,
         span: Span,
     ) -> Type {
@@ -790,6 +801,9 @@ impl Checker<'_> {
                 CallError::Argument { index, source, target, overload } => {
                     let origin = argument_spans.get(index).or_else(|| argument_spans.last()).copied().unwrap_or(span);
                     match overload {
+                        // As TypeScript elaborates an argument's error into the literal written.
+                        None if let Some(ExprKind::Table(fields)) = arguments.iter().find(|argument| argument.span == origin).map(|argument| &crate::unparenthesized(argument).kind)
+                            && self.elaborate_table(fields, &source, &target) => {}
                         None => self.error_types("TS2345", origin, "Argument of type '{}' is not assignable to parameter of type '{}'.", &[&source, &target]),
                         // As TypeScript explains it: no overload is selected, and the error is one overload's.
                         Some(overload) => self.error_types("TS2769", origin, &format!(

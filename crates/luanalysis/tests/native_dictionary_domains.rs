@@ -144,8 +144,10 @@ fn multiple_indexers_keep_their_distinct_value_contracts() {
     let prefix =
         "---@shape Mixed\n---@field [number] number\n---@field [string] string\n\n---@type Mixed\n";
     clean(&format!("{prefix}local values={{[1]=1,label='text'}}\n"));
-    for wrong in ["{[1]='text',label='text'}", "{[1]=1,label=2}", "{[true]=1}"] {
-        assignment_error(&format!("{prefix}local values={wrong}\n"), wrong);
+    // At the field, as TypeScript reports an object literal's property. A key no indexer takes
+    // has no field type to compare: the constructor is reported.
+    for (wrong, at) in [("{[1]='text',label='text'}", "[1]"), ("{[1]=1,label=2}", "label"), ("{[true]=1}", "{[true]=1}")] {
+        assignment_error(&format!("{prefix}local values={wrong}\n"), at);
     }
     clean("---@type table<'a'|'b',number>\nlocal values={a=1,b=2}\n");
     clean("---@type table<string|number,number>\nlocal values={[1]=1,label=2}\n");

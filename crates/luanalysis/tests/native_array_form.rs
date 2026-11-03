@@ -278,11 +278,13 @@ end
 #[test]
 fn sequence_admission_still_checks_array_elements_and_accepts_corrections() {
     let fixture = Fixture::new();
-    for (prefix, call, expression) in [
-        ("", "takeArray({'wrong'})", "{'wrong'}"),
+    // An argument written as a constructor has its error elaborated into the element.
+    for (prefix, call, code, expression) in [
+        ("", "takeArray({'wrong'})", "TS2322", "'wrong'"),
         (
             "---@param value string[]\nlocal function inspect(value)\n",
             "takeArray(value)",
+            "TS2345",
             "value",
         ),
     ] {
@@ -293,7 +295,7 @@ fn sequence_admission_still_checks_array_elements_and_accepts_corrections() {
             error_at(
                 &fixture.check(&source, profile),
                 &source,
-                "TS2345",
+                code,
                 call,
                 expression,
             );
@@ -608,13 +610,13 @@ fn constructor_rows_still_reject_nil_for_nonnullable_arrays_and_wrong_element_ty
             "---@type (number|nil)[]\nlocal values={nil,'wrong'}\n",
             "---@type (number|nil)[]\nlocal values={nil,1}\n",
             "local values={nil,'wrong'}",
-            "{nil,'wrong'}",
+            "'wrong'",
         ),
         (
             "---@class Holder\nlocal Holder={}\n---@type (number|nil)[]\nHolder.values={nil,'wrong'}\n",
             "---@class Holder\nlocal Holder={}\n---@type (number|nil)[]\nHolder.values={nil,1}\n",
             "Holder.values={nil,'wrong'}",
-            "{nil,'wrong'}",
+            "'wrong'",
         ),
     ] {
         for (profile, _) in PROFILES {
@@ -628,9 +630,11 @@ fn constructor_rows_still_reject_nil_for_nonnullable_arrays_and_wrong_element_ty
             clean(&fixture.check(corrected, profile));
         }
     }
-    for (annotation, literal, correction) in [
-        ("number[]", "{nil,1}", "{0,1}"),
-        ("(number|nil)[]", "{nil,'wrong'}", "{nil,1}"),
+    // A hole has no element to blame; a wrong element is reported, as TypeScript elaborates an
+    // argument's error into the array literal written.
+    for (annotation, literal, correction, code, at) in [
+        ("number[]", "{nil,1}", "{0,1}", "TS2345", "{nil,1}"),
+        ("(number|nil)[]", "{nil,'wrong'}", "{nil,1}", "TS2322", "'wrong'"),
     ] {
         let call = format!("take({literal})");
         let source = format!("local take = --[[---@type fun(values:{annotation}):void]] (nil)\n{call}\n");
@@ -639,9 +643,9 @@ fn constructor_rows_still_reject_nil_for_nonnullable_arrays_and_wrong_element_ty
             error_at(
                 &fixture.check(&source, profile),
                 &source,
-                "TS2345",
+                code,
                 &call,
-                literal,
+                at,
             );
             clean(&fixture.check(&corrected, profile));
         }
@@ -830,14 +834,14 @@ fn contextual_nullable_literal_elements_keep_their_literal_and_reject_other_numb
             &wrong_local,
             "TS2322",
             "local values={nil,2}",
-            "{nil,2}",
+            "2",
         );
         error_at(
             &fixture.check(&wrong_argument, profile),
             &wrong_argument,
-            "TS2345",
+            "TS2322",
             "take({nil,2})",
-            "{nil,2}",
+            "2",
         );
         clean(&fixture.check(source, profile));
         clean(&fixture.check(inferred, profile));

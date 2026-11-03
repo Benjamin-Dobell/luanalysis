@@ -2066,6 +2066,7 @@ impl<'a> Parser<'a> {
             let mut function_annotations = self.table_field_documentation();
             let before = self.pos;
             let field_start = self.current().span;
+            let mut key_span = None;
             let kind = if self.take_symbol("[").is_some() {
                 let (mut key, key_depth) = self.expr_with_depth();
                 if key_depth >= 128 {
@@ -2077,7 +2078,7 @@ impl<'a> Parser<'a> {
                 } else {
                     built_depth = built_depth.max(key_depth + 1);
                 }
-                self.expect("]");
+                key_span = Some(field_start.join(self.expect("]")));
                 self.expect("=");
                 TableFieldKind::Keyed(Box::new(key))
             } else if matches!(self.current().kind, TokenKind::Identifier(_)) {
@@ -2129,7 +2130,7 @@ impl<'a> Parser<'a> {
             }
             built_depth = built_depth.max(value_depth + 1);
             let span = field_start.join(value.span);
-            fields.push(TableField { kind, value, annotation, span });
+            fields.push(TableField { kind, value, annotation, span, key_span });
             self.inner_trivia();
             if self.take_symbol(",").is_some() || self.take_symbol(";").is_some() {
                 continue;

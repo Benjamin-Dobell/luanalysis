@@ -92,7 +92,8 @@ fn a_tuple_rest_element_is_any_number_of_its_type() {
     for expected in ["main.lua:2:7: a: string[]", "main.lua:5:7: s: string", "main.lua:5:10: n: number"] {
         assert!(report.contains(expected), "{expected}\n{report}");
     }
-    assert_errors(&report, &["main.lua:7:11: error[TS2322]"]);
+    // At the element, as TypeScript reports an array literal's.
+    assert_errors(&report, &["main.lua:7:16: error[TS2322]"]);
 }
 
 #[test]

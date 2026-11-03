@@ -39,13 +39,14 @@ fn written_mutable_constant_tables_preserve_direct_and_inherited_union_returns()
 #[test]
 fn written_mutable_constant_table_initializers_reject_the_wrong_singleton() {
     let bad = SOURCE.replacen("ACCEPT = 1,", "ACCEPT = 2,", 1);
-    let position = bad.find("ACCEPT = 2,").unwrap() + "ACCEPT = ".len();
+    // At the field, as TypeScript reports an object literal's property.
+    let position = bad.find("ACCEPT = 2,").unwrap();
     let report = check(&bad);
     assert!(
         report.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "TS2322"
-                && diagnostic.span.start <= position
-                && diagnostic.span.end > position
+                && diagnostic.span.start == position
+                && &bad[diagnostic.span.start..diagnostic.span.end] == "ACCEPT"
         }),
         "{:#?}", report.diagnostics
     );

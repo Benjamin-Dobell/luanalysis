@@ -1208,6 +1208,83 @@ impl Checker<'_> {
         EvaluatedExpression { ty, environment }
     }
 
+    /// `compatible`, for the value of `expression`: when that is a table constructor whose type is
+    /// not assignable, the error is moved into its fields that are not, as TypeScript's
+    /// `elaborateError` moves it into an object literal's properties.
+    fn compatible_expression(&mut self, value: &Type, target: &Type, expression: Option<&Expr>, origin: Span) -> bool {
+        let Some(ExprKind::Table(fields)) = expression.map(|expression| &unparenthesized(expression).kind) else {
+            return self.compatible(value, target, origin);
+        };
+        if self.engine.is_assignable(value, target) { return true; }
+        if !self.elaborate_table(fields, value, target) {
+            self.error_types("TS2322", origin, "Type '{}' is not assignable to type '{}'.", &[value, target]);
+        }
+        false
+    }
+
+    /// `elaborateObjectLiteral` and `elaborateArrayLiteral` of a table constructor of type `source`
+    /// that is not assignable to `target`: each field with a literal key whose value is not
+    /// assignable to what `target` has at that key is reported, at its name or, for a sequence
+    /// field, at its value, and a constructor written as its value is elaborated in turn. Whether
+    /// any was.
+    pub(crate) fn elaborate_table(&mut self, fields: &[luanalysis_syntax::TableField], source: &Type, target: &Type) -> bool {
+        // Of a union, the one member that is no primitive, as TypeScript's `getBestMatchingType`
+        // takes an object literal's: `nil | T` is elaborated as `T`.
+        let target = match self.engine.inspect_type(target) {
+            // What a type parameter has at a key is no type to compare a field with: TypeScript
+            // does not elaborate into indexes of a generic variable.
+            Type::NativeTypeParameter(_) => return false,
+            Type::Union(members) => {
+                let mut tables = members.into_iter().filter(|member| !matches!(member,
+                    Type::Nil | Type::Boolean | Type::BooleanLiteral(_) | Type::Number | Type::NumberLiteral(_) | Type::String | Type::StringLiteral(_)));
+                match (tables.next(), tables.next()) {
+                    (Some(table), None) => table,
+                    _ => target.clone(),
+                }
+            }
+            _ => target.clone(),
+        };
+        let target = &target;
+        let mut reported = false;
+        for (position, field) in fields.iter().enumerate() {
+            // A call or `...` ending the sequence is all of its values, as a spread is in an array
+            // literal, which TypeScript does not elaborate.
+            if position + 1 == fields.len() && matches!(field.kind, luanalysis_syntax::TableFieldKind::Sequence { .. })
+                && matches!(unparenthesized(&field.value).kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg)
+                && !matches!(field.value.kind, ExprKind::Parenthesized(_))
+            {
+                continue;
+            }
+            let (key, at) = match &field.kind {
+                luanalysis_syntax::TableFieldKind::Named(name) => (Type::StringLiteral(name.text.as_bytes().to_vec()), name.span),
+                luanalysis_syntax::TableFieldKind::Sequence { index } => (Type::NumberLiteral(*index as f64), field.value.span),
+                luanalysis_syntax::TableFieldKind::Keyed(key) => {
+                    let at = field.key_span.unwrap_or(key.span);
+                    match &unparenthesized(key).kind {
+                        ExprKind::String(text) => (Type::StringLiteral(text.clone()), at),
+                        ExprKind::Number(spelling) => match number(spelling) {
+                            Some(value) => (Type::NumberLiteral(value), at),
+                            None => continue,
+                        },
+                        _ => continue,
+                    }
+                }
+            };
+            let Some(expected) = self.engine.indexed_access_type(target, &key) else { continue };
+            let Some(actual) = self.engine.indexed_access_type(source, &key) else { continue };
+            if self.engine.is_assignable(&actual, &expected) { continue; }
+            if let ExprKind::Table(inner) = &unparenthesized(&field.value).kind
+                && self.elaborate_table(inner, &actual, &expected)
+            {
+                reported = true;
+                continue;
+            }
+            self.error_types("TS2322", at, "Type '{}' is not assignable to type '{}'.", &[&actual, &expected]);
+            reported = true;
+        }
+        reported
+    }
+
     fn compatible(&mut self, value: &Type, target: &Type, origin: Span) -> bool {
         let assignable = self.engine.is_assignable(value, target);
         if !assignable {
@@ -1252,6 +1329,7 @@ impl Checker<'_> {
         let automatic: Vec<_> = names.iter().enumerate()
             .map(|(index, _)| annotations.get(index).is_none() && automatic_nil_initializer(values, index))
             .collect();
+        let expressions = values;
         let values = self.adjusted_list_values(
             values,
             names.iter().map(|name| name.span),
@@ -1281,7 +1359,7 @@ impl Checker<'_> {
             // A written contract without an RHS is a declaration. An explicit
             // initializer, including a short list padded with nil, is checked.
             if has_initializer || annotations.get(index).is_none() {
-                self.compatible(&value, &constraint, origin);
+                self.compatible_expression(&value, &constraint, expressions.get(index), origin);
             }
             let narrowed = self.engine.assignment_value(&constraint, &value);
             let displayed = if evolves_from_nil { Type::Nil } else { constraint.clone() };
@@ -1352,10 +1430,12 @@ impl Checker<'_> {
                 *value = class;
             }
         }
-        self.assign_values(targets, adjusted);
+        self.assign_values(targets, adjusted, values);
     }
 
-    fn assign_values(&mut self, targets: &[Expr], values: Vec<(Type, Span)>) {
+    /// `expressions`: the values written, where each of `values` is one, which errors are
+    /// elaborated into (`compatible_expression`).
+    fn assign_values(&mut self, targets: &[Expr], values: Vec<(Type, Span)>, expressions: &[Expr]) {
         // Validate all destinations against the state before committing writes.
         let mut writes = Vec::new();
         for (index, target) in targets.iter().enumerate() {
@@ -1375,7 +1455,7 @@ impl Checker<'_> {
                             // own type: one of another type than the global's first is
                             // reported once, as a subsequent declaration (TS2403).
                             let constraint = self.own_global_contract(name).unwrap_or(constraint);
-                            self.compatible(&value, &constraint, origin);
+                            self.compatible_expression(&value, &constraint, expressions.get(index), origin);
                             continue;
                         }
                         self.error(
@@ -1389,7 +1469,7 @@ impl Checker<'_> {
                         continue;
                     };
                     let constraint = binding.constraint.clone();
-                    if self.compatible(&value, &constraint, origin) {
+                    if self.compatible_expression(&value, &constraint, expressions.get(index), origin) {
                         writes.push(Write::Local(
                             id,
                             self.engine.assignment_value(&constraint, &value),
@@ -1399,7 +1479,7 @@ impl Checker<'_> {
                 ExprKind::Field { .. } | ExprKind::Index { .. } => {
                     if let Some(native) = self.native
                         && let Some(written) = native.original_assignment_annotation(target.span, self.engine)
-                        && !self.compatible(&value, &written, origin)
+                        && !self.compatible_expression(&value, &written, expressions.get(index), origin)
                     { continue; }
                     let base = match &target.kind {
                         ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => {
@@ -1684,6 +1764,13 @@ pub(crate) fn canonical_unions<R>(print: impl FnOnce() -> R) -> R {
     }
     let _restore = Restore(CANONICAL_UNIONS.replace(true));
     print()
+}
+
+pub(crate) fn unparenthesized(mut expression: &Expr) -> &Expr {
+    while let ExprKind::Parenthesized(inner) = &expression.kind {
+        expression = inner;
+    }
+    expression
 }
 
 pub(crate) fn describe_diagnostic_type(ty: &Type, engine: &mut dyn TypeQueries) -> String {

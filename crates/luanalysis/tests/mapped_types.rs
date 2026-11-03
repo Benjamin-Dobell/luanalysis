@@ -61,7 +61,8 @@ thawed.x = 3
 local complete = {{ x = 1 }}
 "#));
     assert_eq!(checked.diagnostics, [
-        "TS2322 {{ x = \"a\" }} | Type '{ x: \"a\" }' is not assignable to type '{ x?: number, y?: number }'.",
+        // At the field, as TypeScript reports an object literal's property.
+        "TS2322 x | Type '\"a\"' is not assignable to type 'nil | number'.",
         "TS2540 x | Cannot assign to readonly property \"x\".",
         "TS2322 {{ x = 1 }} | Type '{ x: 1 }' is not assignable to type '{ x: number, y: number }'.",
     ].map(|line| line.replace("{{", "{").replace("}}", "}")));
@@ -108,7 +109,8 @@ local overrides = { window = { width = 640 } }
 local wrong = { window = { width = "wide" } }
 "#);
     assert_eq!(checked.diagnostics.len(), 1, "{:#?}", checked.diagnostics);
-    assert!(checked.diagnostics[0].starts_with("TS2322 { window = { width = \"wide\" } } |"), "{:#?}", checked.diagnostics);
+    // At the innermost field, past the `nil |` that a partial window adds.
+    assert_eq!(checked.diagnostics[0], "TS2322 width | Type '\"wide\"' is not assignable to type 'nil | number'.");
 }
 
 #[test]
@@ -154,7 +156,7 @@ local missing
 local key = "z"
 "#));
     assert_eq!(checked.diagnostics, [
-        "TS2322 { x = \"a\" } | Type '{ x: \"a\" }' is not assignable to type '{ x: number }'.",
+        "TS2322 x | Type '\"a\"' is not assignable to type 'number'.",
         "TS2322 { a = true } | Type '{ a: true }' is not assignable to type '{ a: boolean, b: boolean }'.",
         "TS2322 \"a\" | Type '\"a\"' is not assignable to type '\"b\" | \"c\"'.",
         "TS2322 \"a\" | Type '\"a\"' is not assignable to type 'number'.",
@@ -178,7 +180,7 @@ local record = { id = "x" }
 local partial = 1
 "#);
     assert_eq!(checked.diagnostics, [
-        "TS2322 { id = \"x\" } | Type '{ id: \"x\" }' is not assignable to type 'Record'.",
+        "TS2322 id | Type '\"x\"' is not assignable to type 'number'.",
         "TS2322 1 | Type '1' is not assignable to type 'string'.",
     ]);
 }
@@ -225,5 +227,5 @@ local c = {}
 local d = c.name
 "#);
     assert_eq!(checked.ty("d"), "nil | string");
-    assert_eq!(checked.diagnostics, ["TS2322 { x = \"s\", y = \"a\" } | Type '{ x: \"s\", y: \"a\" }' is not assignable to type '{ x?: number, y: string }'."]);
+    assert_eq!(checked.diagnostics, ["TS2322 x | Type '\"s\"' is not assignable to type 'nil | number'."]);
 }

@@ -14,6 +14,6 @@ local invalidArgument = identityId("card")
 ---@param source {title: string, id: number}
 ---@return {title: string, id: number}
 local function invalidSnapshot(source)
-    -- Expected: annotated return mismatch at this original Lua record.
+    -- Expected: annotated return mismatch at this record's `id` field.
     return {title = source.title, id = "seven"}
 end

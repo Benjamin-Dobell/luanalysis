@@ -45,7 +45,9 @@ fn function_argument_and_return_failures_keep_original_lua_ranges() {
         &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
         "\"card\""
     );
-    assert_eq!(location(source, report.diagnostics[1].span), (18, 12));
+    // The returned record's field, as TypeScript reports an object literal's property.
+    assert_eq!(location(source, report.diagnostics[1].span), (18, 35));
+    assert_eq!(&source[report.diagnostics[1].span.start..report.diagnostics[1].span.end], "id");
     let corrected = source
         .replace("identityId(\"card\")", "identityId(7)")
         .replace("id = \"seven\"", "id = 7");

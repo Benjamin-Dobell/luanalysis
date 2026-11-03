@@ -1,7 +1,9 @@
 use luanalysis::{CheckReport, check, location};
 use std::{fs, process::Command};
 
-const CONTRACTS: &str = "---@class Holder\nlocal Holder={}\n---@type number[]\nHolder.values={'wrong'}\n---@type table<string,number>\nHolder.dictionary={value='wrong'}\n";
+// Each value is a local's, which an error is not elaborated into: its message renders the whole
+// container types.
+const CONTRACTS: &str = "---@class Holder\nlocal Holder={}\nlocal values={'wrong'}\n---@type number[]\nHolder.values=values\nlocal dictionary={value='wrong'}\n---@type table<string,number>\nHolder.dictionary=dictionary\n";
 
 fn corrected_contracts() -> String {
     CONTRACTS.replace("'wrong'", "1")
@@ -11,10 +13,10 @@ fn contract_report() -> CheckReport {
     let report = check(CONTRACTS);
     assert_eq!(report.diagnostics.len(), 2, "{:#?}", report.diagnostics);
     for (diagnostic, original, expected) in [
-        (&report.diagnostics[0], "{'wrong'}", "number[]"),
+        (&report.diagnostics[0], "values", "number[]"),
         (
             &report.diagnostics[1],
-            "{value='wrong'}",
+            "dictionary",
             "table<string, number>",
         ),
     ] {
@@ -79,7 +81,7 @@ fn rendering_preserves_strict_dictionary_key_and_value_checks() {
 
 #[test]
 fn nullable_and_function_array_elements_keep_postfix_parentheses() {
-    let source = "---@class Holder\nlocal Holder={}\n---@type (number|nil)[]\nHolder.nullable={'wrong'}\n---@type (fun(value:number):string)[]\nHolder.callbacks={42}\n";
+    let source = "---@class Holder\nlocal Holder={}\nlocal nullable={'wrong'}\n---@type (number|nil)[]\nHolder.nullable=nullable\nlocal callbacks={42}\n---@type (fun(value:number):string)[]\nHolder.callbacks=callbacks\n";
     let report = check(source);
     assert_eq!(report.diagnostics.len(), 2, "{:#?}", report.diagnostics);
     let targets: Vec<_> = report
@@ -112,10 +114,10 @@ fn nullable_and_function_array_elements_keep_postfix_parentheses() {
     }
     accepted(
         &source
-            .replace("Holder.nullable={'wrong'}", "Holder.nullable={nil,1}")
+            .replace("local nullable={'wrong'}", "local nullable={nil,1}")
             .replace(
-                "Holder.callbacks={42}",
-                "Holder.callbacks={function(value) return 'word' end}",
+                "local callbacks={42}",
+                "local callbacks={function(value) return 'word' end}",
             ),
     );
 }

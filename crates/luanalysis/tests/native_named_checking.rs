@@ -239,10 +239,8 @@ fn implicit_shape_attachments_check_the_actual_initializer() {
     let report = check(wrong);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS2322");
-    assert_eq!(
-        &wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
-        "{value = \"wrong\"}"
-    );
+    // At the field, as TypeScript reports an object literal's property.
+    assert_eq!(&wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "value");
     passes(corrected);
     let explicit = wrong.replace("local attached", "---@type Attached\nlocal attached");
     let report = check(&explicit);

@@ -186,7 +186,8 @@ fn actual_cli_rejects_the_original_shape_field_then_accepts_correction() {
     );
     let stderr = String::from_utf8_lossy(&rejected.stderr);
     assert!(
-        stderr.contains("shape.ttslua:3:18: error[TS2322]"),
+        // At the field, as TypeScript reports an object literal's property.
+        stderr.contains("shape.ttslua:3:19: error[TS2322]"),
         "{stderr}"
     );
     assert!(!stderr.contains("LUA2031"), "{stderr}");

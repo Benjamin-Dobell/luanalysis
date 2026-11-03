@@ -104,16 +104,9 @@ fn broad_reads_include_exact_exceptions_and_broad_writes_preserve_every_contract
 fn constructor_and_dictionary_relations_check_exact_exceptions_and_fallback_entries() {
     let source = format!("{VECTOR}---@type Vector\nlocal vector={{[1]=1,[2]=2,[3]=3,[4]=true}}\n");
     clean(&source);
-    error_at(
-        &source.replace("[1]=1", "[1]=false"),
-        "TS2322",
-        "{[1]=false,[2]=2,[3]=3,[4]=true}",
-    );
-    error_at(
-        &source.replace("[4]=true", "[4]=4"),
-        "TS2322",
-        "{[1]=1,[2]=2,[3]=3,[4]=4}",
-    );
+    // At the field, as TypeScript reports an object literal's property.
+    error_at(&source.replace("[1]=1", "[1]=false"), "TS2322", "[1]");
+    error_at(&source.replace("[4]=true", "[4]=4"), "TS2322", "[4]");
     let source = format!(
         "{VECTOR}---@param vector Vector\nlocal function inspect(vector)\n---@type table<number,boolean>\nlocal dictionary=vector\nend\n"
     );

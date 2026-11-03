@@ -338,7 +338,7 @@ impl Checker<'_> {
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.report_unplaced_limit(limits, span);
         let checked = result.errors.is_empty();
-        let ty = self.call_result(result, &callee, &origins, name.span, span);
+        let ty = self.call_result(result, &callee, &origins, args, name.span, span);
         match checked.then(|| self.string_pattern_method(&arguments, name, args)).flatten() {
             Some(pack) => self.engine.pack_slot(&pack, 0),
             None => ty,
@@ -365,7 +365,7 @@ impl Checker<'_> {
                 luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.report_unplaced_limit(limits, span);
         let checked = result.errors.is_empty();
-        let pack = self.pack_call_result(result, &callee, &origins, name.span, span);
+        let pack = self.pack_call_result(result, &callee, &origins, args, name.span, span);
         checked.then(|| self.string_pattern_method(&arguments, name, args)).flatten().unwrap_or(pack)
     }
 

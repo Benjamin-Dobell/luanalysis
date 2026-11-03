@@ -111,15 +111,15 @@ fn genuine_repeated_arguments_and_the_declarations_own_parameter_order_are_prese
     accepted(&corrected);
     let wrong_order = corrected.replace("{first='key',second=1}", "{first=1,second='key'}");
     let rejected = check(&wrong_order);
-    assert_eq!(rejected.diagnostics.len(), 1, "{:#?}", rejected.diagnostics);
-    assert_eq!(rejected.diagnostics[0].code, "TS2345");
-    assert!(
-        rejected.diagnostics[0]
-            .message
-            .ends_with("parameter of type 'Pair<string, number>'."),
-        "{:#?}",
-        rejected.diagnostics
-    );
+    // Each field against Pair's own order, string then number, as TypeScript elaborates an
+    // argument's error into the literal written.
+    let fields: Vec<_> = rejected.diagnostics.iter()
+        .map(|diagnostic| (diagnostic.code, &wrong_order[diagnostic.span.start..diagnostic.span.end], diagnostic.message.as_str()))
+        .collect();
+    assert_eq!(fields, [
+        ("TS2322", "first", "Type '1' is not assignable to type 'string'."),
+        ("TS2322", "second", "Type '\"key\"' is not assignable to type 'number'."),
+    ]);
     accepted(&corrected);
 }
 

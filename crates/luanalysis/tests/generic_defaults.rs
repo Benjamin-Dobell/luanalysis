@@ -57,8 +57,9 @@ local wrong = plain.value
     assert_eq!(checked.ty("plain"), "Box<string>");
     assert_eq!(checked.ty("numeric"), "Box<number>");
     assert_eq!(checked.ty("pair"), "Pair<string, string>");
+    // The omitted second argument is the first's default, string: the field is reported against it.
     assert_eq!(checked.diagnostics, [
-        "TS2322 { first = \"a\", second = 2 } | Type '{ first: \"a\", second: 2 }' is not assignable to type 'Pair<string, string>'.",
+        "TS2322 second | Type '2' is not assignable to type 'string'.",
         "TS2322 plain.value | Type 'string' is not assignable to type 'number'.",
     ]);
 }

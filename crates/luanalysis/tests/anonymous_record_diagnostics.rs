@@ -1,7 +1,9 @@
 use luanalysis::{check, location};
 use std::{fs, process::Command};
 
-const WRONG: &str = "---@class Zone\nlocal Zone={}\n---@type {IGNORE:0,ACCEPT:1,REJECT:2,FORCE_IGNORE:3,FORCE_REJECT:4}\nZone.FilterResult={IGNORE=6,ACCEPT=1,REJECT=2,FORCE_IGNORE=3,FORCE_REJECT=4}\n";
+// The value is a local's, which an error is not elaborated into: its message renders the whole
+// record types.
+const WRONG: &str = "---@class Zone\nlocal Zone={}\nlocal result={IGNORE=6,ACCEPT=1,REJECT=2,FORCE_IGNORE=3,FORCE_REJECT=4}\n---@type {IGNORE:0,ACCEPT:1,REJECT:2,FORCE_IGNORE:3,FORCE_REJECT:4}\nZone.FilterResult=result\n";
 
 fn check_message(message: &str) {
     let expected = message
@@ -28,10 +30,7 @@ fn an_anonymous_written_member_contract_renders_its_actual_singleton_fields() {
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     let diagnostic = &report.diagnostics[0];
     assert_eq!(diagnostic.code, "TS2322");
-    assert_eq!(
-        &WRONG[diagnostic.span.start..diagnostic.span.end],
-        "{IGNORE=6,ACCEPT=1,REJECT=2,FORCE_IGNORE=3,FORCE_REJECT=4}"
-    );
+    assert_eq!(&WRONG[diagnostic.span.start..diagnostic.span.end], "result");
     check_message(&diagnostic.message);
     let corrected = check(&WRONG.replace("IGNORE=6", "IGNORE=0"));
     assert!(

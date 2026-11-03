@@ -292,9 +292,10 @@ fn every_task_reads_a_branch_where_its_alias_is_declared() {
     for &entry in &report.project.entries[1..] {
         let file = report.file(entry).unwrap();
         let messages: Vec<_> = file.report.diagnostics.iter().map(|diagnostic| (diagnostic.code, diagnostic.message.as_str())).collect();
+        // Each at the element or field, as TypeScript elaborates a literal's.
         assert_eq!(messages, [
-            ("TS2322", "Type '{ [1]: \"b\" }' is not assignable to type '\"a\"[]'."),
-            ("TS2322", "Type '{ value: \"c\" }' is not assignable to type '{ value: number }'."),
+            ("TS2322", "Type '\"b\"' is not assignable to type '\"a\"'."),
+            ("TS2322", "Type '\"c\"' is not assignable to type 'number'."),
         ]);
     }
 }

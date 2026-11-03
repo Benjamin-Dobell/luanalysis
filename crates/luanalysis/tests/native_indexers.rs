@@ -116,7 +116,7 @@ fn contextual_literal_fields_keep_matching_singletons_and_reject_wrong_values() 
     accepted("---@type {[1]: true, name: \"tag\"}\nlocal item={[1]=true,name=\"tag\"}");
     type_error(
         "---@type {[1]: true}\nlocal item={[1]=false}",
-        "{[1]=false}",
+        "[1]",
     );
 }
 
