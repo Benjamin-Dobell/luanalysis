@@ -184,10 +184,11 @@ fn flatten<'a>(prefix: &str, value: &'a Json, settings: &mut Vec<(String, &'a Js
 }
 
 /// The standard environment of a LuaLS `runtime.version`. Lua 5.5 has Lua 5.4's library
-/// declarations, and LuaJIT Lua 5.1's.
+/// declarations.
 fn lua_version(name: &str) -> Option<StandardEnvironmentProfile> {
     Some(match name {
-        "Lua 5.1" | "LuaJIT" => StandardEnvironmentProfile::Lua51,
+        "Lua 5.1" => StandardEnvironmentProfile::Lua51,
+        "LuaJIT" => StandardEnvironmentProfile::LuaJit,
         "Lua 5.2" => StandardEnvironmentProfile::Lua52,
         "Lua 5.3" => StandardEnvironmentProfile::Lua53,
         "Lua 5.4" | "Lua 5.5" => StandardEnvironmentProfile::Lua54,
@@ -262,7 +263,7 @@ mod tests {
             "runtime.pathStrict must be true or false",
             "workspace.useGitIgnore must be true or false",
         ]);
-        assert_eq!(parse(r#"{ "runtime.version": "LuaJIT" }"#, &directory).version, Some(StandardEnvironmentProfile::Lua51));
+        assert_eq!(parse(r#"{ "runtime.version": "LuaJIT" }"#, &directory).version, Some(StandardEnvironmentProfile::LuaJit));
         assert_eq!(parse(r#"{ "runtime.version": "Lua 5.5" }"#, &directory).version, Some(StandardEnvironmentProfile::Lua54));
         assert_eq!(parse("[]", &directory).errors, ["a configuration is a JSON object"]);
         assert_eq!(parse("{ \"a\": }", &directory).errors.len(), 1);

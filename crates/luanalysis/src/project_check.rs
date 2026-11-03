@@ -100,7 +100,11 @@ pub(crate) fn unwind_if_cancelled() {
 impl ProjectCheckOptions {
     /// How the project's annotations are read.
     pub fn parse_options(&self) -> luanalysis_syntax::ParseOptions {
-        luanalysis_syntax::ParseOptions { emmylua: self.emmylua_syntax, decay_optionals: self.decay_optionals }
+        luanalysis_syntax::ParseOptions {
+            emmylua: self.emmylua_syntax,
+            decay_optionals: self.decay_optionals,
+            luajit: self.environment == StandardEnvironmentProfile::LuaJit,
+        }
     }
 }
 

@@ -28,6 +28,8 @@ pub(crate) struct ProjectStandardEnvironment {
     pub rejected_assert_declarations: Vec<NativeValueDeclarationKey>,
     userdata: Option<NativeTypeDeclarationKey>,
     thread: Option<NativeTypeDeclarationKey>,
+    /// LuaJIT's C data, which only its builtin types declare.
+    cdata: Option<NativeTypeDeclarationKey>,
 }
 impl ProjectStandardEnvironment {
     pub(super) fn runtime_type_declaration(
@@ -37,6 +39,7 @@ impl ProjectStandardEnvironment {
         match kind {
             NativeOpaqueRuntimeKind::Userdata => self.userdata,
             NativeOpaqueRuntimeKind::Thread => self.thread,
+            NativeOpaqueRuntimeKind::Cdata => self.cdata,
         }
     }
 
@@ -55,6 +58,7 @@ impl ProjectStandardEnvironment {
             rejected_assert_declarations: Vec::new(),
             userdata: None,
             thread: None,
+            cdata: None,
         };
         if !profile.is_selected_standard() {
             return result;
@@ -71,6 +75,7 @@ impl ProjectStandardEnvironment {
             if kind == StandardLibrarySource::Builtin {
                 result.userdata = source.original_opaque_runtime_declaration("userdata");
                 result.thread = source.original_opaque_runtime_declaration("thread");
+                result.cdata = source.original_opaque_runtime_declaration("cdata");
             }
             if let Some((capabilities, other_owners)) = source.original_standard_function("require") {
                 if other_owners.is_empty() && capabilities.len() == 1 { result.require_operation = capabilities.first().copied(); }

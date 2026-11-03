@@ -185,6 +185,8 @@ pub struct ParseOptions {
     /// nil-admitting one. The checker reads absence as nil too, so such a final result or
     /// parameter may also be left out.
     pub decay_optionals: bool,
+    /// LuaJIT's numerals, `1LL`, `1ULL`, `0b101` and `3i`, which `emmylua` also reads.
+    pub luajit: bool,
 }
 
 impl File {

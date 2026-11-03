@@ -3,6 +3,7 @@
 use super::NativeRegistry;
 use crate::module_requests::{RequireCall, RequireTarget};
 use crate::native_flow::FlowAdapter;
+use crate::standard_environment::StandardModule;
 use crate::{Checker, Diagnostic};
 use luanalysis_engine::{
     NativeLoaderPolicy, NativeModuleKey, NativeProjectError, Type, TypeQueries, ValuePack,
@@ -15,6 +16,9 @@ use crate::collections::{HashMap, HashSet};
 #[derive(Clone)]
 pub(crate) enum ImportOutcome {
     Module(NativeModuleKey),
+    /// A module the standard library provides, which `require` returns before searching for a
+    /// file; the outcome of that search when the selected library does not declare it.
+    Standard(StandardModule, Box<ImportOutcome>),
     Missing(String),
     InvalidSource,
     Dynamic,
@@ -38,7 +42,11 @@ pub(crate) struct ProjectModuleIndex {
 impl NativeRegistry {
     pub(crate) fn check_module_requests(&self, queries: &mut dyn TypeQueries) {
         for call in self.module_calls() {
-            if !self.module_import(call.span).is_some_and(|(_, recipe)| matches!(recipe.outcome, ImportOutcome::Missing(_))) { continue; }
+            if !self.module_import(call.span).is_some_and(|(_, recipe)| match recipe.outcome {
+                ImportOutcome::Missing(_) => true,
+                ImportOutcome::Standard(_, otherwise) => matches!(*otherwise, ImportOutcome::Missing(_)),
+                _ => false,
+            }) { continue; }
             let key = self.expression_key_for_span(call.span);
             let expression = &self.expressions().get(key).expression;
             let luanalysis_syntax::ExprKind::Call { callee, args } = &expression.kind else { continue; };
@@ -219,13 +227,24 @@ impl Checker<'_> {
                 self.compatible(&value, &Type::String, argument.span);
             }
         }
+        let outcome = match recipe.outcome {
+            ImportOutcome::Standard(module, otherwise) => match self.standard_module_type(module) {
+                Some(ty) => {
+                    if !self.incomplete_flow { self.report.imports.push(recipe.argument_span); }
+                    return Some(ValuePack::single(ty));
+                }
+                None => *otherwise,
+            },
+            outcome => outcome,
+        };
         if !self.incomplete_flow {
             self.report.imports.push(recipe.argument_span);
             if let Some(target) = recipe.target {
                 self.native?.project_modules.as_ref()?.required_files.borrow_mut().insert(target);
             }
         }
-        let result:String=match recipe.outcome {
+        let result:String=match outcome {
+            ImportOutcome::Standard(..) => unreachable!("a standard module's search is no standard module"),
             ImportOutcome::Module(module)=>match self.engine.require_pack(module,policy) {
                 Ok(pack)=>return Some(self.merged_class_export(pack)),
                 Err(error)=>module_error_message(error).into(),
@@ -250,6 +269,23 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
+    /// The value `package.loaded` holds for a standard module, when the selected library
+    /// declares it.
+    fn standard_module_type(&mut self, module: StandardModule) -> Option<Type> {
+        let native = self.native?;
+        match module {
+            StandardModule::Global(name) => self.engine.global_binding_type(native.global_binding(name)?).ok(),
+            StandardModule::Member(name, member) => {
+                let table = self.engine.global_binding_type(native.global_binding(name)?).ok()?;
+                self.engine.property_type(&table, member)
+            }
+            StandardModule::Named(name) => match native.declared_type(name) {
+                Some(declaration) => self.engine.named_declared_type(declaration).ok(),
+                None => None,
+            },
+        }
+    }
+
     /// The definition table of a class declared in several places is, to its importers,
     /// the class, with the members every one of its definitions gives it (as LuaLS reads
     /// `require`). Other definitions keep their partial view, so an importer still sees

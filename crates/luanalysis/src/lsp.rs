@@ -2458,7 +2458,7 @@ fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, set
     let flag = |path: &[&str]| settings.path(path).and_then(|value| match value { Json::Bool(value) => Some(*value), _ => None });
     if let Some(version) = settings.get("luaVersion").and_then(Json::as_str) {
         options.environment = crate::cli::lua_version(version)
-            .ok_or_else(|| format!("luaVersion {version:?} is not one of 5.0, 5.1, 5.2, 5.3 and 5.4"))?;
+            .ok_or_else(|| format!("luaVersion {version:?} is not one of 5.0, 5.1, 5.2, 5.3, 5.4 and LuaJIT"))?;
     }
     inputs.libraries.extend(strings("libraries").into_iter().map(path));
     inputs.module_roots.extend(strings("moduleRoots").into_iter().map(path));

@@ -776,6 +776,13 @@ impl NativeRegistry {
         declared.sort_by(|left, right| left.0.cmp(&right.0));
         declared
     }
+    /// The one type declared with exactly this name, whatever the file's namespace.
+    pub(crate) fn declared_type(&self, name: &str) -> Option<NativeTypeDeclarationKey> {
+        match self.declared_candidates(name)[..] {
+            [declaration] => Some(declaration),
+            _ => None,
+        }
+    }
     fn declared_candidates(&self, name: &str) -> Vec<NativeTypeDeclarationKey> {
         if let Some(project) = &self.project_names {
             return project.candidates(name).to_vec();

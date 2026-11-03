@@ -764,8 +764,9 @@ again with the same signature, and parameters without types.
 
 A host that embeds Lua often provides only part of the standard library, as a sandbox does.
 `--stdlib` names the parts it provides: whole libraries (`basic`, `coroutine`, `debug`, `io`,
-`math`, `os`, `package`, `string`, `table`, `utf8`, `bit32`) or single members (`print`,
-`os.time`, `require`). Everything else is undeclared, so using it is an error.
+`math`, `os`, `package`, `string`, `table`, `utf8`, `bit32`, and LuaJIT's `bit`, `jit`, `ffi` and
+`string.buffer`) or single members (`print`, `os.time`, `require`, `ffi.new`). Everything else
+is undeclared, so using it is an error.
 
 ```sh
 luanalysis check --lua-version 5.2 --stdlib basic,string,table,math,coroutine,bit32 \
@@ -774,6 +775,39 @@ luanalysis check --lua-version 5.2 --stdlib basic,string,table,math,coroutine,bi
 
 `--no-stdlib` declares none of it, for a host that declares its own with `--library`. `type`,
 `assert` and `setmetatable` are always declared: without them, it would not be Lua.
+
+`require` returns a standard library by its name, as `package.loaded` holds it before any file
+is searched for: `require("string")` is the string library, and a `string.lua` on the module
+path does not replace it.
+
+### LuaJIT
+
+`--lua-version LuaJIT` (or `.luarc.json`'s `"LuaJIT"`) declares LuaJIT 2.1's library as its
+default build provides it: Lua 5.1's, with LuaJIT's extensions (`xpcall` passing arguments,
+`load`'s mode and environment, `table.move`, `coroutine.isyieldable` and the rest), and its own
+libraries. `table.pack`, `table.unpack` and `rawlen` need its Lua 5.2 compatibility build, so
+they are not declared; Lua 5.3's operators are reported, as for Lua 5.1. LuaJIT's numerals
+(`1LL`, `0x10ULL`, `0b101`, `3i`) are numbers.
+
+```lua
+local ffi = require("ffi")             -- ffilib
+local buffer = require("string.buffer") -- string.bufferlib
+local new_tab = require("table.new")    -- fun(narray: number, nhash: number): table
+ffi.cdef[[ typedef struct { int x, y; } point; ]]
+local p = ffi.new("point", 1, 2)        -- cdata
+local sum = p.x + bit.band(p.y, 0xff)   -- C data's fields are `any`
+
+---@param v number | ffi.cdata*
+local function plus(v)
+    if type(v) == "cdata" then return tonumber(v) end
+    return v + 1                        -- v: number
+end
+```
+
+C data is the type `cdata`, which `type(v) == "cdata"` narrows to and from. Its C type is
+declared in C, which Luanalysis does not read, so its fields, elements and arithmetic are `any`.
+The FFI's types have lua-language-server's names: `ffi.cdata*`, `ffi.ctype*`, `ffi.ct*`,
+`ffi.cb*` and `ffi.namespace*`, as a type name may end in `*`.
 
 A literal pattern types what `string.match`, `string.gmatch` and `string.find` return: each
 capture is a string, and an empty capture, `()`, is a position.
@@ -787,7 +821,7 @@ for word in text:gmatch("%a+") do end      -- word: string
 
 Luanalysis checks a project as a whole. `require` calls are resolved through module roots and
 `package.path` templates, and each module's exports are inferred, so a value keeps its type as it
-crosses files. Standard library declarations are included for Lua 5.0 through 5.4.
+crosses files. Standard library declarations are included for Lua 5.0 through 5.4 and LuaJIT.
 
 A file named `*.def.lua` or `*.def.ttslua` is a declaration file wherever it is found, as
 TypeScript's `*.d.ts` files are. Its stubs describe what other code provides, so they are not
@@ -818,7 +852,7 @@ options do not decide, in its flat (`"runtime.version"`) or nested form:
 
 | Setting | Effect |
 | --- | --- |
-| `runtime.version` | `"Lua 5.1"` to `"Lua 5.4"`, as `--lua-version`; `"Lua 5.5"` uses 5.4's declarations, `"LuaJIT"` 5.1's. |
+| `runtime.version` | `"Lua 5.1"` to `"Lua 5.4"` or `"LuaJIT"`, as `--lua-version`; `"Lua 5.5"` uses 5.4's declarations. |
 | `runtime.path` | `package.path` templates, relative to the directory; `.lua` templates also find `.ttslua` files. |
 | `runtime.pathStrict` | Find modules only through templates, as `--path-strict`. |
 | `workspace.library` | Declaration libraries, as `--library`. LuaLS's `${…}` paths are its own. |
@@ -838,7 +872,7 @@ files ignore unless a `.luarc.json` says otherwise.
 
 | Option | Effect |
 | --- | --- |
-| `--lua-version 5.0`…`5.4` | Use that Lua version's standard library declarations. |
+| `--lua-version 5.0`…`5.4`, `LuaJIT` | Use that Lua version's standard library declarations. |
 | `--stdlib <list>` | Declare only these standard libraries and members, as a sandbox provides them (repeatable). |
 | `--no-stdlib` | Declare none of the standard library, for a host that declares its own. |
 | `--library <path>` | Include declaration files or directories, whatever their names. |
@@ -940,7 +974,7 @@ with `settings` in `workspace/didChangeConfiguration`, either directly or under 
 
 | Setting | Type | Default | Command line | `.luarc.json` | Effect |
 | --- | --- | --- | --- | --- | --- |
-| `luaVersion` | `"5.0"` to `"5.4"` | v1's compatible declarations | `--lua-version` | `runtime.version` | The Lua version whose standard library is declared. |
+| `luaVersion` | `"5.0"` to `"5.4"`, `"LuaJIT"` | v1's compatible declarations | `--lua-version` | `runtime.version` | The Lua version whose standard library is declared. |
 | `libraries` | paths | none | `--library` | `workspace.library` | Declaration files or directories, added to the others. |
 | `moduleRoots` | paths | the workspace folders | `--module-root` | | Directories that `require` searches in order, added to the others. |
 | `packagePath` | string | `?.lua;?/init.lua;?.ttslua;?/init.ttslua` | `--package-path` | `runtime.path` | `package.path` templates. |
@@ -1154,7 +1188,8 @@ other additions:
   there; and a trailing `expression ---@as T`.
 - `---@diagnostic disable-next-line: assign-type-mismatch` and its kin, which disable
   diagnostics by Luanalysis's code or lua-language-server's name.
-- Lua 5.5's `global` declarations and LuaJIT's numerals (`1LL`, `0x10ULL`, `0b101`, `3i`).
+- Lua 5.5's `global` declarations, and LuaJIT's numerals (`1LL`, `0x10ULL`, `0b101`, `3i`) at
+  any Lua version (`--lua-version LuaJIT` reads them without the option).
 
 Without the option each of these is reported as EmmyLua Analyzer's syntax, except
 `---@diagnostic`, which lua-language-server also writes and Luanalysis then leaves to the editor.

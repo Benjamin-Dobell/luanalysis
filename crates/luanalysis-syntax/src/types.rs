@@ -2349,10 +2349,16 @@ impl TypeParser {
             span = span.join(next.span);
             self.pos += 2;
         }
+        // A name may end in `*`, as LuaLS and EmmyLua Analyzer spell C types (`ffi.cdata*`).
         // LuaLS spells the io file class `file*`, after C's `FILE*`.
-        if name == "file" && self.symbol("*") && self.current().span.start == span.end {
+        let mut stars = 0;
+        while self.symbol("*") && self.current().span.start == span.end {
             span = span.join(self.current().span);
             self.pos += 1;
+            stars += 1;
+        }
+        if !(name == "file" && stars == 1) {
+            name.push_str(&"*".repeat(stars));
         }
         // LuaLS's `lightuserdata` is a userdata: Lua's `type` reports "userdata".
         if name == "lightuserdata" {

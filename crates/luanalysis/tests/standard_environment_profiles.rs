@@ -651,12 +651,14 @@ fn primitive_string_members_retain_original_context_inside_generic_callbacks() {
 #[test]
 fn each_lua_version_selects_only_its_original_standard_declarations() {
     // Each count includes the utility types, which every version declares.
-    for (profile, directory, count, has_bit32, has_utf8, has_package) in [
-        (StandardEnvironmentProfile::Lua50, "Lua50", 10, false, false, false),
-        (StandardEnvironmentProfile::Lua51, "Lua51", 11, false, false, true),
-        (StandardEnvironmentProfile::Lua52, "Lua52", 12, true, false, true),
-        (StandardEnvironmentProfile::Lua53, "Lua53", 13, true, true, true),
-        (StandardEnvironmentProfile::Lua54, "Lua54", 12, false, true, true),
+    for (profile, directory, count, has_bit32, has_utf8, has_package, has_ffi) in [
+        (StandardEnvironmentProfile::Lua50, "Lua50", 10, false, false, false, false),
+        (StandardEnvironmentProfile::Lua51, "Lua51", 11, false, false, true, false),
+        (StandardEnvironmentProfile::Lua52, "Lua52", 12, true, false, true, false),
+        (StandardEnvironmentProfile::Lua53, "Lua53", 13, true, true, true, false),
+        (StandardEnvironmentProfile::Lua54, "Lua54", 12, false, true, true, false),
+        // Lua 5.1's files and LuaJIT's `bit`, `ffi`, `jit` and `string.buffer`.
+        (StandardEnvironmentProfile::LuaJit, "LuaJIT", 15, false, false, true, true),
     ] {
         let fixture = Fixture::new();
         let report = fixture.check("local value=math.abs(-1)\nlocal text=('WORD'):lower()\n", profile);
@@ -673,6 +675,7 @@ fn each_lua_version_selects_only_its_original_standard_declarations() {
         assert_eq!(names.iter().any(|name| name == "bit32.def.lua"), has_bit32);
         assert_eq!(names.iter().any(|name| name == "utf8.def.lua"), has_utf8);
         assert_eq!(names.iter().any(|name| name == "package.def.lua"), has_package);
+        assert_eq!(names.iter().any(|name| name == "ffi.def.lua"), has_ffi);
         assert!(names.iter().any(|name| name == "utility.def.lua"), "{profile:?}");
     }
 }
@@ -680,7 +683,7 @@ fn each_lua_version_selects_only_its_original_standard_declarations() {
 #[test]
 fn string_search_public_overloads_accept_explicit_nil_defaults_in_each_profile() {
     let fixture = Fixture::new();
-    for profile in [StandardEnvironmentProfile::Lua50, StandardEnvironmentProfile::Lua51, StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua53, StandardEnvironmentProfile::Lua54] {
+    for profile in [StandardEnvironmentProfile::Lua50, StandardEnvironmentProfile::Lua51, StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua53, StandardEnvironmentProfile::Lua54, StandardEnvironmentProfile::LuaJit] {
         let mut source = "local text='abc'\nlocal omitted=string.find(text,'b')\nlocal numeric=string.find(text,'b',1)\n---@type number|nil\nlocal defaulted=string.find(text,'b',nil)\nlocal plain=string.find(text,'b',nil,true)\nlocal default_plain=string.find(text,'b',1,nil)\nlocal both_defaults=string.find(text,'b',nil,nil)\nlocal method=text:find('b',nil,true)\n".to_owned();
         if profile != StandardEnvironmentProfile::Lua50 {
             source.push_str("local omitted_match=string.match(text,'b')\nlocal numeric_match=string.match(text,'b',1)\n---@type string|number|nil\nlocal defaulted_match=string.match(text,'b',nil)\nlocal method_match=text:match('b',nil)\n");
@@ -694,7 +697,7 @@ fn string_search_public_overloads_accept_explicit_nil_defaults_in_each_profile()
 #[test]
 fn string_search_nil_defaults_preserve_argument_and_result_checks_after_correction() {
     let fixture = Fixture::new();
-    for profile in [StandardEnvironmentProfile::Lua50, StandardEnvironmentProfile::Lua51, StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua53, StandardEnvironmentProfile::Lua54] {
+    for profile in [StandardEnvironmentProfile::Lua50, StandardEnvironmentProfile::Lua51, StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua53, StandardEnvironmentProfile::Lua54, StandardEnvironmentProfile::LuaJit] {
         for bad in ["local result=string.find('abc','b',true)\n", "local text='abc'\nlocal result=text:find('b',{})\n"] {
             let report = fixture.check(bad, profile);
             assert!(code(&report, "TS2345"), "{profile:?}: a nonnumeric, nonnil start must be rejected");
@@ -752,7 +755,7 @@ fn cli_selects_lua52_bit32_and_accepts_the_corrected_original_source() {
 
 #[test]
 fn cli_lua_versions_preserve_the_matching_require_result_count() {
-    for version in ["5.0", "5.1", "5.2", "5.3", "5.4"] {
+    for version in ["5.0", "5.1", "5.2", "5.3", "5.4", "LuaJIT"] {
         let fixture = Fixture::new();
         fixture.file("value.lua", "return 42\n");
         let metadata_type = if version == "5.4" { "nil|string" } else { "nil" };

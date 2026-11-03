@@ -23,6 +23,9 @@ pub enum StandardEnvironmentProfile {
     Lua53,
     /// Lua 5.4 declaration resources and original standard capabilities.
     Lua54,
+    /// LuaJIT 2.1: Lua 5.1's library with LuaJIT's extensions, and its `bit`, `jit`, `ffi`,
+    /// `string.buffer` and `table.new` libraries, as its default build provides them.
+    LuaJit,
 }
 
 impl StandardEnvironmentProfile {
@@ -35,19 +38,45 @@ impl StandardEnvironmentProfile {
     pub const fn is_full_lua(self) -> bool {
         matches!(
             self,
-            Self::Lua50 | Self::Lua51 | Self::Lua52 | Self::Lua53 | Self::Lua54
+            Self::Lua50 | Self::Lua51 | Self::Lua52 | Self::Lua53 | Self::Lua54 | Self::LuaJit
         )
     }
 
-    fn version(self) -> Option<&'static str> {
+    fn name(self) -> Option<&'static str> {
         match self {
-            Self::Lua50 => Some("5.0"),
-            Self::Lua51 => Some("5.1"),
-            Self::Lua52 => Some("5.2"),
-            Self::Lua53 => Some("5.3"),
-            Self::Lua54 => Some("5.4"),
+            Self::Lua50 => Some("Lua 5.0"),
+            Self::Lua51 => Some("Lua 5.1"),
+            Self::Lua52 => Some("Lua 5.2"),
+            Self::Lua53 => Some("Lua 5.3"),
+            Self::Lua54 => Some("Lua 5.4"),
+            Self::LuaJit => Some("LuaJIT"),
             Self::LegacyMinimal | Self::None => None,
         }
+    }
+
+    /// The module `require` returns for `name` before any file is loaded, as `package.loaded`
+    /// (Lua 5.0's `_LOADED`) holds each standard library.
+    pub(crate) fn standard_module(self, name: &str) -> Option<StandardModule> {
+        use StandardModule::{Global, Member, Named};
+        const LIBRARIES: [&str; 8] = ["_G", "coroutine", "debug", "io", "math", "os", "string", "table"];
+        if let Some(library) = LIBRARIES.iter().find(|library| **library == name) {
+            return self.is_full_lua().then_some(Global(library));
+        }
+        Some(match (self, name) {
+            (Self::Lua51 | Self::Lua52 | Self::Lua53 | Self::Lua54 | Self::LuaJit, "package") => Global("package"),
+            (Self::Lua52 | Self::Lua53, "bit32") => Global("bit32"),
+            (Self::Lua53 | Self::Lua54, "utf8") => Global("utf8"),
+            (Self::LuaJit, "bit") => Global("bit"),
+            (Self::LuaJit, "jit") => Global("jit"),
+            (Self::LuaJit, "jit.opt") => Member("jit", "opt"),
+            (Self::LuaJit, "jit.profile") => Named("jit.profilelib"),
+            (Self::LuaJit, "jit.util") => Named("jit.utillib"),
+            (Self::LuaJit, "ffi") => Named("ffilib"),
+            (Self::LuaJit, "string.buffer") => Named("string.bufferlib"),
+            (Self::LuaJit, "table.new") => Member("table", "new"),
+            (Self::LuaJit, "table.clear") => Member("table", "clear"),
+            _ => return None,
+        })
     }
 
     fn directory(self) -> Option<&'static str> {
@@ -59,42 +88,61 @@ impl StandardEnvironmentProfile {
             Self::Lua52 => Some("Lua52"),
             Self::Lua53 => Some("Lua53"),
             Self::Lua54 => Some("Lua54"),
+            Self::LuaJit => Some("LuaJIT"),
         }
     }
+}
+
+/// How the standard library declares a module `require` returns: a library's global table, a
+/// member of one (LuaJIT's `table.new`), or a declared type, for a module that is no global
+/// (LuaJIT's `ffi` and `string.buffer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StandardModule {
+    Global(&'static str),
+    Member(&'static str, &'static str),
+    Named(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandardLibrarySource {
     LegacyRequire,
     Base,
+    Bit,
     Bit32,
     Builtin,
     Coroutine,
     Debug,
+    Ffi,
     Io,
+    Jit,
     Math,
     Os,
     Package,
     Table,
     String,
+    StringBuffer,
     Utf8,
     /// TypeScript's utility types, `Partial`, `Pick`, `Exclude` and their kin.
     Utility,
 }
 impl StandardLibrarySource {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 18] = [
         Self::LegacyRequire,
         Self::Base,
+        Self::Bit,
         Self::Bit32,
         Self::Builtin,
         Self::Coroutine,
         Self::Debug,
+        Self::Ffi,
         Self::Io,
+        Self::Jit,
         Self::Math,
         Self::Os,
         Self::Package,
         Self::Table,
         Self::String,
+        Self::StringBuffer,
         Self::Utf8,
         Self::Utility,
     ];
@@ -103,16 +151,20 @@ impl StandardLibrarySource {
         match self {
             Self::LegacyRequire => "require",
             Self::Base => "global",
+            Self::Bit => "bit",
             Self::Bit32 => "bit32",
             Self::Builtin => "builtin",
             Self::Coroutine => "coroutine",
             Self::Debug => "debug",
+            Self::Ffi => "ffi",
             Self::Io => "io",
+            Self::Jit => "jit",
             Self::Math => "math",
             Self::Os => "os",
             Self::Package => "package",
             Self::Table => "table",
             Self::String => "string",
+            Self::StringBuffer => "string.buffer",
             Self::Utf8 => "utf8",
             Self::Utility => "utility",
         }
@@ -125,6 +177,14 @@ impl StandardLibrarySource {
             Self::LegacyRequire | Self::Builtin | Self::Utility => None,
             Self::Base => Some("basic"),
             kind => Some(kind.name()),
+        }
+    }
+
+    /// The table a library's members are declared on: `string.buffer`'s module is a local.
+    fn table(self) -> Option<&'static str> {
+        match self {
+            Self::StringBuffer => Some("buffer"),
+            kind => kind.library(),
         }
     }
 
@@ -167,6 +227,11 @@ impl StandardLibrarySource {
                 Base => "global", Builtin => "builtin", Coroutine => "coroutine", Debug => "debug",
                 Io => "io", Math => "math", Os => "os", Package => "package", Table => "table", String => "string", Utf8 => "utf8",
             ),
+            StandardEnvironmentProfile::LuaJit => sources!("LuaJIT";
+                Base => "global", Bit => "bit", Builtin => "builtin", Coroutine => "coroutine", Debug => "debug",
+                Ffi => "ffi", Io => "io", Jit => "jit", Math => "math", Os => "os", Package => "package", Table => "table",
+                String => "string", StringBuffer => "string.buffer",
+            ),
         }
     }
 }
@@ -174,7 +239,8 @@ impl StandardLibrarySource {
 /// The parts of the standard library a host provides, when it provides only some of it, as a
 /// sandbox does, or none of it, when the host declares its own. Each entry names a whole library
 /// (`basic`, `coroutine`, `debug`, `io`, `math`, `os`, `package`, `string`, `table`, `utf8` or
-/// `bit32`) or one member of one (`print`, `os.time`, `string.dump`). `basic` is the base
+/// `bit32`, and LuaJIT's `bit`, `jit`, `ffi` and `string.buffer`) or one member of one (`print`,
+/// `os.time`, `string.dump`, `ffi.new`). `basic` is the base
 /// library's globals, such as `print` and `pairs`; from Lua 5.1, `require` belongs to `package`.
 /// Anything not named is left out, except what Lua cannot be without: `type`, `assert`,
 /// `setmetatable` and the builtin types (`string`, `number`, `table` and so on). An empty list
@@ -222,8 +288,8 @@ impl StandardLibraryAllowList {
             return Ok(());
         }
         Err(format!(
-            "the Lua {} standard library has no {} {}",
-            profile.version().unwrap_or_default(),
+            "the {} standard library has no {} {}",
+            profile.name().unwrap_or_default(),
             if unknown.len() == 1 { "library or member" } else { "libraries or members" },
             unknown.join(", ")
         ))
@@ -257,7 +323,7 @@ struct StandardMember {
 }
 
 fn standard_members(kind: StandardLibrarySource, profile: StandardEnvironmentProfile, source: &str) -> Vec<StandardMember> {
-    let Some(library) = kind.library() else { return Vec::new() };
+    let (Some(library), Some(table)) = (kind.library(), kind.table()) else { return Vec::new() };
     let file = luanalysis_syntax::parse(source);
     let mut members = Vec::new();
     for statement in &file.statements {
@@ -269,8 +335,9 @@ fn standard_members(kind: StandardLibrarySource, profile: StandardEnvironmentPro
         let name = match &target.kind {
             ExprKind::Name(name) => name.text.clone(),
             ExprKind::Field { base, name } => match &base.kind {
-                ExprKind::Name(base) if base.text == library || (kind == StandardLibrarySource::Base && base.text == "_G") => {
-                    format!("{}.{}", base.text, name.text)
+                ExprKind::Name(base) if base.text == table || (kind == StandardLibrarySource::Base && base.text == "_G") => {
+                    let library = if base.text == table { library } else { "_G" };
+                    format!("{library}.{}", name.text)
                 }
                 _ => continue,
             },

@@ -1071,6 +1071,14 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-small-shard-chunks.patch",
     "reason": "Start each of a `ShardedMap`'s 256 shards with room for 16 entries rather than 1,024, so that a small map a kept program holds does not take 256 * 1,024 entries.",
 })
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-native-cdata-runtime-domain.patch",
+    "reason": "Add LuaJIT's C data as a third opaque runtime domain beside userdata and threads, so that `type(v) == \"cdata\"` narrows to and from its selected root declaration.",
+} for path in [
+    "src/sema/check/native_flow.rs",
+    "src/sema/check/native_runtime.rs",
+])
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

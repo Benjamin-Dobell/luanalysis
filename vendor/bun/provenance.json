@@ -3416,6 +3416,18 @@
       "patch": "vendor/patches/bun-sema-small-shard-chunks.patch",
       "reason": "Start each of a `ShardedMap`'s 256 shards with room for 16 entries rather than 1,024, so that a small map a kept program holds does not take 256 * 1,024 entries.",
       "patch_sha256": "7c0551613b2d9abd2c102cf57d0692e42c0b4df6db051e526f3c19ab57e5b9f7"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-cdata-runtime-domain.patch",
+      "reason": "Add LuaJIT's C data as a third opaque runtime domain beside userdata and threads, so that `type(v) == \"cdata\"` narrows to and from its selected root declaration.",
+      "patch_sha256": "9cd6228f86568ae3d535c0eaa0d605a602eb49ea624d77f2b7b8975e97450a62"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-native-cdata-runtime-domain.patch",
+      "reason": "Add LuaJIT's C data as a third opaque runtime domain beside userdata and threads, so that `type(v) == \"cdata\"` narrows to and from its selected root declaration.",
+      "patch_sha256": "9cd6228f86568ae3d535c0eaa0d605a602eb49ea624d77f2b7b8975e97450a62"
     }
   ],
   "source_additions": {
@@ -3436,7 +3448,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "6f441d18febefd94fca101669f0030d6bbf4c849f2b8c764496c1810f5d9789f",
+      "extracted_sha256": "15f40099ee58536061f1bd73efd0bf5c4f80053918effb8b68d9cedf78d62d7b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_generic_storage.rs": {
@@ -3476,7 +3488,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch"
     },
     "src/sema/check/native_runtime.rs": {
-      "extracted_sha256": "f75a3486ce08266d832e15a4ab50a890f2c3214a939ea2d6012cfd3661aa33b9",
+      "extracted_sha256": "b9875a21b45640c4a7d20e2c370faaa6bb45e79feb10aacdc0c2513ff78b049b",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {

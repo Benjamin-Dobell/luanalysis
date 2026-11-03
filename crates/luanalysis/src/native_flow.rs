@@ -182,6 +182,7 @@ pub(super) struct NativeFlowRecipes {
     runtime_type_intrinsic_enabled: bool,
     runtime_userdata_enabled: bool,
     runtime_thread_enabled: bool,
+    runtime_cdata_enabled: bool,
     loader_mutations: HashSet<(usize, usize)>,
     original_require_capability: bool,
     /// A full Lua standard library is selected, so `require` is a standard function only where
@@ -215,6 +216,7 @@ pub(super) struct FlowCapabilities {
     pub runtime_type: bool,
     pub userdata: bool,
     pub thread: bool,
+    pub cdata: bool,
 }
 
 pub(super) struct NativeFlowSources {
@@ -260,6 +262,7 @@ impl NativeFlowSources {
         recipes.runtime_type_intrinsic_enabled = capabilities.runtime_type;
         recipes.runtime_userdata_enabled = capabilities.userdata;
         recipes.runtime_thread_enabled = capabilities.thread;
+        recipes.runtime_cdata_enabled = capabilities.cdata;
     }
     /// What a revision's recipes have been given (`give_recipe_capabilities`).
     pub(super) fn recipe_capabilities(recipes: &NativeFlowRecipes) -> FlowCapabilities {
@@ -269,6 +272,7 @@ impl NativeFlowSources {
             runtime_type: recipes.runtime_type_intrinsic_enabled,
             userdata: recipes.runtime_userdata_enabled,
             thread: recipes.runtime_thread_enabled,
+            cdata: recipes.runtime_cdata_enabled,
         }
     }
     pub(super) fn set_runtime_type_intrinsic_enabled(&mut self, enabled: bool) {
@@ -279,12 +283,14 @@ impl NativeFlowSources {
         let current = match kind {
             NativeOpaqueRuntimeKind::Userdata => self.runtime_userdata_enabled,
             NativeOpaqueRuntimeKind::Thread => self.runtime_thread_enabled,
+            NativeOpaqueRuntimeKind::Cdata => self.runtime_cdata_enabled,
         };
         if current == enabled { return; }
         let recipes = Arc::make_mut(&mut self.recipes);
         match kind {
             NativeOpaqueRuntimeKind::Userdata => recipes.runtime_userdata_enabled = enabled,
             NativeOpaqueRuntimeKind::Thread => recipes.runtime_thread_enabled = enabled,
+            NativeOpaqueRuntimeKind::Cdata => recipes.runtime_cdata_enabled = enabled,
         }
     }
     pub(super) fn set_original_require_capability(&mut self, enabled: bool) {
@@ -374,6 +380,7 @@ impl NativeFlowSources {
             runtime_type_intrinsic_enabled: false,
             runtime_userdata_enabled: false,
             runtime_thread_enabled: false,
+            runtime_cdata_enabled: false,
             loader_mutations: bound.module_environment_mutations().iter().chain(bound.computed_environment_mutations()).chain(bound.environment_rebindings()).map(|span| (span.start, span.end)).collect(),
             original_require_capability: false,
             require_needs_declaration: false,
@@ -1519,6 +1526,8 @@ impl NativeFlowSources {
             b"function" => NativeRuntimeType::Function,
             b"userdata" if self.runtime_userdata_enabled => NativeRuntimeType::Userdata,
             b"thread" if self.runtime_thread_enabled => NativeRuntimeType::Thread,
+            // LuaJIT's C data, where the selected library declares it.
+            b"cdata" if self.runtime_cdata_enabled => NativeRuntimeType::Cdata,
             b"userdata" | b"thread" => {
                 return Some(NativePredicate::Unsupported(
                     "nonprimitive Lua runtime type predicates require native runtime-domain types",

@@ -413,7 +413,7 @@ impl FileRegistry {
         let standard = &project.standard_environment;
         source.flow.set_original_require_capability(standard.require_operation.is_some());
         source.flow.set_require_needs_declaration(project.full_lua);
-        for kind in [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread] {
+        for kind in [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread, NativeOpaqueRuntimeKind::Cdata] {
             source.flow.set_opaque_runtime_type_enabled(kind, standard.runtime_type_declaration(kind).is_some());
         }
         source.set_project_names(Rc::clone(&project.names));
@@ -698,12 +698,18 @@ impl ProjectRegistry {
                 let outcome = if let Some(outcome) = classify_unresolved(call) {
                     outcome
                 } else {
-                    match dependency.map(|edge|&edge.outcome) {
+                    let searched = match dependency.map(|edge|&edge.outcome) {
                         Some(DependencyOutcome::Resolved(target))=>modules_by_file.get(target).copied().map_or(ImportOutcome::InvalidSource,ImportOutcome::Module),
                         Some(DependencyOutcome::Unresolved(error))=>ImportOutcome::Missing(error.to_string()),
                         Some(DependencyOutcome::Unreadable(error))=>ImportOutcome::Missing(error.to_string()),
                         Some(DependencyOutcome::InvalidSpan)=>ImportOutcome::Missing("Module request has an invalid original source span.".into()),
                         None=>ImportOutcome::Missing("Static require request was not resolved by this project's source host.".into()),
+                    };
+                    // `package.loaded` holds the standard libraries before `require` searches.
+                    let crate::module_requests::RequireTarget::Static(module) = &call.target else { unreachable!("a static request") };
+                    match environment_profile.standard_module(module) {
+                        Some(standard) => ImportOutcome::Standard(standard, Box::new(searched)),
+                        None => searched,
                     }
                 };
                 // Source-host requests are candidates. Publish a missing module
@@ -782,6 +788,7 @@ impl ProjectRegistry {
             runtime_type: type_operation || legacy_type && !file.bound.has_modified_type_intrinsic(),
             userdata: standard.runtime_type_declaration(NativeOpaqueRuntimeKind::Userdata).is_some(),
             thread: standard.runtime_type_declaration(NativeOpaqueRuntimeKind::Thread).is_some(),
+            cdata: standard.runtime_type_declaration(NativeOpaqueRuntimeKind::Cdata).is_some(),
         };
         for file in &registry.files {
             let given = capabilities(file);

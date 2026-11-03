@@ -71,12 +71,14 @@ pub enum NativeRuntimeType {
     Function,
     Userdata,
     Thread,
+    /// LuaJIT's C data.
+    Cdata,
 }
 
 /// Runtime categories represented by selected original nominal declarations,
 /// rather than by structural table or function carriers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NativeOpaqueRuntimeKind { Userdata, Thread }
+pub enum NativeOpaqueRuntimeKind { Userdata, Thread, Cdata }
 
 /// Lua lexical number facts preserve integer precision separately from the
 /// checker's structural Number type. They are not loop state or joined types.
@@ -1599,6 +1601,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             NativeRuntimeType::Function => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Function, sense),
             NativeRuntimeType::Userdata => return self.native_narrow_opaque_runtime_kind(ty, NativeOpaqueRuntimeKind::Userdata, sense),
             NativeRuntimeType::Thread => return self.native_narrow_opaque_runtime_kind(ty, NativeOpaqueRuntimeKind::Thread, sense),
+            NativeRuntimeType::Cdata => return self.native_narrow_opaque_runtime_kind(ty, NativeOpaqueRuntimeKind::Cdata, sense),
             _ => {}
         }
         let name = match kind {
@@ -1606,7 +1609,8 @@ impl<'s, 'p> Checker<'s, 'p> {
             NativeRuntimeType::Boolean => known::boolean,
             NativeRuntimeType::Number => known::number,
             NativeRuntimeType::String => known::string,
-            NativeRuntimeType::Table | NativeRuntimeType::Function | NativeRuntimeType::Userdata | NativeRuntimeType::Thread => unreachable!(),
+            NativeRuntimeType::Table | NativeRuntimeType::Function | NativeRuntimeType::Userdata | NativeRuntimeType::Thread
+            | NativeRuntimeType::Cdata => unreachable!(),
         };
         self.narrow_type_by_typeof_name(ty, name, sense)
     }

@@ -15,7 +15,8 @@ pub(crate) fn diagnostics(
     let lua53 = match profile {
         StandardEnvironmentProfile::Lua50
         | StandardEnvironmentProfile::Lua51
-        | StandardEnvironmentProfile::Lua52 => false,
+        | StandardEnvironmentProfile::Lua52
+        | StandardEnvironmentProfile::LuaJit => false,
         StandardEnvironmentProfile::Lua53 => true,
         StandardEnvironmentProfile::Lua54
         | StandardEnvironmentProfile::LegacyMinimal

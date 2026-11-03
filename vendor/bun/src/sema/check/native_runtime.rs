@@ -24,7 +24,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// expand a class's members, method contracts or inferred implementations.
     fn native_opaque_runtime_declaration(&mut self, declaration: NativeTypeDeclarationId) -> Result<NativeOpaqueRuntimeDomain, NativeNamedTypeError> {
         if let Some(&known) = self.native_runtime_domains.get(&declaration) { return Ok(Complete(known)) }
-        let roots = [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread]
+        let roots = [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread, NativeOpaqueRuntimeKind::Cdata]
             .map(|kind| (kind, self.native_opaque_runtime_root(kind)));
         if roots.iter().all(|(_, root)| root.is_none()) {
             self.native_runtime_domains.insert(declaration, None);

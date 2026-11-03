@@ -200,8 +200,8 @@ fn global_declarations_and_luajit_numerals_are_read_with_the_option() {
     assert_errors(&report, &["main.lua:3:11: error[TS2322]: Type 'number' is not assignable to type 'string'."]);
     let report = plain(source);
     for expected in [
-        "main.lua:1:20: error[LUA1001]: LuaJIT's numeric literal `1LL` is EmmyLua Analyzer syntax (--emmylua-syntax)",
-        "main.lua:1:38: error[LUA1001]: LuaJIT's numeric literal `0b101` is EmmyLua Analyzer syntax (--emmylua-syntax)",
+        "main.lua:1:20: error[LUA1001]: LuaJIT's numeric literal `1LL` is read with --lua-version LuaJIT or --emmylua-syntax",
+        "main.lua:1:38: error[LUA1001]: LuaJIT's numeric literal `0b101` is read with --lua-version LuaJIT or --emmylua-syntax",
         "main.lua:4:1: error[LUA1001]: Lua 5.5's `global` declaration is EmmyLua Analyzer syntax (--emmylua-syntax)",
     ] {
         assert!(report.contains(expected), "{expected}\n{report}");

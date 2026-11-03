@@ -519,7 +519,7 @@ impl Lexer<'_> {
         known.then(|| { self.pos += length; length })
     }
     fn luajit_literal(text: &str) -> String {
-        format!("LuaJIT's numeric literal `{text}` is EmmyLua Analyzer syntax (--emmylua-syntax)")
+        format!("LuaJIT's numeric literal `{text}` is read with --lua-version LuaJIT or --emmylua-syntax")
     }
     fn digits(&mut self, hex: bool) -> usize {
         let start = self.pos;

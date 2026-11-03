@@ -81,10 +81,12 @@ impl NativeTypeProvider for Provider {
         &self,
         kind: NativeOpaqueRuntimeKind,
     ) -> Option<NativeTypeDeclarationKey> {
-        self.roots.then_some(declaration(match kind {
+        let index = match kind {
             NativeOpaqueRuntimeKind::Userdata => 0,
             NativeOpaqueRuntimeKind::Thread => 1,
-        }))
+            NativeOpaqueRuntimeKind::Cdata => return None,
+        };
+        self.roots.then_some(declaration(index))
     }
     fn contains_type_declaration(&self, key: NativeTypeDeclarationKey) -> bool {
         key.snapshot == SNAPSHOT && (key.index < 11 || (100..2010).contains(&key.index))

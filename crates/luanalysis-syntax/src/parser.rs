@@ -21,7 +21,7 @@ pub fn parse_with_checkpoint(source: &str, checkpoint: impl Fn()) -> File {
 
 /// [`parse_with_checkpoint`], reading the annotation syntax `options` selects.
 pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl Fn()) -> File {
-    let lexed = crate::lexer::lex_with_options(source, options.emmylua, &checkpoint);
+    let lexed = crate::lexer::lex_with_options(source, options.emmylua || options.luajit, &checkpoint);
     let comments: Vec<Comment> = lexed
         .tokens
         .iter()
