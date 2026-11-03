@@ -392,6 +392,7 @@ impl FileRegistry {
         source.set_no_implicit_any(project.no_implicit_any);
         source.set_source_role(self.role);
         source.set_inspections(project.inspections);
+        source.set_describes_types(project.describe_types);
         source.set_no_unsafe_any(project.no_unsafe_any);
         source.set_cancellation(&project.cancellation);
         source.set_project_names(Rc::clone(&project.names));
@@ -499,7 +500,10 @@ impl ProjectRegistry {
         }
     }
 
-    pub(crate) fn set_describe_types(&mut self, describe: bool) { self.describe_types = describe; }
+    pub(crate) fn set_describe_types(&mut self, describe: bool) {
+        self.describe_types = describe;
+        for source in self.files.iter_mut().filter_map(|file| file.built.get_mut()) { source.set_describes_types(describe); }
+    }
     pub(crate) fn set_inspections(&mut self, enabled: bool) {
         self.inspections = enabled;
         for source in self.files.iter_mut().filter_map(|file| file.built.get_mut()) { source.set_inspections(enabled); }

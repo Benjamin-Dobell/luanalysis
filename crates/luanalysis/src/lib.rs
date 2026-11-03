@@ -544,6 +544,10 @@ impl Checker<'_> {
                 native.publish_binding(binding, value);
             }
         }
+        // A report that describes no types would discard them.
+        if self.native.is_some_and(|native| !native.describes_types()) {
+            return;
+        }
         self.report.bindings.push(BindingInfo {
             binding,
             name: name.to_owned(),
@@ -556,6 +560,9 @@ impl Checker<'_> {
     fn record_expression_type(&mut self, span: Span, ty: &Type) {
         if !self.incomplete_flow && let Some(native) = self.native {
             native.record_probed_type(span, ty);
+        }
+        if self.native.is_some_and(|native| !native.describes_types()) {
+            return;
         }
         self.report.types.push(TypeInfo {
             span,

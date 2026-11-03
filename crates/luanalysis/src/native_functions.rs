@@ -109,6 +109,9 @@ pub(super) struct NativeRegistry {
     no_unsafe_any: bool,
     /// Report inspections (`ProjectCheckOptions::inspections`).
     inspections: bool,
+    /// Record binding and expression types for a report that describes them
+    /// (`ProjectCheckOptions::describe_types`).
+    describes_types: bool,
     /// Stops a check in progress: function bodies not yet begun are skipped.
     cancellation: crate::project_check::Cancellation,
     legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
@@ -443,6 +446,7 @@ impl NativeRegistry {
             no_implicit_any: false,
             no_unsafe_any: false,
             inspections: false,
+            describes_types: true,
             cancellation: crate::project_check::Cancellation::default(),
             legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy::Disabled,
             file,
@@ -589,6 +593,8 @@ impl NativeRegistry {
     pub(crate) fn set_no_unsafe_any(&mut self, enabled: bool) { self.no_unsafe_any = enabled; }
     pub(crate) fn inspections(&self) -> bool { self.inspections }
     pub(crate) fn set_inspections(&mut self, enabled: bool) { self.inspections = enabled; }
+    pub(crate) fn describes_types(&self) -> bool { self.describes_types }
+    pub(crate) fn set_describes_types(&mut self, describes: bool) { self.describes_types = describes; }
     pub(super) fn derived_module_calls(&self) -> &[crate::module_requests::RequireCall] {
         &self.derived.get().expect("a registry derives its recipes when it is built").module_calls
     }
