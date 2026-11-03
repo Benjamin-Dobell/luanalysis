@@ -1096,15 +1096,15 @@ checks a project's files in parallel.
 
 Checking [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own
 repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October to
-3 November 2026):
+4 November 2026):
 
 | Checker | Wall time | CPU time | Peak memory |
 | --- | --- | --- | --- |
 | lua-language-server 3.19.2 `--check` | 17.5 s | 17.2 s | 732 MB |
-| EmmyLua Analyzer 0.25.1 | 0.99 s | 2.1 s | 158 MB |
+| EmmyLua Analyzer 0.25.1 | 0.88 s | 2.0 s | 158 MB |
 | EmmyLua Analyzer main (`1b6df85`) | 9.0 s | 8.7 s | 169 MB |
-| Luanalysis, one thread | 2.6 s | 2.5 s | 360 MB |
-| Luanalysis, eight threads | 1.2 s | 4.3 s | 464 MB |
+| Luanalysis, one thread | 2.1 s | 2.1 s | 283 MB |
+| Luanalysis, eight threads | 0.88 s | 3.4 s | 387 MB |
 
 These are medians of five fresh-process runs after one warmup, using release builds; EmmyLua
 Analyzer main is an unreleased commit built from source without changes. CPU time includes user
@@ -1114,28 +1114,32 @@ configuration with Lua 5.4 and `lua/` (a symlink to `script/`) and `make/` exclu
 those same 434 files. The checkers report different diagnostics. Other development work was
 running on the machine.
 
-On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.11 s and 72 MB,
-EmmyLua Analyzer 0.25.1 takes 0.20 s and 25 MB, and its main branch takes 0.25 s and 31 MB.
+On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.09 s and 62 MB,
+EmmyLua Analyzer 0.25.1 takes 0.17 s and 25 MB, and its main branch takes 0.25 s and 31 MB.
 
 Diagnostics after an edit in the language server, from the change to the new diagnostics. Each
-edit adds or removes a type error in the file's first local function, and the figures are medians
-of 20 edits:
+edit adds or removes a type error in the file's first local function, once the server has checked
+the edit before it, and the figures are medians of 20 edits:
 
 | Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
 | --- | --- | --- | --- | --- |
-| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 28 ms | 504 MB |
-| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 211 ms | 299 MB |
+| lua-language-server (434 files, 106,789 lines) | 999 lines | 0.9 s | 31 ms | 426 MB |
+| Another project (136 files, 33,083 lines) | 2,522 lines | 0.5 s | 18 ms | 263 MB |
 
 An edit checks the edited file using the types it reads from the rest of the project, not the file
 alone. As a task of Bun's checker reads what the steps before it published, an edit reads what the
 file's previous check published about the other files, and finds again only what mentions the edited
-file; opening a file publishes for its first edit. The files above are among the largest. Editing
-every source file of each project in turn, in one session, four edits each:
+file. Opening a file, or a request about one, publishes for its first edit, and the four files edited
+or looked at last keep what they published. In a file of 32 KB or more, the function declaration
+around an edit is checked first and its diagnostics published with the rest of the file's from its
+last check, as TypeScript's language service reports the region an editor shows first; the whole
+file's follow, for the 2,522-line file about 200 ms later. The files above are among the largest.
+Editing every source file of each project in turn, in one session, four edits each:
 
 | Project | Median | 90th percentile | Slowest | First edit after opening, median |
 | --- | --- | --- | --- | --- |
-| lua-language-server (434 files) | 6 ms | 15 ms | 140 ms | 12 ms |
-| Another project (99 source files of its 136) | 10 ms | 23 ms | 205 ms | 17 ms |
+| lua-language-server (434 files) | 7 ms | 16 ms | 152 ms | 8 ms |
+| Another project (99 source files of its 136) | 10 ms | 24 ms | 217 ms | 11 ms |
 
 An edit that changes what a widely used module or class exposes checks its users as well, and costs
 up to one whole check.
