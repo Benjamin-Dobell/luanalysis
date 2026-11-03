@@ -208,6 +208,19 @@ impl<'s> Checker<'_, 's> {
         self.order_dependent_filter = 0;
     }
 
+    /// After `begin_task`, before anything is created: nothing this task publishes mentions the
+    /// native source `snapshot`, as nothing it publishes mentions a file that nothing imports
+    /// (`Task::begin_file`).
+    pub fn withhold_native_source(&mut self, snapshot: u32) {
+        self.task.own.add_unimported_native_source(snapshot);
+    }
+
+    /// Before `end_task`: nothing this task publishes answers a query about `binding`, as one that a
+    /// withheld source declares reports that source's conflicts while it is answered.
+    pub fn withhold_native_global_binding(&mut self, binding: super::native_globals::NativeGlobalBindingId) {
+        self.task.own.add_unimported_native_binding(binding);
+    }
+
     /// Called on the thread of the task, after everything else this checker does.
     pub fn end_task(&mut self) -> Finished<'s> {
         self.native_named_cache = super::native_named::NativeNamedCache::default();

@@ -1026,6 +1026,41 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-native-compact-references.patch",
     "reason": "Keep a standard reference's result for the node it was asked of and for every eighth node, from which any later walk is short.",
 })
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/types.rs",
+    "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+    "reason": "Let a task withhold a native source, or a global binding: what mentions one is bound and never published, as what mentions a file nothing imports is.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/check_source_file.rs",
+    "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+    "reason": "Add `Checker::withhold_native_source`, the task's way to withhold a source being edited.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/mod.rs",
+    "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+    "reason": "Publish what a task derives about native classes, as `native_declared_heads` is, so that a later task reads it.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_globals.rs",
+    "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+    "reason": "Report the native source of a declaration's query, and the binding of a binding's, so that a withheld one's is not published.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_project.rs",
+    "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+    "reason": "Report the native source of a module's query, so that a withheld one's is not published.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+    "reason": "Publish a class's members, views, schemas and member types, except those with members of a withheld source, and read one member by key rather than scanning the class.",
+})
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_runtime_tables.rs",
+    "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+    "reason": "Read and store a runtime table's member types through the published table.",
+})
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

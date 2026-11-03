@@ -116,6 +116,7 @@ pub use crate::check::native_tables::{
 };
 pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeRuntimeTableRef, NativeRuntimeTableContext, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
 use crate::check::native_globals::{NativeEnvironmentId, NativeGlobalBindingId};
+use crate::check::native_named::{NativePublishedMember, NativeTypeDeclarationQuery};
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ComponentsId(pub u32);
@@ -1819,6 +1820,12 @@ pub struct OwnStore<'s> {
     /// The files that the task has visited and that nothing imports, indexed by `FileId`. No other
     /// task can reference a node or a symbol of such a file. Empty: nothing is bound.
     unimported_files: Bits,
+    /// The native sources that no later task reads, as no other task reads a file that nothing
+    /// imports. Empty: none is.
+    unimported_native_sources: Vec<u32>,
+    /// The global bindings whose queries no later task reads: one a withheld source declares is
+    /// found again with that source.
+    unimported_native_bindings: Vec<NativeGlobalBindingId>,
     /// See `Types::creation_order`.
     has_ordered_by_own_id: Cell<bool>,
     /// See `Types::is_unresolved_name`.
@@ -1840,6 +1847,8 @@ impl<'s> OwnStore<'s> {
             log: LocalVec::new(),
             is_read_later: true,
             unimported_files: Bits(Vec::new()),
+            unimported_native_sources: Vec::new(),
+            unimported_native_bindings: Vec::new(),
             has_ordered_by_own_id: Cell::new(false),
             has_unresolved_names: Cell::new(false),
         }
@@ -1849,6 +1858,21 @@ impl<'s> OwnStore<'s> {
     /// references `file` is bound.
     pub fn add_unimported_file(&mut self, file: FileId) {
         self.unimported_files.set(file.0 as usize);
+    }
+
+    /// From now on every record that references the native source `snapshot` is bound.
+    pub fn add_unimported_native_source(&mut self, snapshot: u32) {
+        self.unimported_native_sources.push(snapshot);
+    }
+
+    /// From now on an entry for a query about `binding` is bound.
+    pub fn add_unimported_native_binding(&mut self, binding: NativeGlobalBindingId) {
+        self.unimported_native_bindings.push(binding);
+    }
+
+    /// Whether a record that references the native source `snapshot` is bound.
+    pub fn withholds_native_source(&self, snapshot: u32) -> bool {
+        self.unimported_native_sources.contains(&snapshot)
     }
 
     /// Before anything is created. `false`: `finish` will be given no marks.
@@ -3200,6 +3224,12 @@ pub trait Visitor {
     fn ty(&mut self, id: TypeId);
     /// A node or a symbol of `file` is referenced.
     fn file(&mut self, file: FileId);
+    /// An id of a declaration in this native source is referenced.
+    #[inline]
+    fn native_source(&mut self, _: u32) {}
+    /// A query about this global binding.
+    #[inline]
+    fn native_global_binding(&mut self, _: NativeGlobalBindingId) {}
     fn plain<T: Hash + ?Sized>(&mut self, value: &T);
 }
 
@@ -3216,7 +3246,7 @@ pub trait Follow {
     /// Whether it references a node or a symbol of a file that nothing imports, or a task-local
     /// record that does. Such a value is never published.
     fn is_bound(&self, own: &OwnStore) -> bool {
-        if own.unimported_files.0.is_empty() {
+        if own.unimported_files.0.is_empty() && own.unimported_native_sources.is_empty() && own.unimported_native_bindings.is_empty() {
             return false;
         }
         let mut visitor = IsBound {
@@ -3465,16 +3495,7 @@ has_no_references!(
     u32,
     u64,
     i64,
-    NativeFunctionId,
-    NativeSignatureId,
-    NativeAnnotationId,
     NativeAnnotationPiece,
-    NativeTypeDeclarationId,
-    NativeDefinitionId,
-    NativeTypeMemberId,
-    NativeTypeParamId,
-    NativeExpressionId,
-    NativeBindingId,
     crate::check::CheckMode,
     usize,
     ExprId,
@@ -3491,6 +3512,32 @@ has_no_references!(
     ObjectFlags,
     ObjectLiteralCheck,
     Literalness,
+);
+
+/// An id of a declaration in a native source: data, whose source `IsBound` asks about.
+macro_rules! native_source_ids {
+    ($($name:ty),* $(,)?) => {$(
+        impl Follow for $name {
+            #[inline]
+            fn visit<V: Visitor>(&self, visitor: &mut V) {
+                visitor.plain(self);
+                visitor.native_source(self.snapshot);
+            }
+            #[inline]
+            fn follow(&mut self, _: &Link) {}
+        }
+    )*};
+}
+native_source_ids!(
+    NativeFunctionId,
+    NativeSignatureId,
+    NativeAnnotationId,
+    NativeTypeDeclarationId,
+    NativeDefinitionId,
+    NativeTypeMemberId,
+    NativeTypeParamId,
+    NativeExpressionId,
+    NativeBindingId,
 );
 
 /// The label is a declared name, so it is published and needs no remapping
@@ -3683,6 +3730,25 @@ follow_enum!(SigData<'_> {
     SigData::Synth { type_params, params, ret, this, of, is_union } => (type_params, params, ret, this, of, is_union),
     SigData::WithReturn { sig, ret } => (sig, ret),
     SigData::WithNativeResultPack { sig, pack } => (sig, pack),
+});
+follow_struct!(NativePublishedMember<'_> { member, overloads, owner, via });
+follow_enum!(NativeTypeDeclarationQuery {
+    NativeTypeDeclarationQuery::OwnerScope(a) => (a),
+    NativeTypeDeclarationQuery::DeclaredHead(a) => (a),
+    NativeTypeDeclarationQuery::MemberType(a) => (a),
+    NativeTypeDeclarationQuery::MemberContext(a) => (a),
+    NativeTypeDeclarationQuery::IndexerKey(a) => (a),
+    NativeTypeDeclarationQuery::MemberOwnerApplication(a) => (a),
+    NativeTypeDeclarationQuery::MemberOwnerMatch { member, owner } => (member, owner),
+    NativeTypeDeclarationQuery::Bases(a) => (a),
+    NativeTypeDeclarationQuery::RuntimeDomain(a) => (a),
+    NativeTypeDeclarationQuery::ObjectMembers(a) => (a),
+    NativeTypeDeclarationQuery::ObjectValidation(a) => (a),
+    NativeTypeDeclarationQuery::DefinitionContext(a) => (a),
+    NativeTypeDeclarationQuery::RuntimeTableSeed(a) => (a),
+    NativeTypeDeclarationQuery::RuntimeTableMember(a, b, c) => (a, b, c),
+    NativeTypeDeclarationQuery::RuntimeTableWrittenContext(a, b) => (a, b),
+    NativeTypeDeclarationQuery::RuntimeTableNumericContract(a) => (a),
 });
 follow_struct!(NativeCapturedBinding { declaration, ty });
 follow_struct!(NativeObjectReference { declaration, mapper, self_argument, runtime_context });
@@ -4046,6 +4112,14 @@ impl Visitor for IsBound<'_, '_> {
     #[inline]
     fn file(&mut self, file: FileId) {
         self.is_bound |= self.own.unimported_files.has(file.0 as usize);
+    }
+    #[inline]
+    fn native_source(&mut self, snapshot: u32) {
+        self.is_bound |= self.own.unimported_native_sources.contains(&snapshot);
+    }
+    #[inline]
+    fn native_global_binding(&mut self, binding: NativeGlobalBindingId) {
+        self.is_bound |= self.own.unimported_native_bindings.contains(&binding);
     }
     #[inline]
     fn plain<T: Hash + ?Sized>(&mut self, _: &T) {}
@@ -4433,6 +4507,8 @@ impl<'s> OwnStore<'s> {
         }
         stores.log.clear();
         stores.unimported_files.0.clear();
+        stores.unimported_native_sources.clear();
+        stores.unimported_native_bindings.clear();
         let [atoms, components, mappers, sigs, types] = &marks.0;
         OwnRecords {
             atoms: take(&mut stores.atoms, atoms, &hashes[0]),

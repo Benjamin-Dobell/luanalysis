@@ -8,7 +8,12 @@
 //! - a local before the file's final `return` (no other file can see it);
 //! - a type error there;
 //! - a new field on the module the file returns (which its users see);
-//! - a field on the first class the file declares (which every user of the class sees).
+//! - a field on the first class the file declares (which every user of the class sees);
+//! - a type error inside the file's first local function;
+//! - a line that does not parse, as one being typed does.
+//!
+//! With `OPENED` set, what a file's next edit reads is published before its first, as a language
+//! server does when the file is opened.
 use luanalysis::cli::{Parsed, parse_arguments};
 use luanalysis::incremental::ProjectWorkspace;
 use luanalysis::project_check::ProjectCheckReport;
@@ -46,6 +51,10 @@ fn edits(text: &str, edit: usize) -> Vec<(&'static str, String)> {
             found.push(("type error", format!("{text}\n---@type string\nlocal __probe_{edit} = 1\n")));
         }
     }
+    if let Some(at) = text.find("local function ").and_then(|at| text[at..].find(")\n").map(|end| at + end + 2)) {
+        found.push(("type error in a function", insert(at, format!("---@type string\nlocal __probe_{edit} = 1"))));
+    }
+    found.push(("unfinished line", format!("{text}\nlocal __probe_{edit} =\n")));
     if let Some(at) = text.find("---@class ") {
         let line_end = text[at..].find('\n').map_or(text.len(), |end| at + end + 1);
         found.push(("class field", format!("{}---@field __probe_{edit} number\n{}", &text[..line_end], &text[line_end..])));
@@ -85,6 +94,10 @@ fn main() {
     let (mut checks, mut mismatches, mut incremental_seconds, mut whole_seconds) = (0, 0, 0.0, 0.0);
     for (edit, path) in paths.iter().step_by(step).take(limit).enumerate() {
         let text = std::fs::read_to_string(path).unwrap();
+        if std::env::var_os("OPENED").is_some() {
+            let project = load(&mut incremental, &HashMap::new());
+            incremental.publish_for_edits(project, options.clone(), path);
+        }
         for (kind, changed) in edits(&text, edit) {
             for (state, overlay) in [("edited", Some(changed)), ("undone", None)] {
                 let overlays: HashMap<PathBuf, String> = overlay.into_iter().map(|text| (path.clone(), text)).collect();

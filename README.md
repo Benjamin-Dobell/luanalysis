@@ -1062,7 +1062,7 @@ checks a project's files in parallel.
 
 Checking [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own
 repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October to
-2 November 2026):
+3 November 2026):
 
 | Checker | Wall time | CPU time | Peak memory |
 | --- | --- | --- | --- |
@@ -1089,17 +1089,19 @@ of 20 edits:
 
 | Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
 | --- | --- | --- | --- | --- |
-| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 58 ms | 501 MB |
-| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 290 ms | 291 MB |
+| lua-language-server (434 files, 106,789 lines) | 999 lines | 1.2 s | 28 ms | 507 MB |
+| Another project (136 files, 33,083 lines) | 2,522 lines | 0.7 s | 211 ms | 329 MB |
 
 An edit checks the edited file using the types it reads from the rest of the project, not the file
-alone. The files above are among the largest. Editing every source file of each project in turn, in
-one session:
+alone. As a task of Bun's checker reads what the steps before it published, an edit reads what the
+file's previous check published about the other files, and finds again only what mentions the edited
+file; opening a file publishes for its first edit. The files above are among the largest. Editing
+every source file of each project in turn, in one session, four edits each:
 
-| Project | Median | 90th percentile | Slowest |
-| --- | --- | --- | --- |
-| lua-language-server (434 files) | 18 ms | 41 ms | 216 ms |
-| Another project (99 source files of its 136) | 18 ms | 55 ms | 291 ms |
+| Project | Median | 90th percentile | Slowest | First edit after opening, median |
+| --- | --- | --- | --- | --- |
+| lua-language-server (434 files) | 6 ms | 15 ms | 140 ms | 12 ms |
+| Another project (99 source files of its 136) | 10 ms | 23 ms | 205 ms | 17 ms |
 
 An edit that changes what a widely used module or class exposes checks its users as well, and costs
 up to one whole check.

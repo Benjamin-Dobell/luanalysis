@@ -45,7 +45,116 @@ struct Completion<'s, R> {
 
 type Panic = Box<dyn Any + Send + 'static>;
 
+/// A native program kept between checks, as `with_native_task_plan` keeps one between steps: what a
+/// task has published, later tasks read instead of computing it. Dropping it frees what it holds.
+pub struct KeptProgram {
+    jobs: mpsc::Sender<KeptJob>,
+    strict_nil: bool,
+    decay_optionals: bool,
+}
+
+/// `run` waits for it, so what it borrows outlives it, whatever its lifetime says here.
+type KeptJob = Box<dyn for<'p, 's> FnOnce(&'p Program<'s>, u32) + Send + 'static>;
+
+impl KeptProgram {
+    fn run<R: Send>(&self, work: impl for<'p, 's> FnOnce(&'p Program<'s>, u32) -> R + Send) -> R {
+        let (done, outcome) = mpsc::channel();
+        fn boxed<'a>(job: impl for<'p, 's> FnOnce(&'p Program<'s>, u32) + Send + 'a) -> Box<dyn for<'p, 's> FnOnce(&'p Program<'s>, u32) + Send + 'a> {
+            Box::new(job)
+        }
+        let job = boxed(move |program, step| {
+            let _ = done.send(catch_unwind(AssertUnwindSafe(|| work(program, step))));
+        });
+        // SAFETY: only the lifetime changes. `outcome.recv` below returns once the job has run,
+        // and what it borrowed is gone by then, or once the thread has dropped it unrun.
+        let job: KeptJob = unsafe { std::mem::transmute(job) };
+        self.jobs.send(job).expect("the kept program's thread");
+        outcome.recv().expect("the kept program's thread").unwrap_or_else(|error| resume_unwind(error))
+    }
+
+    /// A task outside the plan: it reads what has been published, and what it writes is dropped
+    /// with it.
+    pub fn reading_task<P: NativeTypeProvider, R: Send>(
+        &self,
+        factory: impl FnOnce() -> P + Send,
+        work: impl FnOnce(&P, &mut dyn super::TypeQueries) -> R + Send,
+    ) -> R {
+        let (strict_nil, decay_optionals) = (self.strict_nil, self.decay_optionals);
+        self.run(move |program, _| {
+            let handles = TypeHandles::new();
+            let provider = factory();
+            let adapter = ProviderAdapter { provider: &provider, handles: &handles };
+            let mut checker = kept_checker(program, &adapter, strict_nil, decay_optionals);
+            work(&provider, &mut SessionQueries { checker: &mut checker, handles: &handles })
+        })
+    }
+
+    /// A task of its own step, which publishes what it has found except what mentions the sources
+    /// `withheld`. A task that a barrier finds invalid publishes nothing: its result stands, as
+    /// that of a task outside the plan does.
+    pub fn publishing_task<P: NativeTypeProvider, R: Send>(
+        &self,
+        withheld: &[u32],
+        factory: impl FnOnce() -> P + Send,
+        work: impl FnOnce(&P, &mut dyn super::TypeQueries) -> R + Send,
+    ) -> R {
+        let (strict_nil, decay_optionals) = (self.strict_nil, self.decay_optionals);
+        self.run(move |program, step| {
+            let handles = TypeHandles::new();
+            let provider = factory();
+            let adapter = ProviderAdapter { provider: &provider, handles: &handles };
+            let mut checker = kept_checker(program, &adapter, strict_nil, decay_optionals);
+            checker.begin_task(step, 0, true);
+            for &source in withheld { checker.withhold_native_source(source); }
+            let result = work(&provider, &mut SessionQueries { checker: &mut checker, handles: &handles });
+            let mut finished = vec![checker.end_task()];
+            drop(checker);
+            let serial = |count: usize, work: &(dyn Fn(usize) + Sync)| (0..count).for_each(work);
+            program.compare_listings();
+            if !program.validate(&finished, true)[0] {
+                let metadata_handles = TypeHandles::new();
+                let metadata_adapter = ProviderAdapter { provider: &provider, handles: &metadata_handles };
+                let metadata_checker = kept_checker(program, &metadata_adapter, strict_nil, decay_optionals);
+                program.link_with_sort(&mut finished, &serial, &|types| metadata_checker.sort_types(types));
+                program.publish(&mut finished, &serial, false);
+            }
+            result
+        })
+    }
+}
+
+fn kept_checker<'p, 's, P: NativeTypeProvider>(program: &'p Program<'s>, adapter: &'p ProviderAdapter<'p, P>, strict_nil: bool, decay_optionals: bool) -> bun_sema::check::Checker<'p, 's> {
+    let mut checker = program.checker_with_native_provider(adapter);
+    checker.set_stack_limit(crate::CHECKER_STACK_BUDGET);
+    checker.set_native_type_declaration_provider(adapter);
+    checker.set_native_globals_provider(adapter);
+    checker.set_native_project_provider(adapter);
+    checker.enable_native_arrays();
+    checker.set_native_strict_nil(strict_nil);
+    checker.set_native_exact_optionals(!decay_optionals);
+    checker
+}
+
 impl Engine {
+    /// A program to run tasks in, one after another, on a thread of its own.
+    pub fn keep_program(&self) -> KeptProgram {
+        let (jobs, receive_jobs) = mpsc::channel::<KeptJob>();
+        std::thread::Builder::new()
+            .name("luanalysis-kept-program".into())
+            .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)
+            .spawn(move || {
+                super::on_this_thread_with_program(|program, _| {
+                    let mut step = 0;
+                    while let Ok(job) = receive_jobs.recv() {
+                        job(&*program, step);
+                        step += 1;
+                    }
+                });
+            })
+            .expect("create a kept program's thread");
+        KeptProgram { jobs, strict_nil: self.strict_nil, decay_optionals: self.decay_optionals }
+    }
+
     /// Runs a deterministic task plan with one shared Session/Program and a bounded worker set.
     ///
     /// `steps` contains source-defined job IDs. Jobs may be root batches rather than files.

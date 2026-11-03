@@ -58,14 +58,14 @@ impl<'p, 's> Checker<'p, 's> {
         let declaration = reference.declaration;
         let object = self.intern(TypeData::NativeObject(reference));
         let native_query = NativeTypeDeclarationQuery::RuntimeTableSeed(object);
-        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known) }
+        if let Some(known) = self.native_named_type_found(native_query) { return Ok(known) }
         let provider = self.native_named_provider(declaration)?;
         let query = Query::NativeNamed(native_query);
         if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(native_query)) }
         let result = self.with_runtime_table_context(reference, |checker| provider.runtime_table_seed(checker, declaration)).ok_or(NativeNamedTypeError::InvalidDeclaration(declaration));
         let left = self.leave(query);
         match left {
-            Ok(stored) => if let Ok(value) = result { self.native_named_cache.ty(native_query, value, stored); },
+            Ok(stored) => if let Ok(value) = result { self.native_named_type_store(native_query, value, stored); },
             Err(open) => if let Ok(value) = result { self.cache_provisionally(query, u64::from(value.0), open); },
         }
         result
@@ -75,7 +75,7 @@ impl<'p, 's> Checker<'p, 's> {
         let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
         let object = self.intern(TypeData::NativeObject(reference));
         let native_query = NativeTypeDeclarationQuery::RuntimeTableMember(object, member, indexer);
-        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known) }
+        if let Some(known) = self.native_named_type_found(native_query) { return Ok(known) }
         let query = Query::NativeNamed(native_query);
         if !self.enter(query) {
             // A store whose value reads the member it stores (`m.size = m.size + 1`) is inferred
@@ -87,7 +87,7 @@ impl<'p, 's> Checker<'p, 's> {
             if indexer { provider.type_indexer_key(checker, member) } else { provider.type_member_type(checker, member) }
         });
         match self.leave(query) {
-            Ok(stored) => self.native_named_cache.ty(native_query, value, stored),
+            Ok(stored) => self.native_named_type_store(native_query, value, stored),
             Err(open) => self.cache_provisionally(query, u64::from(value.0), open),
         }
         Ok(value)
@@ -264,7 +264,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn native_runtime_written_numeric_contract(&mut self, reference: NativeObjectReference) -> Result<bool, NativeTableError> {
         let object = self.intern(TypeData::NativeObject(reference));
         let native_query = NativeTypeDeclarationQuery::RuntimeTableNumericContract(object);
-        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known == TypeId::TRUE); }
+        if let Some(known) = self.native_named_type_found(native_query) { return Ok(known == TypeId::TRUE); }
         let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
         let candidates: Vec<_> = provider.type_declaration_members(reference.declaration).into_iter().filter(|&member| {
             if provider.type_member_origin(member) != NativeTableFieldOrigin::Declared { return false; }
@@ -288,7 +288,7 @@ impl<'p, 's> Checker<'p, 's> {
         let result = result.map_err(|error: NativeNamedTypeError| error.table_error(object))?;
         match ended {
             Ok(stored) if completed.is_some() => {
-                self.native_named_cache.ty(native_query, if result { TypeId::TRUE } else { TypeId::FALSE }, stored);
+                self.native_named_type_store(native_query, if result { TypeId::TRUE } else { TypeId::FALSE }, stored);
                 Ok(result)
             }
             Err(_) if self.native_complete_without_cache(context, completed.is_some()) => Ok(result),

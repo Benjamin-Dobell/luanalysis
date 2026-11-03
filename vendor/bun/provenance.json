@@ -3362,6 +3362,48 @@
       "patch": "vendor/patches/bun-sema-native-compact-references.patch",
       "reason": "Keep a standard reference's result for the node it was asked of and for every eighth node, from which any later walk is short.",
       "patch_sha256": "f2a68cf2ee4f53c0bc88a7635ebe65328f1b39e238d77f73ac6d5edfc2ebec48"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+      "reason": "Let a task withhold a native source, or a global binding: what mentions one is bound and never published, as what mentions a file nothing imports is.",
+      "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
+    },
+    {
+      "path": "src/sema/check/check_source_file.rs",
+      "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+      "reason": "Add `Checker::withhold_native_source`, the task's way to withhold a source being edited.",
+      "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+      "reason": "Publish what a task derives about native classes, as `native_declared_heads` is, so that a later task reads it.",
+      "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+      "reason": "Report the native source of a declaration's query, and the binding of a binding's, so that a withheld one's is not published.",
+      "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
+    },
+    {
+      "path": "src/sema/check/native_project.rs",
+      "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+      "reason": "Report the native source of a module's query, so that a withheld one's is not published.",
+      "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+      "reason": "Publish a class's members, views, schemas and member types, except those with members of a withheld source, and read one member by key rather than scanning the class.",
+      "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-edit-publication.patch",
+      "reason": "Read and store a runtime table's member types through the published table.",
+      "patch_sha256": "9e08760c4a05d7778f82bceb52b9527a330db1da162a9969743c9e59eaef2a87"
     }
   ],
   "source_additions": {
@@ -3390,7 +3432,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "c8e3f25796c5ed5382dbf92271ff90ee1511f61c68b0134e5a484ad6a6d8a3af",
+      "extracted_sha256": "de2b9b3f28fac3474b26b9ef7feccaf692e8e2076f9e4540b1c504ddfc53ce3d",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -3402,7 +3444,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "34abf6c0a68a5cd81a52c20664b6034a62b74b2e16a64f29914b60877dfe2451",
+      "extracted_sha256": "a79b3aa7d9de9fcd93e41eb3e83afe4f7981f7520e1c2e5b5b0a0d68259f7d93",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -3414,7 +3456,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
-      "extracted_sha256": "bec3dc2234f0f41fddc4302cd577f150fbd159538ff408901f7009e7d50f2976",
+      "extracted_sha256": "9ae7afb6a32f661ad4ae085bc0fbfc793e93507d122b1552489804ec91fd09b4",
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_query_context.rs": {
@@ -3426,7 +3468,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "86ff207c77c03ef48c65fdd25957ec15f337b89c6c1ab3d84b006adc46348138",
+      "extracted_sha256": "6cd4e33f59930b049802dea1fb89012cb13ec43c7d43e17f59dc3fd9265d333b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -4141,7 +4183,7 @@
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
       "sha256": "9329b7117eb9eb92b9b8ceadb1d29189b3e71ef8c8898a8e71e697d7d5951748",
-      "extracted_sha256": "77ce7962e70faabce0b5ba747464f5d741adfe8962c9f9736d62d9f2f70f5aac"
+      "extracted_sha256": "5d34dcf598cafd7ac39b63cc466ddd598a5bcb4ea70a47aefd17ed4eab618d76"
     },
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
@@ -4396,7 +4438,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "f6e71d75772350402aae341b5a88a5a3f806ff64b1055956916c19a9a5f0c20d"
+      "extracted_sha256": "16d4f0a0d422e60e4925a241109027df6f75808187e8b3f74ac2bd8d537bb37a"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -4601,7 +4643,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "861c2a9f6fd24dd5745af536bd9038d8db18af72ba2bd1aa772825cf1b69d946"
+      "extracted_sha256": "738a9362661ba2ae31ffaf9faa57c49fde47ac10f0ff6f9f543fbbbff8790908"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

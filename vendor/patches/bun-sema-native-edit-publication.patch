@@ -1,0 +1,615 @@
+diff --git a/src/sema/check/check_source_file.rs b/src/sema/check/check_source_file.rs
+--- a/src/sema/check/check_source_file.rs
++++ b/src/sema/check/check_source_file.rs
+@@ -208,6 +208,19 @@ impl<'s> Checker<'_, 's> {
+         self.order_dependent_filter = 0;
+     }
+ 
++    /// After `begin_task`, before anything is created: nothing this task publishes mentions the
++    /// native source `snapshot`, as nothing it publishes mentions a file that nothing imports
++    /// (`Task::begin_file`).
++    pub fn withhold_native_source(&mut self, snapshot: u32) {
++        self.task.own.add_unimported_native_source(snapshot);
++    }
++
++    /// Before `end_task`: nothing this task publishes answers a query about `binding`, as one that a
++    /// withheld source declares reports that source's conflicts while it is answered.
++    pub fn withhold_native_global_binding(&mut self, binding: super::native_globals::NativeGlobalBindingId) {
++        self.task.own.add_unimported_native_binding(binding);
++    }
++
+     /// Called on the thread of the task, after everything else this checker does.
+     pub fn end_task(&mut self) -> Finished<'s> {
+         self.native_named_cache = super::native_named::NativeNamedCache::default();
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -333,6 +333,7 @@ macro_rules! buffered_fields {
+             calls_before_signatures untyped_signatures_in_js jsx_fragment_types assignments_marked
+             blocks_too_large_for_flow_analysis
+             native_project_results native_global_results native_declared_heads
++            native_named_types native_object_views native_object_schemas native_object_bases native_object_member_lists
+         )
+     };
+ }
+@@ -521,6 +522,11 @@ pub struct Program<'s> {
+     native_project_results: ByKey<NativeProjectQuery, TypeId, Buffered, &'s Session>,
+     native_global_results: ByKey<NativeGlobalsQuery, Option<TypeId>, Buffered, &'s Session>,
+     native_declared_heads: ByKey<NativeTypeDeclarationId, TypeId, Buffered, &'s Session>,
++    native_named_types: ByKey<NativeTypeDeclarationQuery, TypeId, Buffered, &'s Session>,
++    native_object_views: ByKey<TypeId, TypeId, Buffered, &'s Session>,
++    native_object_schemas: ByKey<TypeId, TypeId, Buffered, &'s Session>,
++    native_object_bases: ByIdIndirect<TypeId, ArenaBox<'s, [TypeId]>, Buffered, &'s Session>,
++    native_object_member_lists: ByIdIndirect<TypeId, ArenaBox<'s, [native_named::NativePublishedMember<'s>]>, Buffered, &'s Session>,
+     variances: ByNodeIndirect<Sym, &'s [u8], Buffered, &'s Session>,
+     /// `resolvedType` of a property declared by assignment declarations, keyed by the first
+     /// declaration.
+@@ -719,6 +725,11 @@ impl<'s> Program<'s> {
+             native_project_results: ByKey::new_in(session),
+             native_global_results: ByKey::new_in(session),
+             native_declared_heads: ByKey::new_in(session),
++            native_named_types: ByKey::new_in(session),
++            native_object_views: ByKey::new_in(session),
++            native_object_schemas: ByKey::new_in(session),
++            native_object_bases: ByIdIndirect::new_in(session),
++            native_object_member_lists: ByIdIndirect::new_in(session),
+             variances: ByNodeIndirect::new_in(&symbols, session),
+             awaited_types: ById::new_in(session),
+             mapped_prop_types: ByKey::new_in(session),
+diff --git a/src/sema/check/native_globals.rs b/src/sema/check/native_globals.rs
+--- a/src/sema/check/native_globals.rs
++++ b/src/sema/check/native_globals.rs
+@@ -41,10 +41,10 @@ impl crate::types::Follow for NativeGlobalsQuery {
+         match self {
+             Self::ValueDeclarationContract(NativeValueDeclarationId { snapshot, index })
+             | Self::ValueDeclaration(NativeValueDeclarationId { snapshot, index }) => {
+-                visitor.plain(snapshot); visitor.plain(index);
++                visitor.plain(snapshot); visitor.plain(index); visitor.native_source(*snapshot);
+             }
+-            Self::GlobalBinding(NativeGlobalBindingId { environment: NativeEnvironmentId { snapshot, index }, index: binding }) => {
+-                visitor.plain(snapshot); visitor.plain(index); visitor.plain(binding);
++            Self::GlobalBinding(id @ NativeGlobalBindingId { environment: NativeEnvironmentId { snapshot, index }, index: binding }) => {
++                visitor.plain(snapshot); visitor.plain(index); visitor.plain(binding); visitor.native_global_binding(*id);
+             }
+         }
+     }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -381,11 +381,52 @@ pub(super) struct NativeNamedCache {
+     own_parameters: FxHashMap<NativeTypeDeclarationId, Vec<NativeTypeParamId>>,
+     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
+     members: FxHashMap<TypeId, std::sync::Arc<Vec<NativeObjectMember>>>,
++    /// Each object's members by key, and the list it was made from.
++    member_indexes: FxHashMap<TypeId, (std::sync::Arc<Vec<NativeObjectMember>>, std::rc::Rc<NativeObjectMemberIndex>)>,
+     owner_applications: FxHashMap<NativeTypeMemberId, Option<NativeMemberOwnerApplication>>,
+     /// The override a resolved object's validation found incompatible; the object is its schema.
+     override_errors: FxHashMap<TypeId, NativeNamedTypeError>,
+ }
+ 
++/// Where an object's members are, by key, as TypeScript has a symbol table: a read asks for one key,
++/// and a class has hundreds of members.
++#[derive(Default)]
++struct NativeObjectMemberIndex {
++    by_key: FxHashMap<NativeTableKey, smallvec::SmallVec<[u32; 2]>>,
++    indexers: Vec<u32>,
++    /// The first member whose key is invalid.
++    invalid: Option<(u32, NativeTableError)>,
++}
++
++impl NativeObjectMemberIndex {
++    /// The members with `key`, in order, before the first invalid key: a read that reaches that
++    /// member fails.
++    fn fixed(&self, key: NativeTableKey) -> impl Iterator<Item = usize> + use<'_> {
++        let end = self.invalid.map_or(u32::MAX, |(position, _)| position);
++        self.by_key.get(&key).into_iter().flatten().copied().filter(move |&position| position < end).map(|position| position as usize)
++    }
++}
++
++/// `NativeObjectMember`, as a barrier publishes it.
++pub struct NativePublishedMember<'s> {
++    pub(crate) member: NativeTypeMemberId,
++    pub(crate) overloads: crate::session::ArenaBox<'s, [NativeTypeMemberId]>,
++    pub(crate) owner: TypeId,
++    pub(crate) via: Option<(u32, TypeId)>,
++}
++
++impl crate::local::MaybeLocal for NativeTypeDeclarationQuery {
++    fn is_local(&self) -> bool {
++        match self {
++            Self::OwnerScope(_) | Self::DeclaredHead(_) | Self::MemberType(_) | Self::MemberContext(_) | Self::IndexerKey(_)
++            | Self::MemberOwnerApplication(_) | Self::Bases(_) | Self::RuntimeDomain(_) => false,
++            Self::MemberOwnerMatch { owner: ty, .. } | Self::ObjectMembers(ty) | Self::ObjectValidation(ty) | Self::DefinitionContext(ty)
++            | Self::RuntimeTableSeed(ty) | Self::RuntimeTableMember(ty, ..) | Self::RuntimeTableNumericContract(ty) => ty.is_local(),
++            Self::RuntimeTableWrittenContext(ty, key) => ty.is_local() || matches!(key, NativeTableKey::String(name) if name.is_local()),
++        }
++    }
++}
++
+ #[derive(Clone)]
+ struct NativeObjectMember {
+     member: NativeTypeMemberId,
+@@ -563,6 +604,21 @@ impl<'p, 's> Checker<'p, 's> {
+         result
+     }
+ 
++    pub(super) fn native_named_type_found(&self, query: NativeTypeDeclarationQuery) -> Option<TypeId> {
++        self.native_named_cache.types.get(&query).copied().or_else(|| self.p.native_named_types.get(&self.task, &query))
++    }
++
++    pub(super) fn native_named_type_store(&mut self, query: NativeTypeDeclarationQuery, value: TypeId, stored: Stored) {
++        self.p.native_named_types.insert(&self.task, query, value, stored);
++        self.native_named_cache.ty(query, value, stored);
++    }
++
++    /// Whether a member of the list comes from a source that this task withholds.
++    fn native_members_withheld(&self, members: &[NativeObjectMember]) -> bool {
++        let withheld = |member: &NativeTypeMemberId| self.task.own.withholds_native_source(member.snapshot);
++        members.iter().any(|member| withheld(&member.member) || member.overloads.iter().any(withheld))
++    }
++
+     pub fn native_declared_head(&mut self, declaration: NativeTypeDeclarationId) -> Result<TypeId, NativeNamedTypeError> {
+         let provider = self.native_named_provider(declaration).map_err(|error| { self.report_native_named(error); error })?;
+         if let Some(known) = self.p.native_declared_heads.get(&self.task, &declaration) { return Ok(known) }
+@@ -744,7 +800,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let provider = self.native_type_declaration_provider.filter(|p| p.contains_type_member(member))
+             .ok_or(NativeNamedTypeError::InvalidMember(member))?;
+         let native_query = if key { NativeTypeDeclarationQuery::IndexerKey(member) } else { NativeTypeDeclarationQuery::MemberType(member) };
+-        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known) }
++        if let Some(known) = self.native_named_type_found(native_query) { return Ok(known) }
+         let query = Query::NativeNamed(native_query);
+         if let Some(raw) = self.provisional(query) { return Ok(TypeId(raw as u32)) }
+         if !self.enter(query) {
+@@ -765,7 +821,7 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+         } else { Ok(provider.type_member_type(self, member)) };
+         match self.leave(query) {
+-            Ok(stored) => if let Ok(result) = result { self.native_named_cache.ty(native_query, result, stored) },
++            Ok(stored) => if let Ok(result) = result { self.native_named_type_store(native_query, result, stored) },
+             Err(open) => if let Ok(result) = result { self.cache_provisionally(query, u64::from(result.0), open) },
+         }
+         if let Err(error) = result { self.report_native_named(error); }
+@@ -987,11 +1043,10 @@ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn native_named_key_origin(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> Result<Option<crate::types::NativeTableFieldOrigin>, NativeNamedTypeError> {
+         use crate::types::NativeTableFieldOrigin::Declared;
+         let members = self.native_object_members(reference)?;
+-        let provider = self.native_named_provider(reference.declaration)?;
++        let index = self.native_object_member_index(reference, &members)?;
+         let mut own = None;
+-        for origin in members.iter().cloned() {
+-            let NativeTypeMemberKey::Fixed(member_key) = provider.type_member_header(self, origin.member).key else { continue };
+-            if member_key.normalize() != Ok(key) { continue }
++        for position in index.by_key.get(&key).into_iter().flatten() {
++            let origin = members[*position as usize].clone();
+             match origin.via {
+                 None => match self.native_object_member_effective_origin(&origin)? {
+                     Some(Declared) => return Ok(Some(Declared)),
+@@ -1349,18 +1404,28 @@ impl<'p, 's> Checker<'p, 's> {
+     fn native_object_bases(&mut self, reference: NativeObjectReference) -> Result<Vec<TypeId>, NativeNamedTypeError> {
+         let ty = self.intern(TypeData::NativeObject(reference));
+         if let Some(known) = self.native_named_cache.mapped_bases.get(&ty) { return Ok(known.clone()) }
++        if let Some(known) = self.p.native_object_bases.get_ref(&self.task, &ty) { return Ok(known.to_vec()) }
+         let raw = self.native_named_bases(reference.declaration)?;
+         let query = Query::NativeNamed(NativeTypeDeclarationQuery::Bases(reference.declaration));
+         if !self.enter(query) { return Err(NativeNamedTypeError::CircularBase(reference.declaration)) }
+         let receiver = reference.self_argument.unwrap_or(ty);
+         let bases: Vec<_> = raw.into_iter().map(|base| { let base = self.instantiate(base, reference.mapper); self.native_with_receiver(base, receiver) }).collect();
+-        if let Ok(stored) = self.leave(query) { self.native_named_cache.mapped_bases(ty, bases.clone(), stored); }
++        if let Ok(stored) = self.leave(query) {
++            self.p.native_object_bases.insert_ref(&self.task, ty, self.list(&bases), stored);
++            self.native_named_cache.mapped_bases(ty, bases.clone(), stored);
++        }
+         Ok(bases)
+     }
+ 
+     fn native_object_members(&mut self, reference: NativeObjectReference) -> Result<std::sync::Arc<Vec<NativeObjectMember>>, NativeNamedTypeError> {
+         let ty = self.intern(TypeData::NativeObject(reference));
+         if let Some(known) = self.native_named_cache.members.get(&ty) { return Ok(std::sync::Arc::clone(known)) }
++        if let Some(known) = self.p.native_object_member_lists.get_ref(&self.task, &ty) {
++            let members: Vec<_> = known.iter().map(|member| NativeObjectMember { member: member.member, overloads: member.overloads.to_vec(), owner: member.owner, via: member.via }).collect();
++            let members = std::sync::Arc::new(members);
++            self.native_named_cache.members.insert(ty, std::sync::Arc::clone(&members));
++            return Ok(members);
++        }
+         let bases = self.native_object_bases(reference)?;
+         let query = Query::NativeNamed(NativeTypeDeclarationQuery::ObjectMembers(ty));
+         if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(NativeTypeDeclarationQuery::ObjectMembers(ty))) }
+@@ -1403,11 +1468,34 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             Ok(std::sync::Arc::new(members))
+         })();
+-        if let Ok(stored) = self.leave(query) { if let Ok(members) = &result { self.native_named_cache.members(ty, members.clone(), stored); } }
++        if let Ok(stored) = self.leave(query) { if let Ok(members) = &result {
++            let published = crate::session::ArenaBox::from_iter_in(members.iter().map(|member| NativePublishedMember { member: member.member, overloads: self.list(&member.overloads), owner: member.owner, via: member.via }), self.arena);
++            self.p.native_object_member_lists.insert_ref(&self.task, ty, published, stored);
++            self.native_named_cache.members(ty, members.clone(), stored);
++        } }
+         if let Err(error) = result { self.report_native_named(error) }
+         result
+     }
+ 
++    fn native_object_member_index(&mut self, reference: NativeObjectReference, members: &std::sync::Arc<Vec<NativeObjectMember>>) -> Result<std::rc::Rc<NativeObjectMemberIndex>, NativeNamedTypeError> {
++        let ty = self.intern(TypeData::NativeObject(reference));
++        if let Some((list, index)) = self.native_named_cache.member_indexes.get(&ty) && std::sync::Arc::ptr_eq(list, members) { return Ok(std::rc::Rc::clone(index)) }
++        let provider = self.native_named_provider(reference.declaration)?;
++        let mut index = NativeObjectMemberIndex::default();
++        for (position, origin) in members.iter().enumerate() {
++            match provider.type_member_header(self, origin.member).key {
++                NativeTypeMemberKey::Fixed(key) => match key.normalize() {
++                    Ok(key) => index.by_key.entry(key).or_default().push(position as u32),
++                    Err(error) => { index.invalid.get_or_insert((position as u32, error)); }
++                },
++                NativeTypeMemberKey::Indexer { .. } => index.indexers.push(position as u32),
++            }
++        }
++        let index = std::rc::Rc::new(index);
++        self.native_named_cache.member_indexes.insert(ty, (std::sync::Arc::clone(members), std::rc::Rc::clone(&index)));
++        Ok(index)
++    }
++
+     /// The string keys of an object's own and inherited members, for the language service.
+     pub(super) fn native_object_member_names(&mut self, reference: NativeObjectReference) -> Vec<Atom> {
+         let Ok(members) = self.native_object_members(reference) else { return Vec::new() };
+@@ -1562,6 +1650,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if let TypeData::NativeDefinition(reference) = *self.data(ty) { return Ok(self.native_definition_resolved(reference)) }
+         let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
+         if let Some(&known) = self.native_named_cache.objects.get(&ty) { return known }
++        if let Some(known) = self.p.native_object_views.get(&self.task, &ty) { return Ok(known) }
+         // Publish the complete declaration shape before comparing overrides.
+         // A method parameter can refer to this same class: the shared relation
+         // worker needs its shape without recursively validating the declaration.
+@@ -1589,7 +1678,14 @@ impl<'p, 's> Checker<'p, 's> {
+             result => result,
+         };
+         match self.leave(query) {
+-            Ok(stored) => self.native_named_cache.object(ty, result, stored),
++            Ok(stored) => {
++                // A later task finds the error of a base by finding the base invalid, and an
++                // object with members of a withheld source mentions them only in its members.
++                if let Ok(view) = result && !self.native_named_cache.override_errors.contains_key(&ty) && !self.native_members_withheld(&members) {
++                    self.p.native_object_views.insert(&self.task, ty, view, stored);
++                }
++                self.native_named_cache.object(ty, result, stored)
++            }
+             Err(_) => {},
+         }
+         if let Err(error) = result { self.report_native_named(error) }
+@@ -1604,6 +1700,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if let TypeData::NativeDefinition(reference) = *self.data(ty) { return Ok(self.native_definition_resolved(reference)) }
+         let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
+         if let Some(&known) = self.native_named_cache.schemas.get(&ty) { return known }
++        if let Some(known) = self.p.native_object_schemas.get(&self.task, &ty) { return Ok(known) }
+         let members = self.native_object_members(reference)?;
+         let native_query = NativeTypeDeclarationQuery::ObjectMembers(ty);
+         let query = Query::NativeNamed(native_query);
+@@ -1614,7 +1711,12 @@ impl<'p, 's> Checker<'p, 's> {
+             return Err(error);
+         }
+         let result = self.native_object_resolved_uncached(reference, &members, false);
+-        if let Ok(stored) = self.leave(query) { self.native_named_cache.schema(ty, result, stored); }
++        if let Ok(stored) = self.leave(query) {
++            if let Ok(schema) = result && !self.native_members_withheld(&members) {
++                self.p.native_object_schemas.insert(&self.task, ty, schema, stored);
++            }
++            self.native_named_cache.schema(ty, result, stored);
++        }
+         if let Err(error) = result { self.report_native_named(error); }
+         result
+     }
+@@ -1631,8 +1733,8 @@ impl<'p, 's> Checker<'p, 's> {
+             let NativeTypeMemberKey::Fixed(key) = header.key else { continue };
+             let Ok(key) = key.normalize() else { continue };
+             if fields.iter().any(|field| field.key == key) { continue }
+-            let value = match self.native_named_cache.types.get(&NativeTypeDeclarationQuery::MemberType(origin.member)) {
+-                Some(&raw) if origin.via.is_none() => self.native_member_type(raw, self.native_member_owner(&origin)),
++            let value = match self.native_named_type_found(NativeTypeDeclarationQuery::MemberType(origin.member)) {
++                Some(raw) if origin.via.is_none() => self.native_member_type(raw, self.native_member_owner(&origin)),
+                 _ => TypeId::UNRESOLVED,
+             };
+             fields.push(NativeTableField { key, value, optional: header.optional, readonly: header.readonly, origin: provider.type_member_origin(origin.member) });
+@@ -1921,8 +2023,12 @@ impl<'p, 's> Checker<'p, 's> {
+             if let NativeTableAccessKey::Literal(literal) = key {
+                 let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
+                 let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
++                let index = self.native_object_member_index(reference, &members).map_err(|error| error.table_error(object))?;
++                let mut positions: Vec<u32> = index.by_key.get(&literal).into_iter().flatten().copied().chain(index.indexers.iter().copied()).collect();
++                positions.sort_unstable();
+                 let mut selected = Vec::new();
+-                for origin in members.iter().cloned() {
++                for position in positions {
++                    let origin = members[position as usize].clone();
+                     let keep = match provider.type_member_header(self, origin.member).key {
+                         NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
+                         NativeTypeMemberKey::Indexer { .. } if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared => true,
+@@ -1947,9 +2053,11 @@ impl<'p, 's> Checker<'p, 's> {
+             let mut found_declared = false;
+             let mut found_written = false;
+             let mut kept_own = None;
+-            for origin in members.iter().cloned() {
++            let index = self.native_object_member_index(reference, &members).map_err(|error| error.table_error(TypeId::ERROR))?;
++            for position in index.fixed(key) {
++                let origin = members[position].clone();
+                 let metadata = provider.type_member_header(self, origin.member);
+-                if let NativeTypeMemberKey::Fixed(member_key) = metadata.key && member_key.normalize()? == key {
++                {
+                     if let Some((previous, _, _)) = &found
+                         && origin.via.is_some() && origin.via == previous.via { continue }
+                     let Some(raw) = self.native_object_member_demand(&origin).map_err(|error| error.table_error(TypeId::ERROR))? else { continue };
+@@ -2010,6 +2118,7 @@ impl<'p, 's> Checker<'p, 's> {
+                     }
+                 }
+             }
++            if let Some((_, error)) = index.invalid { return Err(error) }
+             if let Some((_, _, value)) = found { return Ok(value) }
+             // A member's inference can read its own class while the class's members are being
+             // resolved (`m.x = m.y` in a method). A key that no field has then reads the indexers
+@@ -2041,10 +2150,10 @@ impl<'p, 's> Checker<'p, 's> {
+             let literal = literal.normalize().ok()?;
+             let members = self.native_object_members(reference).ok()?;
+             let provider = self.native_named_provider(reference.declaration).ok()?;
+-            for origin in members.iter().cloned() {
++            let index = self.native_object_member_index(reference, &members).ok()?;
++            for position in index.fixed(literal) {
++                let origin = members[position].clone();
+                 let metadata = provider.type_member_header(self, origin.member);
+-                let NativeTypeMemberKey::Fixed(member_key) = metadata.key else { continue };
+-                if member_key.normalize().ok()? != literal { continue }
+                 if let Some((_, base)) = origin.via {
+                     let TypeData::NativeObject(owner) = *self.data(base) else { continue };
+                     return self.native_named_context_value(owner, key);
+@@ -2058,6 +2167,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 let value = if declared { self.regular(value) } else { value };
+                 return Some(if metadata.optional { self.optional(value) } else { value });
+             }
++            if index.invalid.is_some() { return None }
+         }
+         let object = self.intern(TypeData::NativeObject(reference));
+         let schema = self.native_object_schema_resolved(object).ok()?;
+diff --git a/src/sema/check/native_project.rs b/src/sema/check/native_project.rs
+--- a/src/sema/check/native_project.rs
++++ b/src/sema/check/native_project.rs
+@@ -52,9 +52,9 @@ impl crate::types::Follow for NativeProjectQuery {
+     fn visit<V: crate::types::Visitor>(&self, visitor: &mut V) {
+         visitor.plain(&std::mem::discriminant(self));
+         match self {
+-            Self::ChunkResult(module) => { visitor.plain(&module.snapshot); visitor.plain(&module.index); }
++            Self::ChunkResult(module) => { visitor.plain(&module.snapshot); visitor.plain(&module.index); visitor.native_source(module.snapshot); }
+             Self::ModuleValue { module, policy } | Self::RequirePack { module, policy } => {
+-                visitor.plain(&module.snapshot); visitor.plain(&module.index); visitor.plain(policy);
++                visitor.plain(&module.snapshot); visitor.plain(&module.index); visitor.plain(policy); visitor.native_source(module.snapshot);
+             }
+         }
+     }
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -58,14 +58,14 @@ impl<'p, 's> Checker<'p, 's> {
+         let declaration = reference.declaration;
+         let object = self.intern(TypeData::NativeObject(reference));
+         let native_query = NativeTypeDeclarationQuery::RuntimeTableSeed(object);
+-        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known) }
++        if let Some(known) = self.native_named_type_found(native_query) { return Ok(known) }
+         let provider = self.native_named_provider(declaration)?;
+         let query = Query::NativeNamed(native_query);
+         if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(native_query)) }
+         let result = self.with_runtime_table_context(reference, |checker| provider.runtime_table_seed(checker, declaration)).ok_or(NativeNamedTypeError::InvalidDeclaration(declaration));
+         let left = self.leave(query);
+         match left {
+-            Ok(stored) => if let Ok(value) = result { self.native_named_cache.ty(native_query, value, stored); },
++            Ok(stored) => if let Ok(value) = result { self.native_named_type_store(native_query, value, stored); },
+             Err(open) => if let Ok(value) = result { self.cache_provisionally(query, u64::from(value.0), open); },
+         }
+         result
+@@ -75,7 +75,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+         let object = self.intern(TypeData::NativeObject(reference));
+         let native_query = NativeTypeDeclarationQuery::RuntimeTableMember(object, member, indexer);
+-        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known) }
++        if let Some(known) = self.native_named_type_found(native_query) { return Ok(known) }
+         let query = Query::NativeNamed(native_query);
+         if !self.enter(query) {
+             // A store whose value reads the member it stores (`m.size = m.size + 1`) is inferred
+@@ -87,7 +87,7 @@ impl<'p, 's> Checker<'p, 's> {
+             if indexer { provider.type_indexer_key(checker, member) } else { provider.type_member_type(checker, member) }
+         });
+         match self.leave(query) {
+-            Ok(stored) => self.native_named_cache.ty(native_query, value, stored),
++            Ok(stored) => self.native_named_type_store(native_query, value, stored),
+             Err(open) => self.cache_provisionally(query, u64::from(value.0), open),
+         }
+         Ok(value)
+@@ -264,7 +264,7 @@ impl<'p, 's> Checker<'p, 's> {
+     fn native_runtime_written_numeric_contract(&mut self, reference: NativeObjectReference) -> Result<bool, NativeTableError> {
+         let object = self.intern(TypeData::NativeObject(reference));
+         let native_query = NativeTypeDeclarationQuery::RuntimeTableNumericContract(object);
+-        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known == TypeId::TRUE); }
++        if let Some(known) = self.native_named_type_found(native_query) { return Ok(known == TypeId::TRUE); }
+         let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
+         let candidates: Vec<_> = provider.type_declaration_members(reference.declaration).into_iter().filter(|&member| {
+             if provider.type_member_origin(member) != NativeTableFieldOrigin::Declared { return false; }
+@@ -288,7 +288,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let result = result.map_err(|error: NativeNamedTypeError| error.table_error(object))?;
+         match ended {
+             Ok(stored) if completed.is_some() => {
+-                self.native_named_cache.ty(native_query, if result { TypeId::TRUE } else { TypeId::FALSE }, stored);
++                self.native_named_type_store(native_query, if result { TypeId::TRUE } else { TypeId::FALSE }, stored);
+                 Ok(result)
+             }
+             Err(_) if self.native_complete_without_cache(context, completed.is_some()) => Ok(result),
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -116,6 +116,7 @@ pub use crate::check::native_tables::{
+ };
+ pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeRuntimeTableRef, NativeRuntimeTableContext, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
+ use crate::check::native_globals::{NativeEnvironmentId, NativeGlobalBindingId};
++use crate::check::native_named::{NativePublishedMember, NativeTypeDeclarationQuery};
+ /// An interned list of `IndexComponent`s.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct ComponentsId(pub u32);
+@@ -1819,6 +1820,12 @@ pub struct OwnStore<'s> {
+     /// The files that the task has visited and that nothing imports, indexed by `FileId`. No other
+     /// task can reference a node or a symbol of such a file. Empty: nothing is bound.
+     unimported_files: Bits,
++    /// The native sources that no later task reads, as no other task reads a file that nothing
++    /// imports. Empty: none is.
++    unimported_native_sources: Vec<u32>,
++    /// The global bindings whose queries no later task reads: one a withheld source declares is
++    /// found again with that source.
++    unimported_native_bindings: Vec<NativeGlobalBindingId>,
+     /// See `Types::creation_order`.
+     has_ordered_by_own_id: Cell<bool>,
+     /// See `Types::is_unresolved_name`.
+@@ -1840,6 +1847,8 @@ impl<'s> OwnStore<'s> {
+             log: LocalVec::new(),
+             is_read_later: true,
+             unimported_files: Bits(Vec::new()),
++            unimported_native_sources: Vec::new(),
++            unimported_native_bindings: Vec::new(),
+             has_ordered_by_own_id: Cell::new(false),
+             has_unresolved_names: Cell::new(false),
+         }
+@@ -1851,6 +1860,21 @@ impl<'s> OwnStore<'s> {
+         self.unimported_files.set(file.0 as usize);
+     }
+ 
++    /// From now on every record that references the native source `snapshot` is bound.
++    pub fn add_unimported_native_source(&mut self, snapshot: u32) {
++        self.unimported_native_sources.push(snapshot);
++    }
++
++    /// From now on an entry for a query about `binding` is bound.
++    pub fn add_unimported_native_binding(&mut self, binding: NativeGlobalBindingId) {
++        self.unimported_native_bindings.push(binding);
++    }
++
++    /// Whether a record that references the native source `snapshot` is bound.
++    pub fn withholds_native_source(&self, snapshot: u32) -> bool {
++        self.unimported_native_sources.contains(&snapshot)
++    }
++
+     /// Before anything is created. `false`: `finish` will be given no marks.
+     pub fn set_is_read_later(&mut self, is_read_later: bool) {
+         debug_assert!(self.is_empty());
+@@ -3200,6 +3224,12 @@ pub trait Visitor {
+     fn ty(&mut self, id: TypeId);
+     /// A node or a symbol of `file` is referenced.
+     fn file(&mut self, file: FileId);
++    /// An id of a declaration in this native source is referenced.
++    #[inline]
++    fn native_source(&mut self, _: u32) {}
++    /// A query about this global binding.
++    #[inline]
++    fn native_global_binding(&mut self, _: NativeGlobalBindingId) {}
+     fn plain<T: Hash + ?Sized>(&mut self, value: &T);
+ }
+ 
+@@ -3216,7 +3246,7 @@ pub trait Follow {
+     /// Whether it references a node or a symbol of a file that nothing imports, or a task-local
+     /// record that does. Such a value is never published.
+     fn is_bound(&self, own: &OwnStore) -> bool {
+-        if own.unimported_files.0.is_empty() {
++        if own.unimported_files.0.is_empty() && own.unimported_native_sources.is_empty() && own.unimported_native_bindings.is_empty() {
+             return false;
+         }
+         let mut visitor = IsBound {
+@@ -3465,16 +3495,7 @@ has_no_references!(
+     u32,
+     u64,
+     i64,
+-    NativeFunctionId,
+-    NativeSignatureId,
+-    NativeAnnotationId,
+     NativeAnnotationPiece,
+-    NativeTypeDeclarationId,
+-    NativeDefinitionId,
+-    NativeTypeMemberId,
+-    NativeTypeParamId,
+-    NativeExpressionId,
+-    NativeBindingId,
+     crate::check::CheckMode,
+     usize,
+     ExprId,
+@@ -3493,6 +3514,32 @@ has_no_references!(
+     Literalness,
+ );
+ 
++/// An id of a declaration in a native source: data, whose source `IsBound` asks about.
++macro_rules! native_source_ids {
++    ($($name:ty),* $(,)?) => {$(
++        impl Follow for $name {
++            #[inline]
++            fn visit<V: Visitor>(&self, visitor: &mut V) {
++                visitor.plain(self);
++                visitor.native_source(self.snapshot);
++            }
++            #[inline]
++            fn follow(&mut self, _: &Link) {}
++        }
++    )*};
++}
++native_source_ids!(
++    NativeFunctionId,
++    NativeSignatureId,
++    NativeAnnotationId,
++    NativeTypeDeclarationId,
++    NativeDefinitionId,
++    NativeTypeMemberId,
++    NativeTypeParamId,
++    NativeExpressionId,
++    NativeBindingId,
++);
++
+ /// The label is a declared name, so it is published and needs no remapping
+ /// (`ElemFlags::with_label`). It is reported as an atom.
+ impl Follow for ElemFlags {
+@@ -3684,6 +3731,25 @@ follow_enum!(SigData<'_> {
+     SigData::WithReturn { sig, ret } => (sig, ret),
+     SigData::WithNativeResultPack { sig, pack } => (sig, pack),
+ });
++follow_struct!(NativePublishedMember<'_> { member, overloads, owner, via });
++follow_enum!(NativeTypeDeclarationQuery {
++    NativeTypeDeclarationQuery::OwnerScope(a) => (a),
++    NativeTypeDeclarationQuery::DeclaredHead(a) => (a),
++    NativeTypeDeclarationQuery::MemberType(a) => (a),
++    NativeTypeDeclarationQuery::MemberContext(a) => (a),
++    NativeTypeDeclarationQuery::IndexerKey(a) => (a),
++    NativeTypeDeclarationQuery::MemberOwnerApplication(a) => (a),
++    NativeTypeDeclarationQuery::MemberOwnerMatch { member, owner } => (member, owner),
++    NativeTypeDeclarationQuery::Bases(a) => (a),
++    NativeTypeDeclarationQuery::RuntimeDomain(a) => (a),
++    NativeTypeDeclarationQuery::ObjectMembers(a) => (a),
++    NativeTypeDeclarationQuery::ObjectValidation(a) => (a),
++    NativeTypeDeclarationQuery::DefinitionContext(a) => (a),
++    NativeTypeDeclarationQuery::RuntimeTableSeed(a) => (a),
++    NativeTypeDeclarationQuery::RuntimeTableMember(a, b, c) => (a, b, c),
++    NativeTypeDeclarationQuery::RuntimeTableWrittenContext(a, b) => (a, b),
++    NativeTypeDeclarationQuery::RuntimeTableNumericContract(a) => (a),
++});
+ follow_struct!(NativeCapturedBinding { declaration, ty });
+ follow_struct!(NativeObjectReference { declaration, mapper, self_argument, runtime_context });
+ follow_struct!(NativeDefinitionRef { owner, class, view });
+@@ -4048,6 +4114,14 @@ impl Visitor for IsBound<'_, '_> {
+         self.is_bound |= self.own.unimported_files.has(file.0 as usize);
+     }
+     #[inline]
++    fn native_source(&mut self, snapshot: u32) {
++        self.is_bound |= self.own.unimported_native_sources.contains(&snapshot);
++    }
++    #[inline]
++    fn native_global_binding(&mut self, binding: NativeGlobalBindingId) {
++        self.is_bound |= self.own.unimported_native_bindings.contains(&binding);
++    }
++    #[inline]
+     fn plain<T: Hash + ?Sized>(&mut self, _: &T) {}
+ }
+ 
+@@ -4433,6 +4507,8 @@ impl<'s> OwnStore<'s> {
+         }
+         stores.log.clear();
+         stores.unimported_files.0.clear();
++        stores.unimported_native_sources.clear();
++        stores.unimported_native_bindings.clear();
+         let [atoms, components, mappers, sigs, types] = &marks.0;
+         OwnRecords {
+             atoms: take(&mut stores.atoms, atoms, &hashes[0]),

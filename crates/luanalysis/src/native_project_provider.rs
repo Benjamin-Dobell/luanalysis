@@ -133,6 +133,12 @@ impl ProjectRegistrySnapshot {
 
     /// Mutable scopes, report queues, body facets and session handles belong to
     /// this task. Parsing and lexical binding have already completed.
+    /// The native source that `file`'s declarations are identified by.
+    pub(crate) fn source_identity(&self, file: FileId) -> Option<u32> {
+        let index = self.inputs.iter().position(|input| input.id == file)?;
+        Some(self.identities[index].source)
+    }
+
     pub(crate) fn worker_registry(&self) -> ProjectRegistry {
         ProjectRegistry::new_with_recipe_identities(
             self.inputs.clone(), &self.identities, self.dependencies.clone(), self.policy,
@@ -943,6 +949,13 @@ impl ProjectRegistry {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         text.hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// The global bindings that `files` declare: answering one reports its declarations' conflicts.
+    pub(crate) fn declared_global_bindings(&self, files: &[FileId]) -> Vec<luanalysis_engine::NativeGlobalBindingKey> {
+        self.files.iter().filter(|file| files.contains(&file.id))
+            .flat_map(|file| file.globals().declarations.iter().filter_map(|declaration| self.globals.binding(&declaration.name.text)))
+            .collect()
     }
 
     pub(crate) fn check_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {

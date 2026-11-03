@@ -41,10 +41,10 @@ impl crate::types::Follow for NativeGlobalsQuery {
         match self {
             Self::ValueDeclarationContract(NativeValueDeclarationId { snapshot, index })
             | Self::ValueDeclaration(NativeValueDeclarationId { snapshot, index }) => {
-                visitor.plain(snapshot); visitor.plain(index);
+                visitor.plain(snapshot); visitor.plain(index); visitor.native_source(*snapshot);
             }
-            Self::GlobalBinding(NativeGlobalBindingId { environment: NativeEnvironmentId { snapshot, index }, index: binding }) => {
-                visitor.plain(snapshot); visitor.plain(index); visitor.plain(binding);
+            Self::GlobalBinding(id @ NativeGlobalBindingId { environment: NativeEnvironmentId { snapshot, index }, index: binding }) => {
+                visitor.plain(snapshot); visitor.plain(index); visitor.plain(binding); visitor.native_global_binding(*id);
             }
         }
     }

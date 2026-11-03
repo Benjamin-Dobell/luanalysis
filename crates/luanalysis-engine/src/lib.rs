@@ -11,7 +11,7 @@ mod native;
 /// depend on the platform; Windows threads reserve more stack, which only adds headroom.
 pub(crate) const CHECKER_STACK_BUDGET: usize = (4 << 20) - (256 << 10);
 mod parallel;
-pub use parallel::{NativeTaskRun, NativeTaskRunStats};
+pub use parallel::{KeptProgram, NativeTaskRun, NativeTaskRunStats};
 mod native_plan;
 pub use native_plan::{NativeCheckAhead, NativeCheckPlan, NativeCheckTask, NativePlanOptions};
 #[cfg(test)]
@@ -989,6 +989,8 @@ pub trait TypeQueries {
     /// Whether strict runtime effects were requested (`--strict-standard-effects`).
     fn strict_runtime_effects(&mut self) -> bool { false }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError>;
+    /// What this task publishes answers no query about `binding` (`KeptProgram::publishing_task`).
+    fn withhold_global_binding(&mut self, _: NativeGlobalBindingKey) {}
     /// The global binding of the string library, whose table a string's metatable indexes.
     fn primitive_string_binding(&mut self) -> Option<NativeGlobalBindingKey>;
     fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError>;
@@ -1628,6 +1630,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         }
     }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
+    fn withhold_global_binding(&mut self, binding: NativeGlobalBindingKey) { self.checker.withhold_native_global_binding(native_globals::core_binding(binding)) }
     fn primitive_string_binding(&mut self) -> Option<NativeGlobalBindingKey> { self.primitive_string_binding_native() }
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> { self.global_environment_type_native(environment) }
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey> { self.global_environment_origin_native(environment) }
@@ -2831,39 +2834,42 @@ fn with_program<R: Send>(work: impl FnOnce(&mut Program<'_>, &TypeHandles) -> R 
         std::thread::Builder::new()
             .name("luanalysis-type-core".into())
             .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)
-            .spawn_scoped(scope, || {
-                native::set_stack_size(
-                    crate::CHECKER_STACK_BUDGET,
-                );
-                let session = Session::new();
-                let options = Options {
-                    no_lib: true,
-                    strict_null_checks: true,
-                    strict_function_types: true,
-                    strict_bind_call_apply: true,
-                    no_implicit_any: true,
-                    ..Options::default()
-                };
-                let files = session.arena().alloc(Files::load(
-                    &session,
-                    None,
-                    &TypeCoreHost,
-                    options,
-                    &[],
-                    &|_| {},
-                ));
-                let mut program = Program::new(&session, files);
-                let handles = TypeHandles::new();
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    work(&mut program, &handles)
-                }));
-                program.release();
-                result.unwrap_or_else(|error| std::panic::resume_unwind(error))
-            })
+            .spawn_scoped(scope, || on_this_thread_with_program(work))
             .expect("create native type-core worker")
             .join()
             .unwrap_or_else(|error| std::panic::resume_unwind(error))
     })
+}
+
+/// `with_program`, on a thread with the stack it needs.
+fn on_this_thread_with_program<R>(work: impl FnOnce(&mut Program<'_>, &TypeHandles) -> R) -> R {
+    native::set_stack_size(
+        crate::CHECKER_STACK_BUDGET,
+    );
+    let session = Session::new();
+    let options = Options {
+        no_lib: true,
+        strict_null_checks: true,
+        strict_function_types: true,
+        strict_bind_call_apply: true,
+        no_implicit_any: true,
+        ..Options::default()
+    };
+    let files = session.arena().alloc(Files::load(
+        &session,
+        None,
+        &TypeCoreHost,
+        options,
+        &[],
+        &|_| {},
+    ));
+    let mut program = Program::new(&session, files);
+    let handles = TypeHandles::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        work(&mut program, &handles)
+    }));
+    program.release();
+    result.unwrap_or_else(|error| std::panic::resume_unwind(error))
 }
 
 fn core_key(key: NativeFunctionKey) -> NativeFunctionId {

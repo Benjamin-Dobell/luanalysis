@@ -156,3 +156,56 @@ fn circular_native_answers_remain_local_instead_of_publishing_fallback_types() {
     );
     assert_eq!(run.results, vec![[1, 1, 1, 1], [1, 0, 1, 1], [1, 0, 1, 1]]);
 }
+
+fn read_everything(provider: &PublishedProvider, queries: &mut dyn TypeQueries) -> [usize; 4] {
+    let value = queries.module_result_pack(module(0)).unwrap();
+    let value = queries.pack_slot(&value, 0);
+    assert_complete(queries, &value);
+    let global = queries.global_binding_type(binding()).unwrap();
+    assert_complete(queries, &global);
+    let named = queries.named_type_reference(alias(0), &[]).unwrap();
+    assert_complete(queries, &named);
+    provider.counts()
+}
+
+#[test]
+fn a_kept_program_keeps_what_a_task_published_for_the_tasks_after_it() {
+    let program = Engine::new().keep_program();
+    assert_eq!(program.publishing_task(&[], || PublishedProvider::new(true), read_everything), [1, 1, 1, 1]);
+    for _ in 0..3 {
+        assert_eq!(program.reading_task(|| PublishedProvider::new(true), read_everything), [0, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn what_mentions_a_withheld_source_is_found_again_by_each_task() {
+    let program = Engine::new().keep_program();
+    assert_eq!(program.publishing_task(&[SNAPSHOT], || PublishedProvider::new(true), read_everything), [1, 1, 1, 1]);
+    for _ in 0..2 {
+        let [modules, _, _, aliases] = program.reading_task(|| PublishedProvider::new(true), read_everything);
+        assert_eq!((modules, aliases), (1, 1));
+    }
+}
+
+#[test]
+fn a_reading_task_publishes_nothing() {
+    let program = Engine::new().keep_program();
+    for _ in 0..3 {
+        assert_eq!(program.reading_task(|| PublishedProvider::new(true), read_everything), [1, 1, 1, 1]);
+    }
+}
+
+#[test]
+fn a_task_that_unwinds_leaves_the_program_as_it_was() {
+    let program = Engine::new().keep_program();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        program.publishing_task(&[], || PublishedProvider::new(true), |provider, queries| {
+            read_everything(provider, queries);
+            std::panic::resume_unwind(Box::new("stopped"));
+        })
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(program.reading_task(|| PublishedProvider::new(true), read_everything), [1, 1, 1, 1]);
+    assert_eq!(program.publishing_task(&[], || PublishedProvider::new(true), read_everything), [1, 1, 1, 1]);
+    assert_eq!(program.reading_task(|| PublishedProvider::new(true), read_everything), [0, 0, 0, 0]);
+}

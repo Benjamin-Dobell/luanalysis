@@ -257,6 +257,9 @@ enum Job {
     /// a check publishes diagnostics only, as tsserver answers `geterr`, and types are described
     /// when a hover asks for them, as tsserver computes quick info.
     Describe(Vec<PathBuf>),
+    /// Publishes what the next edit of this document reads, once it has been opened and checked,
+    /// so that its first keystroke costs what the later ones do. A newer edit stops it.
+    Base(PathBuf),
 }
 
 /// A check of the workspace with the editor's buffers.
@@ -496,6 +499,8 @@ struct Server {
     snapshot_described: bool,
     /// Whether a description has been asked for and not yet ended.
     describe_requested: bool,
+    /// The document opened last, until a check has checked it (`Job::Base`).
+    pending_base: Option<PathBuf>,
     /// Hovers over a checked document that wait for its types.
     deferred_hovers: Vec<(Json, Json)>,
     /// Documents opened before the first check, whose warm-up waits for it.
@@ -550,6 +555,7 @@ impl Server {
             published_results: HashMap::new(),
             snapshot_described: false,
             describe_requested: false,
+            pending_base: None,
             deferred_hovers: Vec::new(),
             pending_warm: Vec::new(),
             base: None,
@@ -755,6 +761,7 @@ impl Server {
                     self.documents.insert(path.clone(), Document { uri: uri.to_owned(), text: text.to_owned(), version });
                     self.revision += 1;
                     self.disk_generation += 1;
+                    self.pending_base = Some(path.clone());
                     self.warm(path);
                 }
             }
@@ -1107,6 +1114,9 @@ impl Server {
         self.snapshot_described = false;
         self.describe_requested = false;
         self.answer_deferred_hovers();
+        if self.requested == Some(self.revision) && let Some(path) = self.pending_base.take() && let Some(jobs) = &self.jobs {
+            let _ = jobs.send(Job::Base(path));
+        }
     }
 
     fn answer_deferred_hovers(&mut self) {
@@ -1862,6 +1872,7 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     // that.
     let diagnostics = ProjectCheckOptions { describe_types: false, ..options.clone() };
     let described = ProjectCheckOptions { describe_types: true, cancellation: describing.clone(), ..options.clone() };
+    let based = ProjectCheckOptions { describe_types: false, cancellation: describing.clone(), ..options.clone() };
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let mut loaded = None;
     // The line index of each source the last check published, for the next to reuse.
@@ -1877,7 +1888,8 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
                     for path in more { if !paths.contains(&path) { paths.push(path); } }
                     Job::Describe(paths)
                 }
-                (Job::Check(check), Job::Describe(_)) => Job::Check(check),
+                (Job::Check(check), Job::Describe(_) | Job::Base(_)) => Job::Check(check),
+                (Job::Describe(paths), Job::Base(_)) => Job::Describe(paths),
                 (_, newer) => newer,
             };
         }
@@ -1885,6 +1897,20 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
         if options.cancellation.is_cancelled() { return; }
         let job = match job {
             Job::Check(job) => job,
+            Job::Base(path) => {
+                if let Some(project) = checked_project.clone() {
+                    let published = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| workspace.publish_for_edits(project, based.clone(), &path)));
+                    options.cancellation.enter();
+                    if options.cancellation.is_cancelled() { return; }
+                    // A newer edit stopping it is no failure: that edit publishes.
+                    if published.is_err() && !describing.is_cancelled() {
+                        workspace = server_workspace(&sources, &options);
+                        loaded = None;
+                        checked_project = None;
+                    }
+                }
+                continue;
+            }
             Job::Describe(paths) => {
                 let started = std::time::Instant::now();
                 let types = match checked_project.clone() {

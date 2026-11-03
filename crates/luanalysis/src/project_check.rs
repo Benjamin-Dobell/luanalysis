@@ -357,7 +357,7 @@ pub(crate) fn check_project_with_workspace(
         for &file in &roots { eprintln!("luanalysis profile: file_id={} path={}", file.index, project.file(file).unwrap().path.display()); }
     }
     let source_prepare = started.elapsed();
-    let run = run_checks(&project, &mut prepared, &roots, false, false, &options, workspace);
+    let run = run_checks(&project, &mut prepared, &roots, false, false, &options, workspace, CheckSession::Own);
     if profile {
         eprintln!("luanalysis profile: source_prepare={:.6}s flow_prepare={:.6}s checking={:.6}s registry_factory_sum={:.6}s factories={} execution={:?}",
             source_prepare.as_secs_f64(), run.flow_prepare.as_secs_f64(), run.checking.as_secs_f64(),
@@ -422,6 +422,17 @@ struct CheckRun {
     factories: u64,
 }
 
+/// Where a check runs: in a session of its own, or as a task of a kept program. A check of one root
+/// is one task.
+#[derive(Clone, Copy)]
+enum CheckSession<'a> {
+    Own,
+    /// Reads what the program has published; what it finds is dropped with it.
+    Reading(&'a luanalysis_engine::KeptProgram),
+    /// Publishes, for the checks after it, what it finds that does not mention these sources.
+    Publishing(&'a luanalysis_engine::KeptProgram, &'a [u32]),
+}
+
 /// Checks `roots` in one native session, or in planned parallel tasks that each check the roots
 /// they own. `owned` checks only the roots' bodies, the rest of the program being read as each
 /// root needs it; otherwise one session also checks the files the roots require.
@@ -433,6 +444,7 @@ fn run_checks(
     signatures: bool,
     options: &ProjectCheckOptions,
     workspace: &mut crate::incremental::ProjectWorkspace,
+    session: CheckSession<'_>,
 ) -> CheckRun {
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let requested = NonZeroUsize::new(options.jobs).unwrap_or_else(default_workers);
@@ -480,14 +492,20 @@ fn run_checks(
     };
     let checking_started = Instant::now();
     let (reports, signed, execution) = if workers == 1 {
-        let ((reports, signed), flows) = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(
-            || make_registry(0),
-            |registry, queries| {
-                let flows = registry.source_recipes();
-                let reports = if owned { registry.check_owned_roots(queries, roots) } else { registry.check_roots(queries, roots) };
-                ((reports, signed(registry, queries, roots)), flows)
-            },
-        );
+        let publishes = matches!(session, CheckSession::Publishing(..));
+        let work = |registry: &crate::native_functions::project_provider::ProjectRegistry, queries: &mut dyn luanalysis_engine::TypeQueries| {
+            if publishes {
+                for binding in registry.declared_global_bindings(roots) { queries.withhold_global_binding(binding); }
+            }
+            let flows = registry.source_recipes();
+            let reports = if owned { registry.check_owned_roots(queries, roots) } else { registry.check_roots(queries, roots) };
+            ((reports, signed(registry, queries, roots)), flows)
+        };
+        let ((reports, signed), flows) = match session {
+            CheckSession::Own => Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).with_native_provider(|| make_registry(0), work),
+            CheckSession::Reading(program) => program.reading_task(|| make_registry(0), work),
+            CheckSession::Publishing(program, withheld) => program.publishing_task(withheld, || make_registry(0), work),
+        };
         workspace.retain_sources(&prepared.revisions, flows);
         (reports, signed, None)
     } else {
@@ -564,6 +582,90 @@ pub(crate) struct IncrementalState {
     files: HashMap<std::path::PathBuf, IncrementalFile>,
     /// How many files the check that made this state checked.
     pub(crate) checked: usize,
+    /// Whether that check read what the check before published (`EditBase`).
+    pub(crate) read_published: bool,
+    /// What the first check of the file being edited published for its next.
+    base: Option<std::sync::Arc<EditBase>>,
+}
+
+/// What a check of a file published for the checks of its next edits, each of which is then a task
+/// over it, as a task of a later step is over what the steps before it published. It mentions no
+/// revision of the file, as Bun publishes nothing that mentions a file that nothing imports, so only
+/// what the file itself says is found again. It holds while the file's signature does.
+struct EditBase {
+    program: luanalysis_engine::KeptProgram,
+    file: std::path::PathBuf,
+    /// The revisions of the other sources, sorted.
+    others: Vec<u64>,
+    /// The names the file shared. Others' global names are numbered with them.
+    names: std::sync::Arc<crate::affected::FileNames>,
+}
+
+impl EditBase {
+    /// Whether it still holds for a check of `file` with these names and other revisions.
+    fn holds_for(&self, file: &std::path::Path, others: &[u64], names: &crate::affected::FileNames) -> bool {
+        self.file == file && self.others == others
+            && self.names.touched == names.touched && self.names.augmentations == names.augmentations
+    }
+}
+
+/// Whether `file` reaches itself through what it reads: what it requires, and the globals and types
+/// it shares by name. If not, nothing it reads depends on it, as a component of Bun's import graph
+/// (`components.rs`) depends on none above it.
+fn is_on_a_cycle(file: FileId, dependencies: &[luanalysis_project::Dependency], names: &HashMap<FileId, std::sync::Arc<crate::affected::FileNames>>) -> bool {
+    let mut touching: HashMap<&str, Vec<FileId>> = HashMap::default();
+    for (&other, names) in names {
+        for name in &names.touched { touching.entry(name).or_default().push(other); }
+    }
+    let mut required: HashMap<FileId, Vec<FileId>> = HashMap::default();
+    for dependency in dependencies {
+        if let luanalysis_project::DependencyOutcome::Resolved(target) = dependency.outcome { required.entry(dependency.from).or_default().push(target); }
+    }
+    let mut seen: HashSet<FileId> = HashSet::default();
+    let mut pending = vec![file];
+    while let Some(next) = pending.pop() {
+        let by_name = names.get(&next).into_iter().flat_map(|names| names.referenced.iter().chain(&names.touched))
+            .flat_map(|name| touching.get(name.as_str()).into_iter().flatten().copied());
+        for read in required.get(&next).into_iter().flatten().copied().chain(by_name) {
+            if read == next { continue }
+            if read == file { return true }
+            if seen.insert(read) { pending.push(read); }
+        }
+    }
+    false
+}
+
+/// The sorted revisions of the sources other than `file`.
+fn other_revisions(prepared: &PreparedProgram, file: FileId) -> Vec<u64> {
+    let mut others: Vec<u64> = prepared.sources.iter().filter(|(other, _)| **other != file).map(|(_, snapshot)| snapshot.revision()).collect();
+    others.sort_unstable();
+    others
+}
+
+/// Publishes what the next edit of the file at `path` reads (`EditBase`), as the check of that edit
+/// would. Its report is the file's report already.
+pub(crate) fn publish_for_edits(
+    mut project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
+    path: &std::path::Path,
+) {
+    options.cancellation.enter();
+    workspace.set_parse_options(options.parse_options());
+    let mut prepared = prepare_program(&mut project, &options, workspace);
+    let Some((file, path)) = project.file_by_path(path).map(|file| (file.id, file.path.clone())) else { return };
+    let Some(revision) = prepared.sources.get(&file).map(|snapshot| snapshot.revision()) else { return };
+    let Some(source) = prepared.snapshot.source_identity(file) else { return };
+    let others = other_revisions(&prepared, file);
+    let state = workspace.incremental_state();
+    // A file that the last check did not check has no signature for the next to compare with.
+    let Some(names) = state.files.get(&path).filter(|known| known.revision == revision && known.signature.is_some()).map(|known| std::sync::Arc::clone(&known.names)) else { return };
+    if state.base.as_ref().is_some_and(|base| base.holds_for(&path, &others, &names)) { return }
+    let program = Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).keep_program();
+    run_checks(&project, &mut prepared, &[file], true, false, &options, workspace, CheckSession::Publishing(&program, &[source]));
+    if !options.cancellation.is_cancelled() {
+        workspace.incremental_state_mut().base = Some(std::sync::Arc::new(EditBase { program, file: path, others, names }));
+    }
 }
 
 struct IncrementalFile {
@@ -635,8 +737,10 @@ pub(crate) fn check_project_incrementally(
     let mut signatures: HashMap<FileId, u64> = HashMap::default();
     let mut execution = None;
     let mut parallelism = 1;
+    let mut read_published = false;
     if whole {
-        let run = run_checks(&project, &mut prepared, &roots, false, true, &options, workspace);
+        state.base = None;
+        let run = run_checks(&project, &mut prepared, &roots, false, true, &options, workspace, CheckSession::Own);
         checked_count = roots.len();
         signatures = run.signatures;
         execution = run.execution;
@@ -653,11 +757,46 @@ pub(crate) fn check_project_incrementally(
                 .map(|dependency| dependency.from)
                 .collect()
         };
+        // The files that may read what `file` exposes, when that has changed.
+        let affected_by = |file: FileId, known: Option<&IncrementalFile>| -> Vec<FileId> {
+            // What it shared before and now: a name it no longer touches affects its users too.
+            let mut touched = names[&file].touched.clone();
+            if let Some(known) = known { touched.extend(known.names.touched.iter().cloned()); }
+            if std::env::var_os("LUANALYSIS_PROFILE").is_some() { eprintln!("luanalysis profile: {} reshaped; touches {:?}", path(file).display(), touched); }
+            let mut affected = requirers(file);
+            affected.extend(roots.iter().copied().filter(|&other| other != file && names.get(&other).is_some_and(|names| names.depends_on(&touched))));
+            affected.sort_by_key(|file| file.index);
+            affected.dedup();
+            affected
+        };
         let costs = prepared.source_costs.clone();
         let cost = |file: &FileId| costs.get(file).copied().unwrap_or(1);
         let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
         let total: usize = roots.iter().map(cost).sum();
         let mut pending = changed;
+        // One edited file: a task over what its last check published, if that still holds. It
+        // reads the other files as they were, so it stands only if the file's signature does.
+        let edited = match pending[..] { [file] => Some(file), _ => None };
+        let others = edited.map(|file| other_revisions(&prepared, file));
+        let base = state.base.take().filter(|base| edited.zip(others.as_ref()).is_some_and(|(file, others)| base.holds_for(&path(file), others, &names[&file])));
+        if let (Some(file), Some(base)) = (edited, base) {
+            let run = run_checks(&project, &mut prepared, &pending, true, true, &options, workspace, CheckSession::Reading(&base.program));
+            let signature = run.signatures.get(&file).copied();
+            let known = state.files.get(&path(file));
+            let reshaped = known.is_none_or(|known| known.signature != signature);
+            // What it read stands while it exposes the same, and whatever it exposes if nothing
+            // it read depends on it. Otherwise it is checked again, from nothing.
+            if signature.is_some() && (!reshaped || !is_on_a_cycle(file, &project.dependencies, &names)) {
+                checked_count += 1;
+                parallelism = parallelism.max(run.parallelism);
+                signatures.extend(run.signatures);
+                checked.extend(run.reports.into_iter().filter(|report| report.file == file).map(|report| (report.file, report)));
+                pending.clear();
+                if reshaped { pending = affected_by(file, known); }
+                state.base = Some(base);
+                read_published = true;
+            }
+        }
         while !pending.is_empty() && !options.cancellation.is_cancelled() {
             // Once checking again would cost half the program, one whole check is cheaper than
             // following the edit round by round, each in a session of its own.
@@ -667,14 +806,25 @@ pub(crate) fn check_project_incrementally(
                     pending.iter().take(8).map(|&file| path(file).file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>());
             }
             if 2 * spent >= total {
-                let run = run_checks(&project, &mut prepared, &roots, false, true, &options, workspace);
+                let run = run_checks(&project, &mut prepared, &roots, false, true, &options, workspace, CheckSession::Own);
                 checked_count += roots.len();
                 parallelism = parallelism.max(run.parallelism);
                 signatures = run.signatures;
                 checked = run.reports.into_iter().map(|report| (report.file, report)).collect();
                 break;
             }
-            let run = run_checks(&project, &mut prepared, &pending, true, true, &options, workspace);
+            // The first round of one edited file publishes for its next edit.
+            let publishing = edited.filter(|_| checked.is_empty()).and_then(|file| Some((file, prepared.snapshot.source_identity(file)?)));
+            let program = publishing.map(|_| Engine::new().with_strict_nil(options.strict_nil).with_decayed_optionals(options.decay_optionals).keep_program());
+            let withheld = publishing.map(|(_, source)| [source]);
+            let session = match (&program, &withheld) {
+                (Some(program), Some(withheld)) => CheckSession::Publishing(program, withheld),
+                _ => CheckSession::Own,
+            };
+            let run = run_checks(&project, &mut prepared, &pending, true, true, &options, workspace, session);
+            if let (Some(program), Some((file, _)), Some(others)) = (program, publishing, &others) {
+                state.base = Some(std::sync::Arc::new(EditBase { program, file: path(file), others: others.clone(), names: std::sync::Arc::clone(&names[&file]) }));
+            }
             if profile {
                 round_profile.push(format!("{} files: factory={:.3}s checking={:.3}s (signatures {:.3}s) flows={:.3}s", pending.len(), run.factory_seconds, run.checking.as_secs_f64(), run.signature_seconds, run.flow_prepare.as_secs_f64()));
             }
@@ -687,12 +837,7 @@ pub(crate) fn check_project_incrementally(
                 let reshaped = known.is_none_or(|known| known.signature != signature);
                 if signature.is_some() { signatures.insert(file, signature.unwrap()); }
                 if !reshaped { continue; }
-                // What it shared before and now: a name it no longer touches affects its users too.
-                let mut touched = names[&file].touched.clone();
-                if let Some(known) = known { touched.extend(known.names.touched.iter().cloned()); }
-                if profile { eprintln!("luanalysis profile: {} reshaped; touches {:?}", path(file).display(), touched); }
-                affected.extend(requirers(file));
-                affected.extend(roots.iter().copied().filter(|&other| other != file && names.get(&other).is_some_and(|names| names.depends_on(&touched))));
+                affected.extend(affected_by(file, known));
             }
             checked.extend(run.reports.into_iter().filter(|report| pending.contains(&report.file)).map(|report| (report.file, report)));
             affected.sort_by_key(|file| file.index);
@@ -724,6 +869,7 @@ pub(crate) fn check_project_incrementally(
     if whole { state.files.clear(); }
     state.key = (!cancelled).then_some(key);
     state.checked = checked_count;
+    state.read_published = read_published;
     for report in &files {
         if reused.contains(&report.file) { continue; }
         let Some(snapshot) = prepared.sources.get(&report.file) else { continue };
@@ -794,7 +940,17 @@ pub(crate) fn describe_incrementally(
     }
     let mut reports = Vec::new();
     if !files.is_empty() {
-        let run = run_checks(&project, &mut prepared, &files, true, false, &options, workspace);
+        // One file's description is a task over what its check published, as its next edit is.
+        let base = match files[..] {
+            [file] => {
+                let others = other_revisions(&prepared, file);
+                let path = project.file(file).expect("a program file").path.clone();
+                workspace.incremental_state().base.clone().filter(|base| base.file == path && base.others == others)
+            }
+            _ => None,
+        };
+        let session = base.as_ref().map_or(CheckSession::Own, |base| CheckSession::Reading(&base.program));
+        let run = run_checks(&project, &mut prepared, &files, true, false, &options, workspace, session);
         if !options.cancellation.is_cancelled() {
             let state = workspace.incremental_state_mut();
             for report in run.reports.into_iter().filter(|report| files.contains(&report.file)) {

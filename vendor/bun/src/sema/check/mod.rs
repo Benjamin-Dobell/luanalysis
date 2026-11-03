@@ -333,6 +333,7 @@ macro_rules! buffered_fields {
             calls_before_signatures untyped_signatures_in_js jsx_fragment_types assignments_marked
             blocks_too_large_for_flow_analysis
             native_project_results native_global_results native_declared_heads
+            native_named_types native_object_views native_object_schemas native_object_bases native_object_member_lists
         )
     };
 }
@@ -521,6 +522,11 @@ pub struct Program<'s> {
     native_project_results: ByKey<NativeProjectQuery, TypeId, Buffered, &'s Session>,
     native_global_results: ByKey<NativeGlobalsQuery, Option<TypeId>, Buffered, &'s Session>,
     native_declared_heads: ByKey<NativeTypeDeclarationId, TypeId, Buffered, &'s Session>,
+    native_named_types: ByKey<NativeTypeDeclarationQuery, TypeId, Buffered, &'s Session>,
+    native_object_views: ByKey<TypeId, TypeId, Buffered, &'s Session>,
+    native_object_schemas: ByKey<TypeId, TypeId, Buffered, &'s Session>,
+    native_object_bases: ByIdIndirect<TypeId, ArenaBox<'s, [TypeId]>, Buffered, &'s Session>,
+    native_object_member_lists: ByIdIndirect<TypeId, ArenaBox<'s, [native_named::NativePublishedMember<'s>]>, Buffered, &'s Session>,
     variances: ByNodeIndirect<Sym, &'s [u8], Buffered, &'s Session>,
     /// `resolvedType` of a property declared by assignment declarations, keyed by the first
     /// declaration.
@@ -719,6 +725,11 @@ impl<'s> Program<'s> {
             native_project_results: ByKey::new_in(session),
             native_global_results: ByKey::new_in(session),
             native_declared_heads: ByKey::new_in(session),
+            native_named_types: ByKey::new_in(session),
+            native_object_views: ByKey::new_in(session),
+            native_object_schemas: ByKey::new_in(session),
+            native_object_bases: ByIdIndirect::new_in(session),
+            native_object_member_lists: ByIdIndirect::new_in(session),
             variances: ByNodeIndirect::new_in(&symbols, session),
             awaited_types: ById::new_in(session),
             mapped_prop_types: ByKey::new_in(session),

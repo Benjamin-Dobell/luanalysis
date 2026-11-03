@@ -268,9 +268,25 @@ impl ProjectWorkspace {
         crate::project_check::describe_incrementally(project, options, self, paths)
     }
 
+    /// Publishes what the next edit of the file at `path` reads, as checking that edit would.
+    pub fn publish_for_edits(
+        &mut self,
+        project: Project,
+        options: crate::project_check::ProjectCheckOptions,
+        path: &std::path::Path,
+    ) {
+        crate::project_check::publish_for_edits(project, options, self, path)
+    }
+
     /// How many files the last incremental check checked, its others keeping their reports.
     pub fn last_incremental_checked(&self) -> usize {
         self.incremental.checked
+    }
+
+    /// Whether the last incremental check read what the check before it published, rather than
+    /// finding again what other files say.
+    pub fn last_incremental_read_published(&self) -> bool {
+        self.incremental.read_published
     }
 
     pub(crate) fn incremental_state(&self) -> &crate::project_check::IncrementalState {

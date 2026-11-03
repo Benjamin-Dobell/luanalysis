@@ -786,3 +786,199 @@ fn one_global_declaration_of_another_type_conflicts_with_all_of_them() {
         diagnostic_at(&report, path, "TS2403", "SHARED");
     }
 }
+
+/// Each edit of `file` is checked as a cold check would, and the last of `edits` reads what the
+/// first published when `reads` says it can.
+fn edits_match_cold_checks(fixture: &Fixture, entries: &[&str], file: &str, edits: &[&str], reads: bool) {
+    // An edit costing half the program is a whole check, so the program is much larger than `file`.
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    let entries: Vec<_> = entries.iter().copied().chain(["rest.lua"]).collect();
+    let plan = || fixture.plan(&entries, &[]);
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    for edit in edits {
+        fixture.file(file, edit);
+        fixture.compare_incrementally(&mut workspace, plan(), modules());
+    }
+    assert_eq!(workspace.last_incremental_read_published(), reads);
+}
+
+#[test]
+fn a_second_edit_reads_what_the_first_published() {
+    let fixture = Fixture::new();
+    fixture.file("m.lua", "local M = {}\nfunction M.size() return 1 end\nreturn M\n");
+    let edited = |extra: &str| format!("local m = require('m')\nlocal n = m.size()\n---@type string\nlocal bad = n\n{extra}\nreturn bad\n");
+    fixture.file("a.lua", &edited(""));
+    edits_match_cold_checks(&fixture, &["a.lua", "m.lua"], "a.lua", &[&edited("local x = 1"), &edited("local x = 2"), &edited("local y = 3")], true);
+}
+
+#[test]
+fn a_class_of_the_edited_file_that_another_file_returns_stays_that_class() {
+    let fixture = Fixture::new();
+    let class = |extra: &str| format!("---@class Point\n---@field x number\nlocal Point = {{}}\n---@return Point\nfunction Point.make() return {{ x = 1 }} end\nlocal made = require('y').point()\n---@type Point\nlocal same = made\nlocal bad = made.y\n{extra}\nreturn Point\n");
+    fixture.file("x.lua", &class(""));
+    fixture.file("y.lua", "local M = {}\nfunction M.point() return require('x').make() end\nreturn M\n");
+    edits_match_cold_checks(&fixture, &["x.lua", "y.lua"], "x.lua", &[&class("local a = 1"), &class("local a = 2"), &class("local a = 3")], true);
+}
+
+#[test]
+fn an_edit_that_changes_what_another_file_inferred_from_it_checks_again() {
+    let fixture = Fixture::new();
+    let source = |value: &str| format!("local M = {{}}\nfunction M.value() return {value} end\n---@type string\nlocal echoed = require('y').echo()\nreturn M\n");
+    fixture.file("x.lua", &source("1"));
+    fixture.file("y.lua", "local M = {}\nfunction M.echo() return require('x').value() end\nreturn M\n");
+    // The first edit publishes, the second reads, and the third reshapes the file.
+    edits_match_cold_checks(&fixture, &["x.lua", "y.lua"], "x.lua", &[&source("1 + 0"), &source("1 + 1"), &source("'one'")], false);
+}
+
+#[test]
+fn a_method_one_file_adds_to_another_files_class_is_found_when_it_changes() {
+    let fixture = Fixture::new();
+    fixture.file("y.lua", "---@class Foo\nFoo = {}\n");
+    let adds = |methods: &str| format!("{methods}\n---@type string\nlocal text = Foo:m()\n");
+    fixture.file("x.lua", &adds("function Foo:m() return 1 end"));
+    fixture.file("z.lua", "---@type string\nlocal s = Foo:m()\nlocal t = Foo:n()\n");
+    let entries = ["x.lua", "y.lua", "z.lua"];
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    let entries: Vec<_> = entries.iter().copied().chain(["rest.lua"]).collect();
+    let plan = || fixture.plan(&entries, &[]);
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    // The return type changes, then a method is added and another removed. Each is seen by the
+    // file that adds it, and by the file that calls it.
+    for (edit, reads) in [
+        (adds("function Foo:m() return 2 end"), false),
+        (adds("function Foo:m() return 2 end\nlocal a = 1"), true),
+        (adds("function Foo:m() return 'two' end\nlocal a = 1"), false),
+        (adds("function Foo:m() return 'two' end\nfunction Foo:n() return 3 end\nlocal a = 1"), false),
+        (adds("function Foo:n() return 3 end\nlocal a = 1"), false),
+        (adds("function Foo:n() return 3 end\nlocal a = 2"), true),
+    ] {
+        fixture.file("x.lua", &edit);
+        fixture.compare_incrementally(&mut workspace, plan(), modules());
+        assert_eq!(workspace.last_incremental_read_published(), reads, "{edit}");
+    }
+}
+
+#[test]
+fn a_class_declared_in_two_files_keeps_the_edited_files_errors() {
+    let fixture = Fixture::new();
+    fixture.file("base.lua", "---@class Base\n---@field size number\nlocal Base = {}\nreturn Base\n");
+    fixture.file("y.lua", "---@class Shared : Base\n---@field a number\nlocal Shared = {}\nreturn Shared\n");
+    let declares = |extra: &str| format!("---@class Shared\n---@field a string\n---@field size string\nlocal Shared = {{}}\n{extra}\nreturn Shared\n");
+    fixture.file("x.lua", &declares(""));
+    edits_match_cold_checks(&fixture, &["base.lua", "x.lua", "y.lua"], "x.lua", &[&declares("local a = 1"), &declares("local a = 2"), &declares("local a = 3")], true);
+}
+
+#[test]
+fn a_new_global_of_the_edited_file_renumbers_the_rest() {
+    let fixture = Fixture::new();
+    fixture.file("g.lua", "Beta = 1\nGamma = 'g'\n");
+    let uses = |extra: &str| format!("{extra}\nlocal b = Beta\n---@type string\nlocal bad = b\nlocal g = Gamma\n");
+    fixture.file("x.lua", &uses(""));
+    edits_match_cold_checks(&fixture, &["g.lua", "x.lua"], "x.lua", &[&uses("local a = 1"), &uses("local a = 2"), &uses("Alpha = 1")], false);
+}
+
+#[test]
+fn a_global_declared_in_two_files_keeps_the_edited_files_conflict() {
+    let fixture = Fixture::new();
+    fixture.file("y.lua", "Both = 1\n");
+    let declares = |extra: &str| format!("Both = 'text'\n{extra}\n");
+    fixture.file("x.lua", &declares(""));
+    edits_match_cold_checks(&fixture, &["x.lua", "y.lua"], "x.lua", &[&declares("local a = 1"), &declares("local a = 2"), &declares("local a = 3")], true);
+}
+
+#[test]
+fn a_file_published_for_before_its_first_edit_reads_it_then() {
+    let fixture = Fixture::new();
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    fixture.file("m.lua", "local M = {}\nfunction M.size() return 1 end\nreturn M\n");
+    let edited = |extra: &str| format!("local m = require('m')\nlocal n = m.size()\n---@type string\nlocal bad = n\n{extra}\nreturn bad\n");
+    fixture.file("a.lua", &edited(""));
+    let entries = ["a.lua", "m.lua", "rest.lua"];
+    let plan = || fixture.plan(&entries, &[]);
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    let resolver = fixture.resolver();
+    let project = Project::load_plan(&resolver, plan(), |source| workspace.static_require_requests(source));
+    workspace.publish_for_edits(project, modules(), &fs::canonicalize(fixture.0.join("a.lua")).unwrap());
+    fixture.file("a.lua", &edited("local x = 1"));
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    assert!(workspace.last_incremental_read_published());
+}
+
+#[test]
+fn a_description_over_what_was_published_matches_a_cold_one() {
+    let fixture = Fixture::new();
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    fixture.file("m.lua", "local M = {}\nfunction M.size() return 1 end\nfunction M.name() return 'm' end\nreturn M\n");
+    let edited = |extra: &str| format!("local m = require('m')\nlocal n = m.size()\nlocal s = m.name()\nlocal both = {{ n = n, s = s }}\n{extra}\nreturn both\n");
+    fixture.file("a.lua", &edited(""));
+    let entries = ["a.lua", "m.lua", "rest.lua"];
+    let plan = || fixture.plan(&entries, &[]);
+    // As a language server checks: diagnostics first, and types when a hover asks for them.
+    let unwritten = || ProjectCheckOptions { describe_types: false, ..modules() };
+    let resolver = fixture.resolver();
+    let mut workspace = ProjectWorkspace::new();
+    let project = Project::load_plan(&resolver, plan(), |source| workspace.static_require_requests(source));
+    workspace.check_project_incrementally(project, unwritten());
+    for extra in ["local x = 1", "local x = 2"] {
+        fixture.file("a.lua", &edited(extra));
+        let project = Project::load_plan(&resolver, plan(), |source| workspace.static_require_requests(source));
+        workspace.check_project_incrementally(project, unwritten());
+    }
+    assert!(workspace.last_incremental_read_published());
+    let path = fs::canonicalize(fixture.0.join("a.lua")).unwrap();
+    let project = Project::load_plan(&resolver, plan(), |source| workspace.static_require_requests(source));
+    let described = ProjectCheckOptions { describe_types: true, ..modules() };
+    let warm = workspace.describe_incrementally(project, described.clone(), std::slice::from_ref(&path));
+    let cold = check_project_with_options(Project::load_plan(&resolver, plan(), static_require_requests), described);
+    let of = |report: &ProjectCheckReport| {
+        let file = report.project.file_by_path(&path).unwrap().id;
+        let report = &report.file(file).unwrap().report;
+        (report.bindings.clone(), report.types.clone())
+    };
+    assert_eq!(of(&warm), of(&cold));
+    assert!(!of(&warm).1.is_empty());
+}
+
+#[test]
+fn an_edit_of_what_a_file_exposes_stands_when_nothing_it_reads_depends_on_it() {
+    let fixture = Fixture::new();
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    fixture.file("m.lua", "local M = {}\nfunction M.size() return 1 end\nreturn M\n");
+    let exposes = |value: &str| format!("local m = require('m')\nlocal A = {{}}\nfunction A.value() return {value} end\n---@type string\nlocal bad = m.size()\nreturn A\n");
+    fixture.file("a.lua", &exposes("1"));
+    fixture.file("b.lua", "---@type string\nlocal s = require('a').value()\n");
+    let entries = ["a.lua", "b.lua", "m.lua", "rest.lua"];
+    let plan = || fixture.plan(&entries, &[]);
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    // The first edit publishes. Each after it reads that, and the file that requires it follows
+    // when what it returns changes.
+    for (value, checked) in [("2", 1), ("3", 1), ("'three'", 2), ("'four'", 1), ("4", 2)] {
+        fixture.file("a.lua", &exposes(value));
+        let found = fixture.compare_incrementally(&mut workspace, plan(), modules());
+        assert_eq!((value, found), (value, checked));
+    }
+    assert!(workspace.last_incremental_read_published());
+}
+
+#[test]
+fn a_global_the_edited_file_redeclares_keeps_its_conflict_with_a_library() {
+    let fixture = Fixture::new();
+    fixture.file("rest.lua", &"do\n---@type number\nlocal rest = 1\nlocal function more() return rest end\nend\n".repeat(500));
+    fixture.file("events.def.lua", "---@meta\n---@type nil | fun(): void | nil | string\nonSave = nil\n");
+    let redeclares = |extra: &str| format!("{extra}\nlocal original = onSave\n---@return string\nfunction onSave()\n    return 'saved'\nend\n");
+    fixture.file("x.lua", &redeclares(""));
+    let plan = || fixture.plan(&["rest.lua", "x.lua"], &[("events.def.lua", SourceRole::Declaration)]);
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), modules());
+    for extra in ["local a = 1", "local a = 2", "local a = 3"] {
+        fixture.file("x.lua", &redeclares(extra));
+        fixture.compare_incrementally(&mut workspace, plan(), modules());
+    }
+    assert!(workspace.last_incremental_read_published());
+    let report = fixture.compare(&mut ProjectWorkspace::new(), plan(), modules());
+    diagnostic_at(&report, &fixture.0.join("x.lua"), "TS2403", "onSave");
+}

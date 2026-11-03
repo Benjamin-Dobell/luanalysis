@@ -52,9 +52,9 @@ impl crate::types::Follow for NativeProjectQuery {
     fn visit<V: crate::types::Visitor>(&self, visitor: &mut V) {
         visitor.plain(&std::mem::discriminant(self));
         match self {
-            Self::ChunkResult(module) => { visitor.plain(&module.snapshot); visitor.plain(&module.index); }
+            Self::ChunkResult(module) => { visitor.plain(&module.snapshot); visitor.plain(&module.index); visitor.native_source(module.snapshot); }
             Self::ModuleValue { module, policy } | Self::RequirePack { module, policy } => {
-                visitor.plain(&module.snapshot); visitor.plain(&module.index); visitor.plain(policy);
+                visitor.plain(&module.snapshot); visitor.plain(&module.index); visitor.plain(policy); visitor.native_source(module.snapshot);
             }
         }
     }
