@@ -897,6 +897,12 @@ impl ProjectRegistry {
     /// declarations: its module's results, the globals it declares and the types it declares, each
     /// printed with its members. An edit that leaves it unchanged changes no other file's check.
     pub(crate) fn file_signature(&self, queries: &mut dyn TypeQueries, file: FileId) -> u64 {
+        // A union's members are in the order its check created them, which a check that reads
+        // what an earlier one published does not repeat.
+        crate::canonical_unions(|| self.file_signature_in_order(queries, file))
+    }
+
+    fn file_signature_in_order(&self, queries: &mut dyn TypeQueries, file: FileId) -> u64 {
         use std::hash::{Hash, Hasher};
         fn described(ty: &Type, queries: &mut dyn TypeQueries, text: &mut String) {
             text.push_str(&crate::describe_diagnostic_type(ty, queries));

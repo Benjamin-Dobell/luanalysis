@@ -721,6 +721,20 @@ mod tests {
     }
 
     #[test]
+    fn a_signature_prints_a_union_whatever_order_its_check_made_it_in() {
+        Engine::new().with_session(|queries| {
+            let word = |text: &str| Type::StringLiteral(text.as_bytes().to_vec());
+            let forward = Type::Union(vec![Type::Nil, word("a"), word("b")]);
+            let backward = Type::Union(vec![word("b"), Type::Nil, word("a")]);
+            assert_ne!(crate::describe_diagnostic_type(&forward, queries), crate::describe_diagnostic_type(&backward, queries));
+            let canonical = |ty: &Type, queries: &mut dyn TypeQueries| crate::canonical_unions(|| crate::describe_diagnostic_type(ty, queries));
+            assert_eq!(canonical(&forward, queries), canonical(&backward, queries));
+            // Only for as long as it is asked for.
+            assert_ne!(crate::describe_diagnostic_type(&forward, queries), crate::describe_diagnostic_type(&backward, queries));
+        });
+    }
+
+    #[test]
     fn appended_opaque_operands_keep_distinct_types_and_original_diagnostic_locations() {
         Engine::new().with_session(|queries| {
             let number = queries.regular_type(&Type::NumberLiteral(1.0));

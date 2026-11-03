@@ -1665,6 +1665,23 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
     describe_native_mode(ty, engine, stack, false)
 }
 
+thread_local! {
+    /// Whether a union's members are printed in the order of their text rather than of their
+    /// types' ids, which depends on the order a check created them in (`canonical_unions`).
+    static CANONICAL_UNIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `print` with each union's members in the order of their text: two checks of the same
+/// types, which may have created them in other orders, print them alike.
+pub(crate) fn canonical_unions<R>(print: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { CANONICAL_UNIONS.set(self.0); }
+    }
+    let _restore = Restore(CANONICAL_UNIONS.replace(true));
+    print()
+}
+
 pub(crate) fn describe_diagnostic_type(ty: &Type, engine: &mut dyn TypeQueries) -> String {
     describe_native_mode(ty, engine, &mut Vec::new(), true)
 }
@@ -1752,8 +1769,8 @@ fn describe_native_at_precedence(
             TypePrecedence::Function,
             minimum,
         ),
-        Type::Union(types) => parenthesize_type(
-            types
+        Type::Union(types) => {
+            let mut members: Vec<_> = types
                 .iter()
                 .map(|ty| {
                     describe_native_at_precedence(
@@ -1764,11 +1781,10 @@ fn describe_native_at_precedence(
                         TypePrecedence::Union,
                     )
                 })
-                .collect::<Vec<_>>()
-                .join(" | "),
-            TypePrecedence::Union,
-            minimum,
-        ),
+                .collect();
+            if CANONICAL_UNIONS.get() { members.sort(); }
+            parenthesize_type(members.join(" | "), TypePrecedence::Union, minimum)
+        }
         Type::Intersection(types) => parenthesize_type(
             types
                 .iter()
