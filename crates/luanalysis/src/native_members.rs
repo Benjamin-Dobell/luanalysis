@@ -3,6 +3,8 @@
 use crate::native_named::{NativeNamed, NativeNamedKey, NativeTypeContext};
 use luanalysis_engine::{LuaKey, NativeExpressionKey, NativeFunctionKey, NativeTypeMemberKey};
 use luanalysis_syntax::{Span, TypeExpr};
+use crate::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum OriginalMemberKey {
@@ -59,20 +61,24 @@ pub(super) struct OriginalMemberSource {
     /// Original declaration groups occur in source order, identified by their
     /// contextual/receiver-owner guard. Duplicate constructor stores within a group
     /// retain Lua collision handling; later writes do not redefine its contract.
-    pub candidates: Vec<OriginalMemberInput>,
+    pub candidates: Vec<Rc<OriginalMemberInput>>,
 }
 pub(super) struct NativeMembers {
     snapshot: u32,
     base: u32,
     sources: Vec<OriginalMemberSource>,
-    inputs: Vec<OriginalMemberInput>,
+    /// The indices in `sources` of each owner's members.
+    by_owner: HashMap<NativeNamedKey, Vec<u32>>,
+    /// Every input in source order, shared with `sources`.
+    inputs: Vec<Rc<OriginalMemberInput>>,
 }
 impl NativeMembers {
     pub(super) fn new(snapshot: u32, named: &NativeNamed, mut inputs: Vec<OriginalMemberInput>, base: u32) -> Self {
         assert!(base >= named.member_namespace_end(), "original member namespaces are disjoint");
         inputs.sort_by_key(|input| (input.span.start, input.span.end));
-        let mut result = Self { snapshot, base, sources: Vec::new(), inputs: inputs.clone() };
-        for input in inputs {
+        let inputs: Vec<_> = inputs.into_iter().map(Rc::new).collect();
+        let mut result = Self { snapshot, base, sources: Vec::new(), by_owner: HashMap::default(), inputs: Vec::new() };
+        for input in &inputs {
             if let OriginalMemberOrigin::Method(function) = input.origin {
                 assert_eq!(function.snapshot, snapshot);
             } else {
@@ -90,12 +96,14 @@ impl NativeMembers {
                 })
             });
             if doc_priority { continue; }
-            if let Some(previous) = result.sources.iter_mut().find(|source| {
-                source.candidates[0].owner == input.owner && source.candidates[0].key == input.key
+            let owned = result.by_owner.entry(input.owner).or_default();
+            if let Some(previous) = owned.iter().map(|&index| index as usize).find(|&index| {
+                let source = &result.sources[index];
+                source.candidates[0].key == input.key
                     && (source.candidates[0].owner_application == input.owner_application
                         || matches!((&source.candidates[0].owner_application, &input.owner_application),
                             (Some(OriginalOwnerApplication::Receiver(_)), Some(OriginalOwnerApplication::Receiver(_)))))
-            }) {
+            }).map(|index| &mut result.sources[index]) {
                 // An inactive earlier constructor scope must not erase a
                 // later declaration. Within the same scope, the first store
                 // still defines the contract and later methods are checked
@@ -107,13 +115,16 @@ impl NativeMembers {
                     matches!(input.origin, OriginalMemberOrigin::ConstructorField(_))
                         && matches!(first.origin, OriginalMemberOrigin::ConstructorField(_))
                 }) {
-                    previous.candidates.push(input);
+                    previous.candidates.push(Rc::clone(input));
                 }
                 continue;
             }
-            let index = base.checked_add(result.sources.len().try_into().expect("source members fit u32")).expect("source member namespace fits u32");
-            result.sources.push(OriginalMemberSource { key: NativeTypeMemberKey { snapshot, index }, candidates: vec![input] });
+            let position: u32 = result.sources.len().try_into().expect("source members fit u32");
+            let index = base.checked_add(position).expect("source member namespace fits u32");
+            owned.push(position);
+            result.sources.push(OriginalMemberSource { key: NativeTypeMemberKey { snapshot, index }, candidates: vec![Rc::clone(input)] });
         }
+        result.inputs = inputs;
         result
     }
     pub(super) fn get(&self, key: NativeTypeMemberKey) -> Option<&OriginalMemberSource> {
@@ -121,7 +132,7 @@ impl NativeMembers {
         self.sources.get(key.index.checked_sub(self.base)? as usize)
     }
     pub(super) fn members(&self, owner: NativeNamedKey) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
-        self.sources.iter().filter(move |source| source.candidates[0].owner == owner).map(|source| source.key)
+        self.by_owner.get(&owner).into_iter().flatten().map(|&index| self.sources[index as usize].key)
     }
     pub(super) fn member_candidates(&self, owner: NativeNamedKey) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
         // An original written application may name an alias. Offer these finite
@@ -134,7 +145,7 @@ impl NativeMembers {
     #[cfg(test)]
     pub(super) fn sources(&self) -> &[OriginalMemberSource] { &self.sources }
     pub(super) fn namespace_end(&self) -> u32 { self.base.checked_add(self.sources.len().try_into().expect("original member count fits u32")).expect("original member namespace fits u32") }
-    pub(super) fn inputs(&self) -> &[OriginalMemberInput] { &self.inputs }
+    pub(super) fn inputs(&self) -> impl Iterator<Item = &OriginalMemberInput> + '_ { self.inputs.iter().map(|input| &**input) }
 }
 
 use crate::native_functions::NativeRegistry;
@@ -174,16 +185,16 @@ impl NativeRegistry {
             }
             let selected = source.candidates.iter().filter(|candidate| {
                 candidate.contextual_owner == input.contextual_owner && candidate.receiver_owner == input.receiver_owner
-            }).collect();
+            }).map(|candidate| &**candidate).collect();
             return Some((TypeMemberActivation::Active, selected));
         }
         Some((TypeMemberActivation::Inactive, Vec::new()))
     }
     pub(crate) fn is_original_assignment_field(&self, target: Span) -> bool {
-        self.members.inputs().iter().any(|input| input.origin == OriginalMemberOrigin::AssignmentField(target))
+        self.members.inputs().any(|input| input.origin == OriginalMemberOrigin::AssignmentField(target))
     }
     pub(crate) fn original_assignment_annotation(&self, target: Span, queries: &mut dyn TypeQueries) -> Option<Type> {
-        let input = self.members.inputs().iter().find(|input| input.origin == OriginalMemberOrigin::AssignmentField(target))?;
+        let input = self.members.inputs().find(|input| input.origin == OriginalMemberOrigin::AssignmentField(target))?;
         let OriginalMemberValue::Written(ty) = &input.value else { return None };
         Some(self.named_annotation(input.lexical_context, &input.documentation_contexts, ty, queries))
     }
@@ -274,7 +285,7 @@ impl NativeRegistry {
     }
     pub(super) fn original_member_owner_application(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::MemberOwnerApplication> {
         let source = self.members.get(key)?;
-        let mut input = &source.candidates[0];
+        let mut input = &*source.candidates[0];
         if input.receiver_owner.is_some() {
             let (activation, selected) = self.selected_original_member_candidates(key, queries)?;
             match activation {
