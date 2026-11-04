@@ -1866,6 +1866,9 @@ fn navigation(
 }
 
 fn add_occurrence(navigation: &mut Navigation, path: &std::path::Path, text: &str, span: Span, declaration: bool) {
+    // A name the checker supplies, such as the `---@field` of a Lua 5.1 `module(...)` table in
+    // the table it is in, is written nowhere.
+    if span.start == span.end { return; }
     let occurrence = (path.to_path_buf(), span, declaration);
     if !navigation.occurrences.contains(&occurrence) { navigation.occurrences.push(occurrence); }
     navigation.texts.entry(path.to_path_buf()).or_insert_with(|| text.to_owned());
@@ -3673,8 +3676,14 @@ mod tests {
     /// Calls the same current-buffer query as the LSP worker, with no background check that
     /// could replace the inputs before the query starts.
     fn rename_buffers(files: &[(&str, &str)], focus: &str, needle: &str, name: Option<&str>) -> Result<Option<Navigation>, String> {
-        use luanalysis_project::{ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole};
         let root = std::env::temp_dir().join(format!("luanalysis rename buffers {}", std::process::id()));
+        rename_buffers_in(&root, files, focus, needle, name)
+    }
+
+    /// As `rename_buffers`, with the buffers of files in `root`.
+    fn rename_buffers_in(root: &std::path::Path, files: &[(&str, &str)], focus: &str, needle: &str, name: Option<&str>) -> Result<Option<Navigation>, String> {
+        use luanalysis_project::{ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole};
+        let root = root.to_path_buf();
         let overlays: std::collections::HashMap<_, _> = files.iter()
             .map(|(path, text)| (root.join(path), (*text).to_owned())).collect();
         let plan = ProjectLoadPlan {
@@ -3778,9 +3787,14 @@ mod tests {
 
     /// The completions at the `--[[caret]]` of `focus`, one of `files`.
     fn completion_buffers(files: &[(&str, &str)], focus: &str) -> Vec<CompletionItem> {
+        completion_buffers_in(&std::env::temp_dir().join(format!("luanalysis completion buffers {}", std::process::id())), files, focus)
+    }
+
+    /// As `completion_buffers`, with the buffers of files in `root`.
+    fn completion_buffers_in(root: &std::path::Path, files: &[(&str, &str)], focus: &str) -> Vec<CompletionItem> {
         use luanalysis_project::{ProjectConfig, ProjectLoadPlan, Resolver};
         let marker = "--[[caret]]";
-        let root = std::env::temp_dir().join(format!("luanalysis completion buffers {}", std::process::id()));
+        let root = root.to_path_buf();
         let mut site = None;
         let overlays: std::collections::HashMap<_, _> = files.iter().map(|(path, text)| {
             let text = if *path == focus {
@@ -3834,6 +3848,36 @@ mod tests {
         let module: Vec<_> = renamed.occurrences.iter().filter(|(path, ..)| path.ends_with("moduleA.lua")).map(|(_, span, _)| *span).collect();
         let string = MODULE.find("TypeA\")").unwrap();
         assert_eq!(module, [luanalysis_syntax::Span::new(string, string + "TypeA".len())], "{:?}", renamed.occurrences);
+    }
+
+    #[test]
+    fn a_lua_51_dotted_modules_table_completes_and_renames_as_a_field_of_the_one_it_is_in() {
+        // On disk, so that `require` finds `socket/url.lua`, whose `module(...)` it names.
+        let root = std::env::temp_dir().join(format!("luanalysis lua51 dotted modules {}", std::process::id()));
+        let socket = "module(\"socket\")\nversion = \"2.0\"\n";
+        let http = "module(\"socket.http\")\nTIMEOUT = 60\n";
+        let url = "module(..., package.seeall)\nfunction escape(s) return s end\n";
+        let user = "require(\"socket.url\")\nlocal v = socket.version\nreturn socket.url.escape, socket.--[[caret]]";
+        let files = [("socket.lua", socket), ("socket/http.lua", http), ("socket/url.lua", url), ("user.lua", user)];
+        for (path, text) in files {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            std::fs::write(root.join(path), text.replace("--[[caret]]", "")).unwrap();
+        }
+        // As the project names the files it finds.
+        let root = root.canonicalize().unwrap();
+        let labels: Vec<_> = completion_buffers_in(&root, &files, "user.lua").into_iter().map(|item| item.label).collect();
+        assert!(["version", "http", "url"].iter().all(|expected| labels.iter().any(|label| label == expected)), "{labels:?}");
+        let user = user.replace("--[[caret]]", "version");
+        let files = [("socket.lua", socket), ("socket/http.lua", http), ("socket/url.lua", url), ("user.lua", user.as_str())];
+        let edited = |navigation: &Navigation, file: &str| navigation.occurrences.iter()
+            .filter(|(path, ..)| path.ends_with(file)).map(|(path, span, _)| navigation.texts[path][span.start..span.end].to_owned()).collect::<Vec<_>>();
+        // The global's name is in the string of each module under it; `module(...)` spells none.
+        let renamed = rename_buffers_in(&root, &files, "user.lua", "socket.version", Some("sock")).unwrap().unwrap();
+        assert_eq!((edited(&renamed, "socket.lua"), edited(&renamed, "http.lua"), edited(&renamed, "url.lua")), (vec!["socket".to_owned()], vec!["socket".to_owned()], vec![]));
+        // So is a module's name in the table it is in, but none for `module(...)`'s.
+        let renamed = rename_buffers_in(&root, &files, "user.lua", "url.escape", Some("link")).unwrap().unwrap();
+        assert_eq!((edited(&renamed, "url.lua"), edited(&renamed, "user.lua")), (vec![], vec!["url".to_owned()]), "{:?}", renamed.occurrences);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -682,6 +682,24 @@ fn declaration_resource_identity_is_part_of_the_preparation_key() {
 }
 
 #[test]
+fn a_vararg_modules_table_takes_the_name_a_new_require_gives_it() {
+    // Lua 5.1's `module(...)` is named by the `require` that loads its chunk: an edit that adds
+    // or removes one reads the unchanged chunk again.
+    let fixture = Fixture::new();
+    fixture.file("counter.lua", "module(..., package.seeall)\ncount = 0\n");
+    fixture.file("main.lua", "local n = 1\n");
+    let plan = || fixture.plan(&["counter.lua", "main.lua"], &[]);
+    let lua51 = || ProjectCheckOptions { environment: StandardEnvironmentProfile::Lua51, ..options() };
+    let mut workspace = ProjectWorkspace::new();
+    fixture.compare_incrementally(&mut workspace, plan(), lua51());
+    fixture.file("main.lua", "require('counter')\nlocal n = counter.count\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), lua51()) >= 2);
+    assert_eq!(fixture.compare_incrementally(&mut workspace, plan(), lua51()), 0);
+    fixture.file("main.lua", "local n = counter.count\n");
+    assert!(fixture.compare_incrementally(&mut workspace, plan(), lua51()) >= 2);
+}
+
+#[test]
 fn incremental_checks_redo_only_what_an_edit_can_affect_and_match_cold_checks() {
     let fixture = Fixture::new();
     fixture.file("m.lua", "local M = {}\n---@return number\nfunction M.size() return 1 end\nreturn M\n");

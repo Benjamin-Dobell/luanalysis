@@ -37,7 +37,7 @@ impl Checker<'_> {
                 self.finish_class_definition_pack(expression.span, pack)
             }
             ExprKind::Vararg => {
-                let pack = self.vararg_pack(expression.span);
+                let pack = self.vararg_pack();
                 self.finish_class_definition_pack(expression.span, pack)
             }
             _ => {
@@ -120,14 +120,16 @@ impl Checker<'_> {
             .collect()
     }
 
-    fn vararg_pack(&mut self, origin: Span) -> ValuePack {
+    fn vararg_pack(&mut self) -> ValuePack {
         let Some(native) = self.native else {
             return ValuePack::variadic(Type::Any);
         };
         let Some(key) = self.type_context else {
-            if native.has_module_index() {
-                self.error("LUA2036",origin,"Module chunk varargs require a native loader-argument contract.");
-                return ValuePack::variadic(Type::Unknown);
+            // A project's chunk is a module, which `require` passes its name, and from Lua 5.2
+            // the file it found it in, as Lua 5.1's `module(...)` names its table.
+            if let Some(arguments) = native.loader_arguments() {
+                let slots = vec![luanalysis_engine::PackSlot::required(Type::String); arguments];
+                return ValuePack::Alternatives(vec![luanalysis_engine::PackAlternative { fixed: slots, tail: None }]);
             }
             return ValuePack::variadic(Type::Any);
         };

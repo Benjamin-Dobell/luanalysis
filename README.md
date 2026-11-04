@@ -821,7 +821,9 @@ for word in text:gmatch("%a+") do end      -- word: string
 
 Luanalysis checks a project as a whole. `require` calls are resolved through module roots and
 `package.path` templates, and each module's exports are inferred, so a value keeps its type as it
-crosses files. Standard library declarations are included for Lua 5.0 through 5.4 and LuaJIT.
+crosses files. A chunk's `...` is what `require` passes it: the module's name, and from Lua 5.2
+the file it found the chunk in. Standard library declarations are included for Lua 5.0 through 5.4
+and LuaJIT.
 
 A file named `*.def.lua` or `*.def.ttslua` is a declaration file wherever it is found, as
 TypeScript's `*.d.ts` files are. Its stubs describe what other code provides, so they are not
@@ -850,14 +852,21 @@ file whose path ends with the module's path under a template, the shortest such 
 Lua 5.1's `module("name")` makes the global table `name` the rest of its chunk's global
 environment, as Luanalysis v1 read it. The names the chunk assigns after it, in its statements and
 in the functions it defines there, are that table's fields, not globals; one of those names reads
-its field, and any other name a global, as `module("name", package.seeall)` lets it. `---@module
-Name` above the call names the table's type, a class whose members are those fields, so another
-file's `---@type Name` sees them; elsewhere it declares a class, as `---@class` does. A field's
-literal type widens as a global's does (`count = 0` is a `number`). `require("name")` returns the
-table when the chunk returns nothing, and `_M`, `_NAME` and `_PACKAGE` are the table, its name and
-`""`. As v1 did, Luanalysis reads a chunk calling `module` so at any Lua version, although only
-Lua 5.1 and LuaJIT declare it. Only a name that is a Lua name is read so: a dotted name stores the
-table in another table's field, and `module(...)` is named by the `require` that loads its chunk.
+its field, and any other name a global, as `module("name", package.seeall)` lets it. The table's
+type is the class `name`, whose members are those fields, so another file's `---@type name` sees
+them; `---@module Name` above the call names it otherwise, and elsewhere declares a class, as
+`---@class` does. A field's literal type widens as a global's does (`count = 0` is a `number`).
+`require("name")` returns the table when the chunk returns nothing, and `_M`, `_NAME` and
+`_PACKAGE` are the table, its name and its package (`"socket."` of `"socket.http"`). A dotted
+name stores the table in a field of the table before it, which `module` makes if there is none:
+after `module("socket.http")`, the class `socket` has the field `http` of the class
+`socket.http`, and as TypeScript merges namespaces, `socket` has the fields of every module under
+it and of `module("socket")`'s chunk, whichever files they are in. `module(...)` is named by the
+`require` that loads its chunk, which passes the chunk the name as its `...`: its table is named
+by a name the project requires the file by, the one of the fewest parts (`pkg`, not `pkg.init`),
+and `require` returns it by any of them. When no file requires it, no global holds the table, and
+its fields are its chunk's own. As v1 did, Luanalysis reads a chunk calling `module` so at any
+Lua version, although only Lua 5.1 and LuaJIT declare it.
 
 A checked directory's LuaLS configuration, `.luarc.json` (or `.luarc.jsonc`), applies where
 options do not decide, in its flat (`"runtime.version"`) or nested form:

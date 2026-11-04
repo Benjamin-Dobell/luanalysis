@@ -41,6 +41,8 @@ pub(crate) struct ProjectModuleIndex {
     /// Checking roots and original targets whose callee/loader were proven.
     /// This schedules source checks; native queries still own all inferred types.
     pub required_files: RefCell<HashSet<FileId>>,
+    /// How many strings the selected runtime's `require` passes a chunk it loads, its `...`.
+    pub loader_arguments: usize,
 }
 
 impl NativeRegistry {
@@ -59,8 +61,9 @@ impl NativeRegistry {
             if !checker.incomplete_flow { self.merge_report(checker.report); }
         }
     }
-    pub(crate) fn has_module_index(&self) -> bool {
-        self.project_modules.is_some()
+    /// How many strings `require` passes a chunk it loads, in a project.
+    pub(crate) fn loader_arguments(&self) -> Option<usize> {
+        self.project_modules.as_ref().map(|modules| modules.loader_arguments)
     }
     #[cfg(test)]
     pub(crate) fn module_key(&self) -> NativeModuleKey {

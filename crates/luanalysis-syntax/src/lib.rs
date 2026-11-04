@@ -123,6 +123,9 @@ pub struct File {
     /// the chunk's global environment is the global table `name`. The parser leaves this empty;
     /// the checker fills it in when it reads the statements as fields of that table.
     pub module_environments: Vec<ModuleEnvironment>,
+    /// The module names `require` loads the file by, which name the table of its `module(...)`,
+    /// when the checker read one with them; otherwise empty.
+    pub loader_names: Vec<String>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
@@ -134,7 +137,11 @@ pub struct File {
 /// of the global table `name`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModuleEnvironment {
+    /// The global holding the table: the module's name, or for a dotted name or an unnamed
+    /// `module(...)`, a name no source spells, as `package.loaded` holds the table by its name.
     pub name: String,
+    /// Named by the loader, `module(...)`: `require` returns the table by any name.
+    pub loader: bool,
     /// From the end of the `module(...)` statement to the next one or the end of the chunk.
     pub span: Span,
     /// The fields the chunk stores in the table and those its documented type declares.

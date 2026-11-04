@@ -64,6 +64,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions, checkpoint: impl 
         namespace,
         usings,
         module_environments: Vec::new(),
+        loader_names: Vec::new(),
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),

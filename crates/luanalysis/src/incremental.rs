@@ -334,7 +334,8 @@ impl ProjectWorkspace {
         if source.role == SourceRole::Declaration {
             return FileRequests::default();
         }
-        let (snapshot, created) = self.snapshot_for(source);
+        // Its requests do not depend on the names its `module(...)` table has.
+        let (snapshot, created) = self.snapshot_for(source, None);
         if created {
             self.pending_preparation
                 .insert(snapshot.revision, snapshot.bound.is_some());
@@ -358,19 +359,25 @@ impl ProjectWorkspace {
         FileRequests { requires, provides }
     }
 
-    fn snapshot_for(&mut self, source: &SourceFile) -> (Arc<SourceSnapshot>, bool) {
+    /// The source's snapshot, parsed again unless one of the same text and options is known. A
+    /// Lua 5.1 `module(...)` chunk is read with `loader_names`, the names `require` loads the file
+    /// by in `module_environments::canonical` order, and, when they are given, read again when
+    /// they differ from its snapshot's.
+    fn snapshot_for(&mut self, source: &SourceFile, loader_names: Option<&[String]>) -> (Arc<SourceSnapshot>, bool) {
         let identity = SourceIdentity::of(source);
         let options = self.parse_options;
-        if let Some(known) = self.sources.get(&identity)
-            && (Arc::ptr_eq(&known.source, &source.source) || *known.source == *source.source)
+        let fits = |known: &SourceSnapshot| (Arc::ptr_eq(&known.source, &source.source) || *known.source == *source.source)
             && known.syntax.options == options
+            && loader_names.is_none_or(|names| !known.syntax.module_environments.iter().any(|module| module.loader) || known.syntax.loader_names == names);
+        if let Some(known) = self.sources.get(&identity)
+            && fits(known)
         {
             return (Arc::clone(known), false);
         }
         // Another workspace's revision of the same text.
         if let Some(shared) = &self.shared
             && let Some(known) = shared.state().snapshots.get(&identity)
-                .and_then(|snapshots| snapshots.iter().filter_map(std::sync::Weak::upgrade).find(|known| (Arc::ptr_eq(&known.source, &source.source) || *known.source == *source.source) && known.syntax.options == options))
+                .and_then(|snapshots| snapshots.iter().filter_map(std::sync::Weak::upgrade).find(|known| fits(known)))
         {
             self.sources.insert(identity, Arc::clone(&known));
             return (known, false);
@@ -378,7 +385,7 @@ impl ProjectWorkspace {
         // As TypeScript binds the tree its parser recovers, a source with syntax errors is bound
         // too, so the language service answers in it while it is being typed.
         let mut syntax = luanalysis_syntax::parse_with_options(&source.source, options, crate::project_check::unwind_if_cancelled);
-        crate::module_environments::read(&mut syntax, &source.source);
+        crate::module_environments::read(&mut syntax, &source.source, loader_names.unwrap_or_default());
         let bound = Some(Arc::new(bind::bind(&syntax)));
         // Revisions are numbered across the workspaces that share them.
         let revision = match &self.shared {
@@ -420,10 +427,20 @@ impl ProjectWorkspace {
         };
         let mut current = HashSet::default();
         let mut sources = Vec::with_capacity(project.files.len());
+        // The names each file is required by, which name a Lua 5.1 `module(...)` table, as
+        // `require` passes the name to the chunk.
+        let mut loader_names: HashMap<FileId, Vec<String>> = HashMap::default();
+        for dependency in &project.dependencies {
+            if let luanalysis_project::DependencyOutcome::Resolved(target) = dependency.outcome {
+                loader_names.entry(target).or_default().push(dependency.request.module.clone());
+            }
+        }
+        loader_names.values_mut().for_each(crate::module_environments::canonical);
         for source in &project.files {
             stats.files_seen += 1;
             current.insert(SourceIdentity::of(source));
-            let (snapshot, created) = self.snapshot_for(source);
+            let names = loader_names.get(&source.id).map_or(&[][..], Vec::as_slice);
+            let (snapshot, created) = self.snapshot_for(source, Some(names));
             if created {
                 stats.parsed += 1;
                 stats.bound += usize::from(snapshot.bound.is_some());

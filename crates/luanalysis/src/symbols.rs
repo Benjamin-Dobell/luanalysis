@@ -111,6 +111,8 @@ struct FileSymbols {
     library: bool,
     /// Sorted by start.
     entries: Vec<Entry>,
+    /// The names its Lua 5.1 `module(...)` table was read with.
+    loader_names: Vec<String>,
 }
 
 /// What a name occurrence refers to: a local by its declaration's span, or a global by name.
@@ -169,6 +171,7 @@ impl SymbolIndex {
             index.files.insert(source.id, FileSymbols {
                 path: source.path.to_path_buf(), text: source.text.to_owned(),
                 origin: source.origin.clone(), role: source.role, bundled, library, entries,
+                loader_names: source.bound.loader_names.clone(),
             });
         }
         index
@@ -336,7 +339,7 @@ impl SymbolIndex {
         let moved = |span: Span| Span::new(shift(span.start), shift(span.end));
         let mut parsed = luanalysis_syntax::parse(&text);
         // As the checker read the file, a Lua 5.1 module's chunk included.
-        crate::module_environments::read(&mut parsed, &text);
+        crate::module_environments::read(&mut parsed, &text, &symbols.loader_names);
         let renamed: HashMap<usize, Resolution> = resolutions(&text, &crate::bind::bind(&parsed)).into_iter()
             .map(|(span, resolution, _, _)| (span.start, resolution))
             .collect();

@@ -54,6 +54,16 @@ impl StandardEnvironmentProfile {
         }
     }
 
+    /// How many strings `require` passes the chunk it loads, as its `...`: the module's name, and
+    /// from Lua 5.2 the file it found the chunk in. Lua 5.0's passes none.
+    pub(crate) const fn loader_arguments(self) -> usize {
+        match self {
+            Self::Lua50 => 0,
+            Self::Lua51 | Self::LuaJit => 1,
+            Self::Lua52 | Self::Lua53 | Self::Lua54 | Self::LegacyMinimal | Self::None => 2,
+        }
+    }
+
     /// The module `require` returns for `name` before any file is loaded, as `package.loaded`
     /// (Lua 5.0's `_LOADED`) holds each standard library.
     pub(crate) fn standard_module(self, name: &str) -> Option<StandardModule> {

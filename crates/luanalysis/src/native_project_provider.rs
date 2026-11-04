@@ -582,12 +582,14 @@ impl ProjectRegistry {
         let mut declared = HashSet::default();
         let mut utilities = HashSet::default();
         // The tables of the chunks that call Lua 5.1's `module` and return nothing, which
-        // `require` returns by their names.
-        let module_tables: HashMap<FileId, Vec<String>> = inputs.iter()
+        // `require` returns by their names, or by any for a `module(...)` table.
+        let module_tables: HashMap<FileId, Vec<(String, bool)>> = inputs.iter()
             .filter(|input| !input.syntax.module_environments.is_empty()
                 && !input.syntax.statements.last().is_some_and(|statement| matches!(statement.kind, luanalysis_syntax::StmtKind::Return(_))))
-            .map(|input| (input.id, input.syntax.module_environments.iter().map(|module| module.name.clone()).collect()))
+            .map(|input| (input.id, input.syntax.module_environments.iter().map(|module| (module.name.clone(), module.loader)).collect()))
             .collect();
+        let module_table = |target: &FileId, module: &str| module_tables.get(target)?.iter()
+            .find(|(name, loader)| *loader || name == module).map(|(name, _)| name.clone());
         let mut files: Vec<_> = inputs
             .into_iter()
             .enumerate()
@@ -711,8 +713,10 @@ impl ProjectRegistry {
                 } else {
                     let crate::module_requests::RequireTarget::Static(module) = &call.target else { unreachable!("a static request") };
                     let searched = match dependency.map(|edge|&edge.outcome) {
-                        Some(DependencyOutcome::Resolved(target)) if module_tables.get(target).is_some_and(|tables| tables.contains(module)) => ImportOutcome::ModuleTable(module.clone()),
-                        Some(DependencyOutcome::Resolved(target))=>modules_by_file.get(target).copied().map_or(ImportOutcome::InvalidSource,ImportOutcome::Module),
+                        Some(DependencyOutcome::Resolved(target)) => match module_table(target, module) {
+                            Some(table) => ImportOutcome::ModuleTable(table),
+                            None => modules_by_file.get(target).copied().map_or(ImportOutcome::InvalidSource,ImportOutcome::Module),
+                        },
                         Some(DependencyOutcome::Unresolved(error))=>ImportOutcome::Missing(error.to_string()),
                         Some(DependencyOutcome::Unreadable(error))=>ImportOutcome::Missing(error.to_string()),
                         Some(DependencyOutcome::InvalidSpan)=>ImportOutcome::Missing("Module request has an invalid original source span.".into()),
@@ -743,6 +747,7 @@ impl ProjectRegistry {
             policy,
             imports,
             required_files: Default::default(),
+            loader_arguments: environment_profile.loader_arguments(),
         });
         // Keep the historical type fallback separate from selected standard
         // capabilities. The minimal project loader has its own declaration;

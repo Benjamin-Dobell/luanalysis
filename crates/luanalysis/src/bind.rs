@@ -131,6 +131,9 @@ pub struct BoundFile {
     /// `_G`/`_ENV` write, a `rawset`, or replacing `_G`/`_ENV` itself. Computed
     /// environment keys are unknown effects, not replacements.
     replaced_standard_names: u8,
+    /// [`File::loader_names`]: the names the tree's Lua 5.1 `module(...)` table was read with,
+    /// for reading the source again so.
+    pub loader_names: Vec<String>,
 }
 
 impl BoundFile {
@@ -309,6 +312,7 @@ pub fn bind(file: &File) -> BoundFile {
             modified_assert_intrinsic: false,
             assert_intrinsic_mutations: Vec::new(),
             replaced_standard_names: 0,
+            loader_names: file.loader_names.clone(),
         },
         active: Vec::new(),
     };
