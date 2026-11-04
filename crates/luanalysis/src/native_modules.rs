@@ -16,6 +16,10 @@ use crate::collections::{HashMap, HashSet};
 #[derive(Clone)]
 pub(crate) enum ImportOutcome {
     Module(NativeModuleKey),
+    /// A module whose chunk calls Lua 5.1's `module` with the name `require` loads it by, and
+    /// returns nothing: `require` returns that global table, which `module` stores in
+    /// `package.loaded`.
+    ModuleTable(String),
     /// A module the standard library provides, which `require` returns before searching for a
     /// file; the outcome of that search when the selected library does not declare it.
     Standard(StandardModule, Box<ImportOutcome>),
@@ -248,6 +252,10 @@ impl Checker<'_> {
             ImportOutcome::Module(module)=>match self.engine.require_pack(module,policy) {
                 Ok(pack)=>return Some(self.merged_class_export(pack)),
                 Err(error)=>module_error_message(error).into(),
+            },
+            ImportOutcome::ModuleTable(name)=>{
+                let table = self.native?.global_binding(&name).and_then(|binding| self.engine.global_binding_type(binding).ok());
+                return Some(ValuePack::single(table.unwrap_or(Type::Unknown)));
             },
             // As TypeScript types an unresolved import, the value is `any` once reported.
             ImportOutcome::Missing(message)=>{

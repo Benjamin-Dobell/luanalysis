@@ -132,9 +132,9 @@ impl NativeRegistry {
         };
         match &source.syntax.kind {
             NamedTypeDeclarationKind::Record { flavor, .. } => OwnerScopeRecipe::Original(match flavor {
-                NamedRecordKind::Class => TypeDeclarationKind::Class,
+                // v1's `---@module Name` declares a class: the type of a Lua 5.1 module's table.
+                NamedRecordKind::Class | NamedRecordKind::Module => TypeDeclarationKind::Class,
                 NamedRecordKind::Shape => TypeDeclarationKind::Shape,
-                NamedRecordKind::Module => TypeDeclarationKind::Module,
             }),
             NamedTypeDeclarationKind::Alias { target } => {
                 let mut target = target;
@@ -435,8 +435,7 @@ impl NativeRegistry {
                     (
                         match flavor {
                             NamedRecordKind::Shape => TypeDeclarationKind::Shape,
-                            NamedRecordKind::Class => TypeDeclarationKind::Class,
-                            NamedRecordKind::Module => TypeDeclarationKind::Module,
+                            NamedRecordKind::Class | NamedRecordKind::Module => TypeDeclarationKind::Class,
                         },
                         Some(ObjectDeclarationForm::Record),
                     )

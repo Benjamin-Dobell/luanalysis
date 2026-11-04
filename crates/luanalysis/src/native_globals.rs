@@ -313,7 +313,7 @@ impl ProjectGlobalIndex {
                     && let Some(named) = source.index_named().declarations().iter().find(|named| {
                         named.key.snapshot == owner.snapshot && named.key.index == owner.index
                             && matches!(named.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record {
-                                flavor: luanalysis_syntax::NamedRecordKind::Class, ..
+                                flavor: luanalysis_syntax::NamedRecordKind::Class | luanalysis_syntax::NamedRecordKind::Module, ..
                             })
                     })
                 {

@@ -89,7 +89,7 @@ impl NativeMetatables {
                 let ExprKind::Name(name) = &unparenthesized(target).kind else { return None };
                 let binding = bound.binding_at(name.span.start)?;
                 let mut owners = named.declarations().iter().filter(|declaration| {
-                    matches!(declaration.syntax.kind, NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. })
+                    matches!(declaration.syntax.kind, NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class | NamedRecordKind::Module, .. })
                         && declaration.syntax.attachment.and_then(|span| named.attachment(span)).is_some_and(|attachment| {
                             matches!(&attachment.kind, crate::native_named::RuntimeAttachmentKind::Local { bindings } if bindings.as_slice() == [binding])
                         })
@@ -155,7 +155,7 @@ fn candidate_class(named: &NativeNamed, ty: &TypeExpr) -> Option<NativeNamedKey>
     matches!(
         named.declaration(owner)?.syntax.kind,
         NamedTypeDeclarationKind::Record {
-            flavor: NamedRecordKind::Class,
+            flavor: NamedRecordKind::Class | NamedRecordKind::Module,
             ..
         }
     )

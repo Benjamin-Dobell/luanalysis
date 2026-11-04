@@ -367,6 +367,10 @@ impl NativeRegistry {
             .value(source.value)
             .expect("original runtime store value");
         let value = self.flow_value_type(self.iterator_sources(), &recipe, input, queries);
+        // A Lua 5.1 module's variable widens as a global does (`native_members`).
+        if crate::module_environments::supplied_table(&self.expressions().get(source.receiver).expression) {
+            return Some(queries.base_of_literal(&value));
+        }
         // A prospective original field contract must agree with the literal
         // read from its reached store. Scalar local storage still widens.
         Some(queries.regular_type(&value))

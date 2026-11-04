@@ -119,11 +119,26 @@ pub struct File {
     pub namespace: Option<String>,
     /// EmmyLua Analyzer's `---@using N`: a type name the file writes may also be `N.Name`.
     pub usings: Vec<String>,
+    /// Lua 5.1's `module("name")` statements, as the checker reads them: from each, the rest of
+    /// the chunk's global environment is the global table `name`. The parser leaves this empty;
+    /// the checker fills it in when it reads the statements as fields of that table.
+    pub module_environments: Vec<ModuleEnvironment>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
     /// How the file's annotations were read, as its comments are read again.
     pub options: ParseOptions,
+}
+
+/// [`File::module_environments`]: in `span`, the chunk's free names among `members` are fields
+/// of the global table `name`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleEnvironment {
+    pub name: String,
+    /// From the end of the `module(...)` statement to the next one or the end of the chunk.
+    pub span: Span,
+    /// The fields the chunk stores in the table and those its documented type declares.
+    pub members: Vec<String>,
 }
 
 /// [`File::diagnostic_suppressions`]: no diagnostic beginning in `span` is reported, or, when

@@ -216,20 +216,13 @@ fn fixed_alias_fields_apply_only_to_the_canonical_matching_arguments() {
 }
 
 #[test]
-fn module_semantics_stay_an_explicit_gate() {
-    for source in [
-        "---@module Module\n",
-    ] {
-        let report = check(source);
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "LUA2031"),
-            "{source}\n{:#?}",
-            report.diagnostics
-        );
-    }
+fn a_module_annotation_declares_a_class() {
+    // v1's `---@module Name` is its class tag for a Lua 5.1 module's table (tests/lua51_modules.rs).
+    let source = "---@module Module\n---@field value number\n\n---@type Module\nlocal m\n---@type number\nlocal v = m.value\n";
+    passes(source);
+    let report = check(&source.replace("m.value", "m.other"));
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2339"), "{:#?}", report.diagnostics);
+    assert!(!report.diagnostics.iter().any(|error| error.code == "LUA2031"), "{:#?}", report.diagnostics);
 }
 
 #[test]

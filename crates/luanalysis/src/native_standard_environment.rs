@@ -123,7 +123,7 @@ impl NativeRegistry {
         let declaration = declarations.next()?;
         if declarations.next().is_some() || !declaration.syntax.generics.is_empty()
             || !matches!(declaration.syntax.kind,
-                NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. })
+                NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class | NamedRecordKind::Module, .. })
         {
             return None;
         }

@@ -28,7 +28,7 @@ impl NativeRegistry {
         if !matches!(
             source.syntax.kind,
             NamedTypeDeclarationKind::Record {
-                flavor: NamedRecordKind::Class,
+                flavor: NamedRecordKind::Class | NamedRecordKind::Module,
                 ..
             }
         ) || self

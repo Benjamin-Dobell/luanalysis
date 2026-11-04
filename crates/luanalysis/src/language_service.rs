@@ -522,6 +522,27 @@ fn completions(
                     .and_then(|value| required_parameters(&value, 0, queries));
                 items.push(CompletionItem { insert_text: None, label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None, deprecated });
             }
+            // After Lua 5.1's `module("X")`, the chunk's names are the fields of the table `X` too.
+            if let Some(module) = source.syntax().module_environments.iter()
+                .find(|module| module.span.start <= site.placeholder.start && site.placeholder.start <= module.span.end)
+                && let Some(environment) = source.global_environment()
+                && let Ok(environment) = queries.global_environment_type(environment)
+                && let Ok(table) = queries.table_lookup(&environment, &luanalysis_engine::TableKey::Literal(luanalysis_engine::LuaKey::String(module.name.as_bytes().to_vec())))
+            {
+                for (name, value) in queries.type_members(&table) {
+                    if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
+                    if let Details::Only(label) = &site.details && *label != name { continue; }
+                    let shown = site.details.shown(&name);
+                    let callable = !queries.call_signature_types(&value).is_empty();
+                    let kind = if callable { CompletionKind::Function } else { CompletionKind::Field };
+                    let documentation = member_documentation(project, registry, &table, &name, &value, queries);
+                    let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
+                    let documentation = documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true));
+                    let parameters = callable.then(|| required_parameters(&value, 0, queries)).flatten();
+                    let detail = shown.then(|| describe_native(&value, queries, &mut Vec::new()));
+                    items.push(CompletionItem { insert_text: None, label: name, kind, detail, documentation, parameters, implementation: None, deprecated });
+                }
+            }
             // Listing globals for an editor that resolves their details needs no global's value:
             // their kinds and calls come from their declarations. Typing every global would
             // infer each one's value, the modules it requires included.
@@ -3753,6 +3774,66 @@ mod tests {
         let mut items = Vec::new();
         complete(project, ProjectCheckOptions { environment, ..ProjectCheckOptions::default() }, &mut workspace, file, &site, |found| items = found);
         (original, site, items)
+    }
+
+    /// The completions at the `--[[caret]]` of `focus`, one of `files`.
+    fn completion_buffers(files: &[(&str, &str)], focus: &str) -> Vec<CompletionItem> {
+        use luanalysis_project::{ProjectConfig, ProjectLoadPlan, Resolver};
+        let marker = "--[[caret]]";
+        let root = std::env::temp_dir().join(format!("luanalysis completion buffers {}", std::process::id()));
+        let mut site = None;
+        let overlays: std::collections::HashMap<_, _> = files.iter().map(|(path, text)| {
+            let text = if *path == focus {
+                let offset = text.find(marker).expect("a completion cursor");
+                let found = completion_site(&text.replacen(marker, "", 1), offset).expect("a completion site");
+                let text = found.text.clone();
+                site = Some(found);
+                text
+            } else {
+                (*text).to_owned()
+            };
+            (root.join(path), text)
+        }).collect();
+        let site = site.expect("the focus is one of the files");
+        let resolver = Resolver::new(ProjectConfig::new([root.clone()])).unwrap();
+        let mut workspace = ProjectWorkspace::new();
+        let project = Project::load_plan_with_overlays(&resolver, ProjectLoadPlan { entries: files.iter().map(|(path, _)| root.join(path)).collect(), libraries: Vec::new() },
+            &overlays, |source| workspace.static_require_requests(source));
+        let file = project.file_by_path(&root.join(focus)).unwrap().id;
+        let mut items = Vec::new();
+        let environment = crate::standard_environment::StandardEnvironmentProfile::Lua51;
+        complete(project, ProjectCheckOptions { environment, ..ProjectCheckOptions::default() }, &mut workspace, file, &site, |found| items = found);
+        items
+    }
+
+    const MODULE: &str = "---@module TypeA\nmodule(\"TypeA\")\n\nname = \"a\"\n\nfunction greet() return name end\n";
+
+    #[test]
+    fn a_lua_51_modules_fields_complete_as_names_in_its_chunk_alone() {
+        let labels = |items: Vec<CompletionItem>| items.into_iter().map(|item| item.label).collect::<Vec<_>>();
+        let inside = labels(completion_buffers(&[("moduleA.lua", &format!("{MODULE}--[[caret]]"))], "moduleA.lua"));
+        assert!(inside.iter().any(|label| label == "name") && inside.iter().any(|label| label == "greet"), "{inside:?}");
+        let before = labels(completion_buffers(&[("moduleA.lua", &format!("--[[caret]]\n{MODULE}"))], "moduleA.lua"));
+        assert!(!before.iter().any(|label| label == "name" || label == "greet"), "{before:?}");
+        let other = labels(completion_buffers(&[("moduleA.lua", MODULE), ("B.lua", "--[[caret]]")], "B.lua"));
+        assert!(!other.iter().any(|label| label == "name" || label == "greet") && other.iter().any(|label| label == "TypeA"), "{other:?}");
+        let members = labels(completion_buffers(&[("moduleA.lua", MODULE), ("B.lua", "local a ---@type TypeA\na.--[[caret]]")], "B.lua"));
+        assert!(members.iter().any(|label| label == "name") && members.iter().any(|label| label == "greet"), "{members:?}");
+    }
+
+    #[test]
+    fn a_lua_51_modules_fields_and_table_rename_where_its_chunk_writes_them() {
+        let user = "---@type TypeA\nlocal a\nreturn a.name, TypeA.greet\n";
+        let files = [("moduleA.lua", MODULE), ("B.lua", user)];
+        let renamed = rename_buffers(&files, "B.lua", "name,", Some("title")).unwrap().unwrap();
+        let module: Vec<_> = renamed.occurrences.iter().filter(|(path, ..)| path.ends_with("moduleA.lua")).map(|(_, span, _)| span.start).collect();
+        assert_eq!(module, [MODULE.find("name =").unwrap(), MODULE.rfind("name").unwrap()], "{:?}", renamed.occurrences);
+        assert!(renamed.occurrences.iter().all(|(path, span, _)| &renamed.texts[path][span.start..span.end] == "name"), "{:?}", renamed.occurrences);
+        // The table's name is the string `module` takes; the names read as its fields spell no `TypeA`.
+        let renamed = rename_buffers(&files, "B.lua", "TypeA.greet", Some("TypeB")).unwrap().unwrap();
+        let module: Vec<_> = renamed.occurrences.iter().filter(|(path, ..)| path.ends_with("moduleA.lua")).map(|(_, span, _)| *span).collect();
+        let string = MODULE.find("TypeA\")").unwrap();
+        assert_eq!(module, [luanalysis_syntax::Span::new(string, string + "TypeA".len())], "{:?}", renamed.occurrences);
     }
 
     #[test]

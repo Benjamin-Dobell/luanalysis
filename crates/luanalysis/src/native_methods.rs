@@ -127,7 +127,7 @@ impl NativeMethods {
             if !matches!(
                 declaration.syntax.kind,
                 NamedTypeDeclarationKind::Record {
-                    flavor: NamedRecordKind::Class,
+                    flavor: NamedRecordKind::Class | NamedRecordKind::Module,
                     ..
                 }
             ) {
@@ -182,7 +182,7 @@ impl NativeMethods {
         }
         let mut path_owners: HashMap<ClassPath, Vec<NativeNamedKey>> = HashMap::default();
         for declaration in named.declarations() {
-            if !matches!(declaration.syntax.kind, NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. }) { continue; }
+            if !matches!(declaration.syntax.kind, NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class | NamedRecordKind::Module, .. }) { continue; }
             let Some(attachment) = declaration.syntax.attachment.and_then(|span| named.attachment(span)) else { continue };
             if let RuntimeAttachmentKind::Assignment { targets } = &attachment.kind
                 && let [target] = targets.as_slice()
@@ -206,7 +206,7 @@ impl NativeMethods {
                     != crate::native_types::TypeNameResolution::Missing { continue; }
                 let Some(owner) = named.sole_owner(name) else { continue };
                 if !matches!(named.declaration(owner).expect("original member owner").syntax.kind,
-                    NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. } | NamedTypeDeclarationKind::Alias { .. }) { continue; }
+                    NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class | NamedRecordKind::Module, .. } | NamedTypeDeclarationKind::Alias { .. }) { continue; }
                 let key = match &field.key {
                     luanalysis_syntax::TypeFieldKey::Named(name) => OwnerMemberKey::Fixed(LuaKey::String(name.text.as_bytes().to_vec())),
                     luanalysis_syntax::TypeFieldKey::Indexed(ty) => crate::native_tables::literal_type_key(ty).map_or_else(|| OwnerMemberKey::Domain((**ty).clone()), OwnerMemberKey::Fixed),
@@ -455,7 +455,7 @@ fn collect_written_local_owners(
                         ) { continue; }
                     }
                     if !alias && !matches!(declaration.syntax.kind,
-                        NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. }
+                        NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class | NamedRecordKind::Module, .. }
                     ) { continue; }
                     let binding = bound.binding_at(name.span.start).expect("original annotated local");
                     let candidates = owners.entry(binding).or_default();

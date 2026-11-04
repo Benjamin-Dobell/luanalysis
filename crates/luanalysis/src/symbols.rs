@@ -334,7 +334,9 @@ impl SymbolIndex {
             before.fold(offset, |offset, edit| offset + name.len() - (edit.end - edit.start))
         };
         let moved = |span: Span| Span::new(shift(span.start), shift(span.end));
-        let parsed = luanalysis_syntax::parse(&text);
+        let mut parsed = luanalysis_syntax::parse(&text);
+        // As the checker read the file, a Lua 5.1 module's chunk included.
+        crate::module_environments::read(&mut parsed, &text);
         let renamed: HashMap<usize, Resolution> = resolutions(&text, &crate::bind::bind(&parsed)).into_iter()
             .map(|(span, resolution, _, _)| (span.start, resolution))
             .collect();

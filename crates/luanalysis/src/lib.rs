@@ -26,6 +26,7 @@ pub mod bind;
 mod builtins;
 mod diagnostic_types;
 mod module_map;
+mod module_environments;
 mod module_requests;
 pub mod flow;
 pub mod formatting;
@@ -375,7 +376,8 @@ pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> Ch
 /// Checks original Lua with explicit source declaration policies. Missing
 /// contracts keep their inferred/contextual type regardless of strict reporting.
 pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
-    let file = luanalysis_syntax::parse_with_options(source, luanalysis_syntax::ParseOptions { emmylua: options.emmylua_syntax, decay_optionals: options.decay_optionals, luajit: false }, || {});
+    let mut file = luanalysis_syntax::parse_with_options(source, luanalysis_syntax::ParseOptions { emmylua: options.emmylua_syntax, decay_optionals: options.decay_optionals, luajit: false }, || {});
+    module_environments::read(&mut file, source);
     if file.has_lua_syntax_errors() {
         return CheckReport {
             diagnostics: file

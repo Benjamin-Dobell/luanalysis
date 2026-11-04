@@ -34,7 +34,7 @@ impl NativeClassDefinitions {
                     matches!(
                         source.syntax.kind,
                         NamedTypeDeclarationKind::Record {
-                            flavor: NamedRecordKind::Class,
+                            flavor: NamedRecordKind::Class | NamedRecordKind::Module,
                             ..
                         }
                     ) && source.syntax.attachment.is_some()
@@ -110,7 +110,7 @@ impl NativeRegistry {
         if !matches!(
             source.syntax.kind,
             NamedTypeDeclarationKind::Record {
-                flavor: NamedRecordKind::Class,
+                flavor: NamedRecordKind::Class | NamedRecordKind::Module,
                 ..
             }
         ) {

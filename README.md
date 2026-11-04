@@ -847,6 +847,18 @@ file whose path ends with the module's path under a template, the shortest such 
 `src/` and `lib/` checked, `require("ge_tts.TableUtils")` is `lib/ge_tts/TableUtils.ttslua`.
 `--path-strict` (or LuaLS's `runtime.pathStrict`) leaves it unresolved instead.
 
+Lua 5.1's `module("name")` makes the global table `name` the rest of its chunk's global
+environment, as Luanalysis v1 read it. The names the chunk assigns after it, in its statements and
+in the functions it defines there, are that table's fields, not globals; one of those names reads
+its field, and any other name a global, as `module("name", package.seeall)` lets it. `---@module
+Name` above the call names the table's type, a class whose members are those fields, so another
+file's `---@type Name` sees them; elsewhere it declares a class, as `---@class` does. A field's
+literal type widens as a global's does (`count = 0` is a `number`). `require("name")` returns the
+table when the chunk returns nothing, and `_M`, `_NAME` and `_PACKAGE` are the table, its name and
+`""`. As v1 did, Luanalysis reads a chunk calling `module` so at any Lua version, although only
+Lua 5.1 and LuaJIT declare it. Only a name that is a Lua name is read so: a dotted name stores the
+table in another table's field, and `module(...)` is named by the `require` that loads its chunk.
+
 A checked directory's LuaLS configuration, `.luarc.json` (or `.luarc.jsonc`), applies where
 options do not decide, in its flat (`"runtime.version"`) or nested form:
 
@@ -1246,7 +1258,7 @@ Reported elsewhere, as TypeScript reports them:
   again.
 
 `crates/luanalysis-fixtures/tests/v1_cases.rs` checks all 99 of Luanalysis for IntelliJ's own
-cases: 67 match it, and each difference in the other 32 is listed, with its reason, in
+cases: 70 match it, and each difference in the other 29 is listed, with its reason, in
 `tests/legacy/v2-differences.txt`.
 
 More permissive:

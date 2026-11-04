@@ -581,6 +581,13 @@ impl ProjectRegistry {
         let mut classes = HashSet::default();
         let mut declared = HashSet::default();
         let mut utilities = HashSet::default();
+        // The tables of the chunks that call Lua 5.1's `module` and return nothing, which
+        // `require` returns by their names.
+        let module_tables: HashMap<FileId, Vec<String>> = inputs.iter()
+            .filter(|input| !input.syntax.module_environments.is_empty()
+                && !input.syntax.statements.last().is_some_and(|statement| matches!(statement.kind, luanalysis_syntax::StmtKind::Return(_))))
+            .map(|input| (input.id, input.syntax.module_environments.iter().map(|module| module.name.clone()).collect()))
+            .collect();
         let mut files: Vec<_> = inputs
             .into_iter()
             .enumerate()
@@ -598,7 +605,7 @@ impl ProjectRegistry {
                     let key = NativeTypeDeclarationKey { snapshot: declaration.key.snapshot, index: declaration.key.index };
                     names.names.entry(declaration.syntax.name.text.clone()).or_default().push(key);
                     if input.standard_library == Some(crate::standard_environment::StandardLibrarySource::Utility) { utilities.insert(key); }
-                    if matches!(declaration.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class, .. }) {
+                    if matches!(declaration.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class | luanalysis_syntax::NamedRecordKind::Module, .. }) {
                         classes.insert(key);
                         if input.role == SourceRole::Declaration { declared.insert(key); }
                     }
@@ -702,7 +709,9 @@ impl ProjectRegistry {
                 let outcome = if let Some(outcome) = classify_unresolved(call) {
                     outcome
                 } else {
+                    let crate::module_requests::RequireTarget::Static(module) = &call.target else { unreachable!("a static request") };
                     let searched = match dependency.map(|edge|&edge.outcome) {
+                        Some(DependencyOutcome::Resolved(target)) if module_tables.get(target).is_some_and(|tables| tables.contains(module)) => ImportOutcome::ModuleTable(module.clone()),
                         Some(DependencyOutcome::Resolved(target))=>modules_by_file.get(target).copied().map_or(ImportOutcome::InvalidSource,ImportOutcome::Module),
                         Some(DependencyOutcome::Unresolved(error))=>ImportOutcome::Missing(error.to_string()),
                         Some(DependencyOutcome::Unreadable(error))=>ImportOutcome::Missing(error.to_string()),
@@ -710,7 +719,6 @@ impl ProjectRegistry {
                         None=>ImportOutcome::Missing("Static require request was not resolved by this project's source host.".into()),
                     };
                     // `package.loaded` holds the standard libraries before `require` searches.
-                    let crate::module_requests::RequireTarget::Static(module) = &call.target else { unreachable!("a static request") };
                     match environment_profile.standard_module(module) {
                         Some(standard) => ImportOutcome::Standard(standard, Box::new(searched)),
                         None => searched,

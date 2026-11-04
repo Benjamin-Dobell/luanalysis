@@ -17,16 +17,6 @@ COMPLETION missing completion "sayHello"
 COMPLETION missing completion "close"
 COMPLETION missing completion "const"
 
-## TestModule/test_module_type
-# Not implemented: Lua 5.1's `module()` environments and v1's `---@module` (docs:
-# legacy-deficiencies D3).
-COMPLETION missing completion "name"
-
-## TestModule/test_module_members_visibility
-# Not implemented: Lua 5.1's `module()` environments and v1's `---@module` (docs:
-# legacy-deficiencies D3).
-COMPLETION expected at least one of ["myFieldName", "myFunction"] to be absent
-
 ## DuplicateTypeTest/testDuplicateTypes
 # Repeated `---@class` declarations merge, as TypeScript merges interface declarations
 # (crates/luanalysis/tests/merged_classes.rs).
@@ -244,12 +234,6 @@ MISSING lambda_class.lua:74:1 Error "parentLambdaClassWithStatic__static.meth"..
 MISSING lambda_class.lua:76:1 Error "lambdaClassWithStatic.staticMethod()"
 MISSING lambda_class.lua:78:1 Error "parentLambdaClassWithStatic.staticMethod"...
 MISSING lambda_class.lua:79:1 Error "parentLambdaClassWithStatic__static.stat"...
-
-## TypeSafetyTest/testModules
-# Not implemented: Lua 5.1's `module()` environments and v1's `---@module` (docs:
-# legacy-deficiencies D3).
-EXTRA moduleA.lua:1:12 LUA2031 "ModuleA"
-EXTRA moduleA_reference.lua:6:9 TS2339 "module_scoped_var"
 
 ## TypeSafetyTest/testModuleSupportUnavailableLua53
 # An undeclared name is TS2304 alone; calling it is not an error as well (legacy_semantics.rs:

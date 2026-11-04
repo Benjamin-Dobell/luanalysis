@@ -377,7 +377,8 @@ impl ProjectWorkspace {
         }
         // As TypeScript binds the tree its parser recovers, a source with syntax errors is bound
         // too, so the language service answers in it while it is being typed.
-        let syntax = luanalysis_syntax::parse_with_options(&source.source, options, crate::project_check::unwind_if_cancelled);
+        let mut syntax = luanalysis_syntax::parse_with_options(&source.source, options, crate::project_check::unwind_if_cancelled);
+        crate::module_environments::read(&mut syntax, &source.source);
         let bound = Some(Arc::new(bind::bind(&syntax)));
         // Revisions are numbered across the workspaces that share them.
         let revision = match &self.shared {

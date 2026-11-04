@@ -700,7 +700,7 @@ impl NativeNamed {
             [owner] => Some(*owner),
             owners @ [first, ..] if owners.iter().all(|&owner| self.declaration(owner).is_some_and(|source| matches!(
                 source.syntax.kind,
-                NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class, .. }
+                NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class | luanalysis_syntax::NamedRecordKind::Module, .. }
             ))) => Some(*first),
             _ => None,
         }

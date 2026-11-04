@@ -409,6 +409,15 @@ impl NativeRegistry {
                 // nested table. Its constructor-time value view omits later
                 // stores; ordinary flow reads still use that reached view.
                 let ty = queries.runtime_table_schema(&ty).unwrap_or(ty);
+                // A Lua 5.1 module's variable (`count = 0` after `module("X")`) is a field of
+                // its table, which the chunk writes as a global: its literal widens as a
+                // global's does.
+                if let OriginalMemberOrigin::AssignmentField(target) = input.origin
+                    && let ExprKind::Field { base, .. } = &self.expressions().get(self.expressions().key_for_span(target)).expression.kind
+                    && crate::module_environments::supplied_table(base)
+                {
+                    return queries.base_of_literal(&ty);
+                }
                 // Original inferred Lua fields retain their literal contract.
                 // This leaves functions, generics and written contexts alone;
                 // it does not impose const/readonly semantics on the member.

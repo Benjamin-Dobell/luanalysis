@@ -376,7 +376,7 @@ impl NativeRegistry {
         // written generic keys. They are not class type-argument formals.
         for source in named.declarations() {
             if matches!(source.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record {
-                flavor: luanalysis_syntax::NamedRecordKind::Class | luanalysis_syntax::NamedRecordKind::Shape, ..
+                flavor: luanalysis_syntax::NamedRecordKind::Class | luanalysis_syntax::NamedRecordKind::Module | luanalysis_syntax::NamedRecordKind::Shape, ..
             }) {
                 types.register_self_parameter(source.key, source.syntax.name.span);
             }
