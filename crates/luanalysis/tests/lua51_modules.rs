@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf, process::{Command, Output}, sync::atomic::{AtomicU6
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, Vec<String>);
 impl Fixture {
     fn new(files: &[(&str, &str)]) -> Self {
         let root = std::env::temp_dir().join(format!("luanalysis lua51 modules {} {}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -15,15 +15,12 @@ impl Fixture {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, source).unwrap();
         }
-        Self(root)
+        Self(root, files.iter().map(|(path, _)| (*path).to_owned()).collect())
     }
     fn check(&self, version: &str) -> String {
         let output: Output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&self.0)
-            .args(["check", "--lua-version", version, "--module-root", ".", "--dump-types", "."]).output().unwrap();
-        let report = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-        // The files' paths, relative to the fixture.
-        let root = fs::canonicalize(&self.0).unwrap();
-        report.replace(&format!("{}/", root.display()), "").replace(&format!("{}/", self.0.display()), "")
+            .args(["check", "--lua-version", version, "--module-root", ".", "--dump-types"]).args(&self.1).output().unwrap();
+        format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
     }
 }
 impl Drop for Fixture {
