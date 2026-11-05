@@ -1115,34 +1115,79 @@ synchronization.lib legacy_stdio_definitions.lib`, compiling with `/MT` and defi
 Luanalysis's checker is built on Bun's Rust port of the TypeScript compiler's checker, and it
 checks a project's files in parallel.
 
-Checking [lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own
-repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max (31 October to
-4 November 2026):
+### Project checks
 
-| Checker | Wall time | CPU time | Peak memory |
+These checkers analyzed [lua-language-server](https://github.com/LuaLS/lua-language-server)
+3.19.2's own repository (434 Lua files, 106,789 lines), using Lua 5.4 on an Apple M1 Max.
+The Luanalysis figures are from 5 November 2026 at `d450d65c`; the other checkers were measured from
+31 October to 4 November:
+
+| Checker | Wall time | CPU time | Peak RSS |
 | --- | --- | --- | --- |
 | lua-language-server 3.19.2 `--check` | 17.5 s | 17.2 s | 732 MB |
 | EmmyLua Analyzer 0.25.1 | 0.88 s | 2.0 s | 158 MB |
 | EmmyLua Analyzer main (`1b6df85`) | 9.0 s | 8.7 s | 169 MB |
-| Luanalysis, one thread | 2.1 s | 2.1 s | 283 MB |
-| Luanalysis, eight threads | 0.88 s | 3.4 s | 387 MB |
+| Luanalysis, one thread | 2.05 s | 2.04 s | 283 MB |
+| Luanalysis, eight threads | 0.98 s | 3.61 s | 386 MB |
 
-These are medians of five fresh-process runs after one warmup, using release builds; EmmyLua
+These are medians of five runs in fresh processes after one warmup, using release builds; EmmyLua
 Analyzer main is an unreleased commit built from source without changes. CPU time includes user
-and system time, and peak memory is resident set size. Every checker receives
-`script/`, `test/`, `tools/` and the four root Lua files. LuaLS uses its repository
+and system time; peak RSS is the maximum resident set size, and MB is decimal megabytes. Every
+checker receives `script/`, `test/`, `tools/` and the four root Lua files. LuaLS uses its repository
 configuration with Lua 5.4 and `lua/` (a symlink to `script/`) and `make/` excluded, so it checks
 those same 434 files. The checkers report different diagnostics. Other development work was
 running on the machine.
 
-On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), Luanalysis takes 0.09 s and 62 MB,
-EmmyLua Analyzer 0.25.1 takes 0.17 s and 25 MB, and its main branch takes 0.25 s and 31 MB.
+The 5 November changes did not establish a consistent speedup on this corpus. In five paired
+runs, wall time with eight workers was 0.92 s before and 0.98 s after; a separate ten-pair repeat gave
+0.97 s before and 0.94 s after. The larger improvements are in the stress cases below.
 
-Diagnostics after an edit in the language server, from the change to the new diagnostics. Each
-edit adds or removes a type error in the file's first local function, once the server has checked
-the edit before it, and the figures are medians of 20 edits:
+On EmmyLua Analyzer's own test cases (508 files, 4,080 lines), the 2–4 November measurements
+were 0.09 s and 62 MB for Luanalysis, 0.17 s and 25 MB for EmmyLua Analyzer 0.25.1, and
+0.25 s and 31 MB for its main branch.
 
-| Project | Edited file | Whole check | Edit to diagnostics | Server peak memory |
+### Large files and retained memory
+
+The [5 November performance changes](https://github.com/Benjamin-Dobell/luanalysis/commit/d450d65ccfb1b560cba40840a97cebf30919bd23)
+share immutable annotation syntax between workers and index source lookups. The following
+synthetic Lua 5.4 workloads compare `0c332df3` with `d450d65c` on the same machine. Each has
+one warmup and five measured runs in fresh processes per version, alternating their order:
+
+| Workload | Workers | Wall time, before → after | CPU time, before → after | Peak RSS, before → after |
+| --- | --- | --- | --- | --- |
+| 4,000 functions in one file | 1 | 0.218 → 0.139 s | 0.213 → 0.135 s | 64 → 63 MB |
+| 16,000 conditional aliases in one file | 1 | 1.845 → 0.597 s | 1.804 → 0.590 s | 226 → 212 MB |
+| 800 conditional aliases with record branches, across eight files | 8 | 0.362 → 0.321 s | 0.734 → 0.593 s | 512 → 333 MB |
+
+The simple aliases use `T extends string and number or boolean`. The case with eight files has
+100 aliases per file, each with 20 record fields in its true branch, each field itself holding
+`value: T`, `label: string` and `count: number`. It uses 35% less peak memory; the
+16,000-alias case uses 67% less CPU. Across all 15 tested CLI workloads, including the real
+projects, the complete diagnostic report matched between revisions in all 180 runs.
+
+In a separate language server test with 4,000 documented generic functions in one file,
+requests targeted the last function's generic parameter, which has three occurrences. Finding
+references took 44 ms before and 20 ms after; rename took 65 ms and 30 ms. These are medians
+of five requests of each kind after one warmup of each kind, in one server session per version,
+with the buffer unchanged during timing. Returned occurrences and edits were checked, and
+applying the rename preserved diagnostics.
+
+Completed requests also release their cancellation state. In a workspace with one small file,
+100,000 document symbol requests, each followed by a cancellation after its response, grew the older
+server's memory footprint from 7.75 MB to 15.73 MB. The new server went from 7.23 MB to
+7.34 MB and stayed at 7.34 MB from 25,000 through 100,000 requests. Every response matched
+between versions. These measurements use macOS physical footprint, including compressed
+pages; the CLI tables use peak RSS. This test isolates retained request state. Embedded hosts
+can also release retained analysis state with `ProjectWorkspace::clear`.
+
+### Editor response time
+
+The following edit measurements were recorded on 4 November 2026. Latency runs from sending
+the change to receiving the new diagnostics. Each edit adds or removes a type error in the
+file's first local function, once the server has checked the edit before it, and the figures
+are medians of 20 edits:
+
+| Project | Edited file | Whole check | Edit to diagnostics | Server peak RSS |
 | --- | --- | --- | --- | --- |
 | lua-language-server (434 files, 106,789 lines) | 999 lines | 0.9 s | 31 ms | 426 MB |
 | Another project (136 files, 33,083 lines) | 2,522 lines | 0.5 s | 18 ms | 263 MB |
@@ -1155,18 +1200,19 @@ or looked at last keep what they published. In a file of 32 KB or more, the func
 around an edit is checked first and its diagnostics published with the rest of the file's from its
 last check, as TypeScript's language service reports the region an editor shows first; the whole
 file's follow, for the 2,522-line file about 200 ms later. The files above are among the largest.
-Editing every source file of each project in turn, in one session, four edits each:
+Editing source files of each project in turn, in one session, four edits each:
 
 | Project | Median | 90th percentile | Slowest | First edit after opening, median |
 | --- | --- | --- | --- | --- |
-| lua-language-server (434 files) | 7 ms | 16 ms | 152 ms | 8 ms |
+| lua-language-server (433 of 434 files) | 7 ms | 16 ms | 152 ms | 8 ms |
 | Another project (99 source files of its 136) | 10 ms | 24 ms | 217 ms | 11 ms |
 
-An edit that changes what a widely used module or class exposes checks its users as well, and costs
-up to one whole check.
+In that LuaLS sweep, the benchmark failed for `test/type_inference/common.lua`; the table uses
+the 433 completed files. An edit that changes what a widely used module or class exposes
+checks its users as well, and costs up to one whole check.
 
-Member completions in a 1,546-line file of that 136-file project, with the buffer changed before
-every request and background checking active:
+Member completions measured on 2 November 2026 in a 1,546-line file of that 136-file project,
+with the buffer changed before every request and background checking active:
 
 | Completion item details | Median | 95th percentile |
 | --- | --- | --- |
