@@ -216,6 +216,8 @@ pub(super) enum NamedRegistryError {
 pub(super) struct NativeNamed {
     snapshot: u32,
     declarations: Vec<NamedDeclarationSource>,
+    /// Record owners of each original documentation group, in declaration order.
+    record_contexts: HashMap<(usize, usize), Vec<NativeNamedKey>>,
     names: HashMap<String, Vec<NativeNamedKey>>,
     syntax_keys: HashMap<NamedTypeDeclarationId, NativeNamedKey>,
     members: Vec<NamedMemberSource>,
@@ -242,6 +244,7 @@ impl NativeNamed {
         let mut result = Self {
             snapshot,
             declarations: Vec::new(),
+            record_contexts: HashMap::default(),
             names: HashMap::default(),
             syntax_keys: HashMap::default(),
             members: Vec::new(),
@@ -271,6 +274,10 @@ impl NativeNamed {
                 .entry(declaration.name.text.clone())
                 .or_default()
                 .push(key);
+            if matches!(declaration.kind, NamedTypeDeclarationKind::Record { .. }) {
+                let group = declaration.group_span;
+                result.record_contexts.entry((group.start, group.end)).or_default().push(key);
+            }
             let parent = enclosing_function(declaration.name.span, functions);
             result.declarations.push(NamedDeclarationSource {
                 key,
@@ -706,14 +713,7 @@ impl NativeNamed {
         }
     }
     pub(super) fn documentation_contexts(&self, group: Span) -> Vec<NativeNamedKey> {
-        self.declarations
-            .iter()
-            .filter(|source| {
-                source.syntax.group_span == group
-                    && matches!(source.syntax.kind, NamedTypeDeclarationKind::Record { .. })
-            })
-            .map(|source| source.key)
-            .collect()
+        self.record_contexts.get(&(group.start, group.end)).cloned().unwrap_or_default()
     }
     pub(super) fn documentation_contexts_at(&self, span: Span) -> Vec<NativeNamedKey> {
         self.declarations

@@ -987,9 +987,17 @@ impl NativeRegistry {
     /// satisfies its parameter's constraint.
     fn check_type_parameter_defaults(&self, queries: &mut dyn TypeQueries) {
         let sources = self.types.parameter_sources();
+        if !sources.iter().any(|source| source.semantic_self.is_none() && source.default.is_some()) { return }
+        // These are the original declaration lists, before merged classes replace their scopes'
+        // parameter keys. Looking through every source's parameters for each sibling was quadratic
+        // even when each unrelated alias declared only one parameter.
+        let mut by_owner = HashMap::<_, Vec<_>>::default();
+        for source in sources.iter().filter(|source| source.semantic_self.is_none()) {
+            by_owner.entry(source.owner).or_default().push(source);
+        }
         let mut diagnostics = Vec::new();
         for source in sources.iter().filter(|source| source.semantic_self.is_none()) {
-            let siblings = || sources.iter().filter(move |sibling| sibling.owner == source.owner && sibling.semantic_self.is_none());
+            let siblings = || by_owner[&source.owner].iter().copied();
             let Some(default) = &source.default else {
                 if siblings().any(|sibling| sibling.order < source.order && sibling.default.is_some()) {
                     diagnostics.push(Diagnostic {

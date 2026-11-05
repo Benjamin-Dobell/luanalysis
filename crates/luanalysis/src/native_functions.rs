@@ -156,7 +156,7 @@ pub(super) struct NativeRegistry {
     /// The recipes its types started from (`SourceRecipes::type_scopes` and its kin).
     type_scope_recipes: std::sync::Arc<Vec<TypeScopeRecipe>>,
     named_scope_recipes: std::sync::Arc<Vec<super::native_named::NamedGenericScopeRecipe>>,
-    annotation_type_recipes: std::sync::Arc<Vec<luanalysis_syntax::AnnotationDeclaration>>,
+    annotation_type_recipes: std::sync::Arc<Vec<std::sync::Arc<luanalysis_syntax::AnnotationDeclaration>>>,
     expressions: NativeExpressions,
     packs: std::sync::Arc<NativePacks>,
     flow: NativeFlowSources,
@@ -221,7 +221,7 @@ pub(crate) struct SourceRecipeParts {
     signatures: std::sync::Arc<super::native_signatures::NativeSignatures>,
     type_scopes: std::sync::Arc<Vec<TypeScopeRecipe>>,
     named_scopes: std::sync::Arc<Vec<super::native_named::NamedGenericScopeRecipe>>,
-    annotation_types: std::sync::Arc<Vec<luanalysis_syntax::AnnotationDeclaration>>,
+    annotation_types: std::sync::Arc<Vec<std::sync::Arc<luanalysis_syntax::AnnotationDeclaration>>>,
     /// What a registry derives from these recipes alone, built by the first registry of this
     /// revision and shared by the later ones.
     derived: std::sync::Arc<std::sync::OnceLock<DerivedRecipes>>,
@@ -287,7 +287,7 @@ impl SourceRecipes {
             signatures: std::sync::Arc::new(signatures),
             type_scopes: std::sync::Arc::new(type_scopes),
             named_scopes: std::sync::Arc::new(named_scopes),
-            annotation_types: std::sync::Arc::new(luanalysis_syntax::annotation_types(file)),
+            annotation_types: std::sync::Arc::new(luanalysis_syntax::annotation_types(file).into_iter().map(std::sync::Arc::new).collect()),
             snapshot,
             functions: std::sync::Arc::new(functions),
             function_names: std::sync::Arc::new(function_names),
@@ -367,7 +367,7 @@ impl NativeRegistry {
             snapshot,
             (*recipes.type_scopes).clone(),
             (*recipes.named_scopes).clone(),
-            (*recipes.annotation_types).clone(),
+            &recipes.annotation_types,
         );
         for (function,signature) in recipes.signatures.implementation_scopes(functions) {
             types.attach_signature_scope(function,signature);
@@ -1313,7 +1313,7 @@ impl NativeRegistry {
         for (index, source) in self.types.annotations().iter().enumerate() {
             let Some(context) = *source.context.borrow() else { continue };
             let key = luanalysis_engine::NativeAnnotationKey { snapshot: self.snapshot, index: index as u32 };
-            let pieces = match &source.syntax {
+            let pieces = match source.syntax.as_ref() {
                 luanalysis_syntax::AnnotationDeclaration::Conditional(_) => [Some(AnnotationPiece::True), Some(AnnotationPiece::False)],
                 luanalysis_syntax::AnnotationDeclaration::Mapped(mapped) => [Some(AnnotationPiece::Template), mapped.name.as_ref().map(|_| AnnotationPiece::Name)],
             };
@@ -3470,7 +3470,7 @@ impl NativeTypeProvider for NativeRegistry {
         use luanalysis_engine::AnnotationPiece;
         use luanalysis_syntax::AnnotationDeclaration;
         let Some(source) = self.types.annotation(key) else { return queries.error_type() };
-        let syntax = match (&source.syntax, piece) {
+        let syntax = match (source.syntax.as_ref(), piece) {
             (AnnotationDeclaration::Conditional(conditional), AnnotationPiece::True) => &conditional.yes,
             (AnnotationDeclaration::Conditional(conditional), AnnotationPiece::False) => &conditional.no,
             (AnnotationDeclaration::Mapped(mapped), AnnotationPiece::Template) => &mapped.ty,

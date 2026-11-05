@@ -102,6 +102,8 @@ pub(super) struct NativeTypes {
     metadata_epochs: Vec<Rc<Cell<u64>>>,
     /// The conditional and mapped types of the documentation comments, by `NativeAnnotationKey`.
     annotations: Vec<AnnotationSource>,
+    /// True-branch spans, indexed so a generic reference does not scan every annotation.
+    conditional_true_regions: ConditionalTrueRegions,
     /// Those that declare type parameters.
     scoped_annotations: Vec<u32>,
     /// The type parameter that each `infer P` and mapped type's `[P in K]` declares, by the
@@ -146,7 +148,9 @@ impl AnnotationContext {
 /// template and `as` clause) are lowered when first read, in the context that lowered the rest
 /// of it.
 pub(super) struct AnnotationSource {
-    pub syntax: AnnotationDeclaration,
+    /// Immutable syntax shared across workers; the context and lowered flags below belong
+    /// to this checker. Copying the syntax here duplicated whole conditional branches.
+    pub syntax: std::sync::Arc<AnnotationDeclaration>,
     /// The type parameters it declares: a conditional type's `infer` ones (one declared twice is
     /// one), a mapped type's key.
     parameters: Vec<(String, NativeTypeParameterKey)>,
@@ -165,6 +169,55 @@ impl AnnotationSource {
     fn region(&self, span: Span) -> Option<Span> {
         if self.parameters.is_empty() { return None }
         self.regions.iter().copied().find(|region| region.start <= span.start && span.end <= region.end)
+    }
+}
+
+struct ConditionalTrueRegion {
+    span: Span,
+    annotation: usize,
+    /// Maximum end of the balanced subtree whose root is this entry.
+    max_end: usize,
+}
+
+/// A balanced interval tree stored in source-start order. Each slice's middle entry is its root;
+/// no child pointers are needed. It also handles overlapping and duplicate source spans.
+struct ConditionalTrueRegions(Vec<ConditionalTrueRegion>);
+
+impl ConditionalTrueRegions {
+    fn new(regions: impl IntoIterator<Item = (Span, usize)>) -> Self {
+        let mut entries: Vec<_> = regions.into_iter().map(|(span, annotation)| ConditionalTrueRegion {
+            span, annotation, max_end: span.end,
+        }).collect();
+        entries.sort_by_key(|entry| (entry.span.start, entry.span.end, entry.annotation));
+        fn prepare(entries: &mut [ConditionalTrueRegion]) -> usize {
+            if entries.is_empty() { return 0 }
+            let middle = entries.len() / 2;
+            let (left, rest) = entries.split_at_mut(middle);
+            let (root, right) = rest.split_first_mut().unwrap();
+            root.max_end = root.span.end.max(prepare(left)).max(prepare(right));
+            root.max_end
+        }
+        prepare(&mut entries);
+        Self(entries)
+    }
+
+    fn enclosing(&self, span: Span) -> Vec<usize> {
+        fn visit(entries: &[ConditionalTrueRegion], span: Span, found: &mut Vec<usize>) {
+            if entries.is_empty() { return }
+            let middle = entries.len() / 2;
+            let root = &entries[middle];
+            if root.max_end < span.end { return }
+            visit(&entries[..middle], span, found);
+            if root.span.start <= span.start {
+                if span.end <= root.span.end { found.push(root.annotation); }
+                visit(&entries[middle + 1..], span, found);
+            }
+        }
+        let mut found = Vec::new();
+        visit(&self.0, span, &mut found);
+        // Constraint order is the original annotation order, including when intervals overlap.
+        found.sort_unstable();
+        found
     }
 }
 
@@ -270,7 +323,7 @@ impl NativeTypes {
         snapshot: u32,
         recipes: Vec<TypeScopeRecipe>,
         named: Vec<NamedGenericScopeRecipe>,
-        annotations: Vec<AnnotationDeclaration>,
+        annotations: &[std::sync::Arc<AnnotationDeclaration>],
     ) -> Self {
         let mut result = Self {
             snapshot,
@@ -280,6 +333,10 @@ impl NativeTypes {
             diagnostics: Vec::new(),
             metadata_epochs: vec![Rc::new(Cell::new(0))],
             annotations: Vec::new(),
+            conditional_true_regions: ConditionalTrueRegions::new(annotations.iter().enumerate().filter_map(|(index, syntax)| {
+                let AnnotationDeclaration::Conditional(conditional) = syntax.as_ref() else { return None };
+                Some((conditional.yes.span, index))
+            })),
             scoped_annotations: Vec::new(),
             parameter_declarations: HashMap::default(),
             lowering_pieces: Cell::new(0),
@@ -369,9 +426,9 @@ impl NativeTypes {
             );
         }
         // After every written generic, so that their keys do not depend on these.
-        for (index, syntax) in annotations.into_iter().enumerate() {
+        for (index, syntax) in annotations.iter().enumerate() {
             let index = u32::try_from(index).expect("annotation type index fits in u32");
-            let (declarations, regions): (Vec<(Name, Option<TypeExpr>)>, Vec<Span>) = match &syntax {
+            let (declarations, regions): (Vec<(Name, Option<TypeExpr>)>, Vec<Span>) = match syntax.as_ref() {
                 AnnotationDeclaration::Conditional(conditional) => (
                     conditional.infer.iter().map(|declaration| (declaration.name.clone(), declaration.constraint.clone())).collect(),
                     vec![conditional.extends, conditional.yes.span],
@@ -386,7 +443,7 @@ impl NativeTypes {
                 regions,
                 context: RefCell::new(None),
                 lowered: Cell::new([false; 2]),
-                syntax,
+                syntax: std::sync::Arc::clone(syntax),
             };
             if declarations.is_empty() {
                 result.annotations.push(source);
@@ -458,6 +515,11 @@ impl NativeTypes {
     /// Every conditional and mapped type of the documentation comments.
     pub(super) fn annotations(&self) -> &[AnnotationSource] {
         &self.annotations
+    }
+
+    /// Every conditional whose true branch contains `span`, in original declaration order.
+    pub(super) fn enclosing_true_conditionals(&self, span: Span) -> impl Iterator<Item = &AnnotationSource> {
+        self.conditional_true_regions.enclosing(span).into_iter().map(|index| &self.annotations[index])
     }
 
     /// Whether a piece of a conditional or mapped type is being lowered, which another type's
@@ -784,5 +846,48 @@ fn context_snapshot(context: NativeTypeContext) -> u32 {
         NativeTypeContext::NamedType(key) => key.snapshot,
         NativeTypeContext::Signature(key) => key.snapshot,
         NativeTypeContext::Annotation(key) => key.snapshot,
+    }
+}
+
+#[cfg(test)]
+mod conditional_region_tests {
+    use super::*;
+
+    #[test]
+    fn indexed_true_branches_match_the_original_scan_at_every_source_boundary() {
+        let text = "---@alias Nested<T> (T extends string and number or boolean) extends number and (T extends string and { [P in keyof T]: T[P] } or nil) or (T extends number and T or nil)\n---@alias Other<T> T extends { value: T extends string and T or nil } and T or boolean\n";
+        let file = luanalysis_syntax::parse(text);
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let annotations: Vec<_> = luanalysis_syntax::annotation_types(&file).into_iter().map(std::sync::Arc::new).collect();
+        let types = NativeTypes::new_with_named(41, Vec::new(), Vec::new(), &annotations);
+        // Include whole expressions and crossing spans, not just point lookups: a reference
+        // must fit entirely in each enclosing true branch. Check/extends/false branches and
+        // mapped types must never contribute a conditional constraint of their own.
+        for start in 0..=text.len() {
+            for end in [start, (start + 1).min(text.len()), text.len()] {
+                let span = Span::new(start, end);
+                let scanned: Vec<_> = annotations.iter().filter(|syntax| match syntax.as_ref() {
+                    AnnotationDeclaration::Conditional(conditional) => conditional.yes.span.start <= start && end <= conditional.yes.span.end,
+                    AnnotationDeclaration::Mapped(_) => false,
+                }).collect();
+                let indexed: Vec<_> = types.enclosing_true_conditionals(span).map(|source| &source.syntax).collect();
+                assert_eq!(indexed, scanned, "reference span {span:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_duplicate_and_empty_spans_preserve_original_order() {
+        let spans = [Span::new(8, 20), Span::new(0, 30), Span::new(4, 12), Span::new(8, 20), Span::new(10, 10), Span::new(25, 22)];
+        let index = ConditionalTrueRegions::new(spans.into_iter().enumerate().map(|(index, span)| (span, index)));
+        for start in 0..=32 {
+            for end in 0..=32 {
+                let query = Span::new(start, end);
+                let expected: Vec<_> = spans.iter().enumerate().filter_map(|(index, span)| {
+                    (span.start <= start && end <= span.end).then_some(index)
+                }).collect();
+                assert_eq!(index.enclosing(query), expected, "reference span {query:?}");
+            }
+        }
     }
 }

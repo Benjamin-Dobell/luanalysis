@@ -133,6 +133,33 @@ fn prepared_worker_flows_share_original_storage_and_preserve_all_source_keys() {
 }
 
 #[test]
+fn workers_share_annotation_syntax_but_keep_lowering_state_separate() {
+    let mut snapshot = ProjectRegistrySnapshot::new(
+        vec![input(0, "---@alias Choice<T> T extends string and { value: T } or nil\n---@alias Copy<T> { [P in keyof T]: T[P] }\n", None)],
+        Vec::new(),
+        NativeLoaderPolicy::Lua52StandardFile,
+        StandardEnvironmentProfile::None,
+        crate::OverloadMode::V2,
+    );
+    snapshot.prepare_shared_flows();
+    let first = snapshot.worker_registry();
+    let second = snapshot.worker_registry();
+    let first = first.files[0].source(&first).types.annotations();
+    let second = second.files[0].source(&second).types.annotations();
+    assert_eq!(first.len(), 2);
+    assert_eq!(second.len(), first.len());
+    for (first, second) in first.iter().zip(second) {
+        assert!(Arc::ptr_eq(&first.syntax, &second.syntax));
+        first.lowered.set([true, true]);
+        *first.context.borrow_mut() = Some(crate::native_types::AnnotationContext {
+            function: None, named: None, signature: None,
+        });
+        assert_eq!(second.lowered.get(), [false, false]);
+        assert!(second.context.borrow().is_none());
+    }
+}
+
+#[test]
 fn prepared_global_keys_and_identical_profile_setters_do_not_copy_original_storage() {
     let mut snapshot = snapshot();
     snapshot.prepare_shared_flows();

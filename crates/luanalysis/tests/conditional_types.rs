@@ -55,6 +55,22 @@ local wrong = true
 }
 
 #[test]
+fn nested_true_branches_keep_each_enclosing_constraint() {
+    let checked = check(r#"---@alias NeedA<T: { a: number }> T
+---@alias NeedBoth<T: { a: number }, U: { b: string }> { left: T, right: U }
+---@alias Nested<T, U> T extends { a: number } and (U extends { b: string } and NeedBoth<T, U> or NeedA<T>) or nil
+
+---@type Nested<{ a: number }, { b: string }>
+local both = { left = { a = 1 }, right = { b = "ok" } }
+---@type Nested<{ a: number }, boolean>
+local first = { a = 1 }
+---@type Nested<string, boolean>
+local neither = nil
+"#);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+}
+
+#[test]
 fn a_naked_type_parameter_distributes_over_a_union() {
     let checked = check(r#"---@alias NonNil<T> T extends nil and never or T
 ---@alias Without<T, U> T extends U and never or T

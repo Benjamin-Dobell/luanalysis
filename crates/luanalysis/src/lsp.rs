@@ -517,8 +517,9 @@ struct Server {
     base: Option<(CheckInputs, ProjectCheckOptions)>,
     settings: Json,
     preferences: Preferences,
-    /// The requests the client cancelled, which the query thread answers as cancelled.
-    cancelled: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// Cancellation flags for requests that have not been answered. Unknown or already answered
+    /// IDs are never retained, and every response releases its flag, including superseded queries.
+    request_cancellations: Arc<std::sync::Mutex<HashMap<String, bool>>>,
     /// Whether the client shows work-done progress; the requests made to create a token, and the
     /// token of the progress shown while a check runs.
     progress: bool,
@@ -569,7 +570,7 @@ impl Server {
             base: None,
             settings: Json::Null,
             preferences: Preferences::default(),
-            cancelled: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            request_cancellations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             progress: false,
             next_request: 0,
             progress_token: None,
@@ -829,7 +830,9 @@ impl Server {
             }
             "$/cancelRequest" => {
                 if let Some(id) = params.get("id") {
-                    self.cancelled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.to_string());
+                    if let Some(cancelled) = self.request_cancellations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&id.to_string()) {
+                        *cancelled = true;
+                    }
                 }
             }
             "textDocument/didClose" => {
@@ -891,14 +894,14 @@ impl Server {
         let events = self.events.clone();
         let query_options = options.clone();
         let query_inputs = inputs.clone();
-        let cancelled = Arc::clone(&self.cancelled);
+        let request_cancellations = Arc::clone(&self.request_cancellations);
         let running = Running::start(&self.running);
         // The two threads parse, bind and build each source's recipes once between them.
         let sources = Arc::new(crate::incremental::SharedSources::default());
         let query_sources = Arc::clone(&sources);
         self.workers.push(std::thread::Builder::new()
             .name("luanalysis-lsp-query".into())
-            .spawn(move || { let _running = running; answer_queries(query_inputs, query_options, received, events, cancelled, query_sources) })
+            .spawn(move || { let _running = running; answer_queries(query_inputs, query_options, received, events, request_cancellations, query_sources) })
             .expect("start the language server's query thread"));
         self.queries = Some(queries);
         let (jobs, received) = mpsc::channel();
@@ -1234,6 +1237,7 @@ impl Server {
             && self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path))
                 .is_some_and(|file| *file.lines.text == *document.text && file.bindings.is_empty() && file.types.is_empty())
         {
+            self.track_request(&id);
             self.deferred_hovers.push((id, params.clone()));
             let check_pending = self.checking || self.requested != Some(self.revision);
             if !check_pending && !self.describe_requested {
@@ -1778,6 +1782,7 @@ impl Server {
         if !matches!(query.site, Site::FileRename(_)) { overlays.insert(path, query.text().to_owned()); }
         let query = Query { overlays, ..query };
         let unanswered = query.unanswered();
+        self.track_request(&id);
         if self.queries.as_ref().is_none_or(|queries| queries.send(query).is_err()) {
             self.respond(id, unanswered);
         }
@@ -1879,11 +1884,24 @@ impl Server {
         Ok(Json::object([("changes", Json::Object(changes))]))
     }
 
+    /// Synchronous requests finish before another message can cancel them. Only requests that
+    /// yield to a worker or wait for a description need a cancellation flag.
+    fn track_request(&self, id: &Json) {
+        self.request_cancellations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(id.to_string()).or_insert(false);
+    }
+
+    fn finish_request(&self, id: &Json) {
+        let mut requests = self.request_cancellations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !requests.is_empty() { requests.remove(&id.to_string()); }
+    }
+
     fn respond(&self, id: Json, result: Json) {
+        self.finish_request(&id);
         self.write(&Json::object([("jsonrpc", Json::from("2.0")), ("id", id), ("result", result)]));
     }
 
     fn respond_error(&self, id: Json, code: i64, message: &str) {
+        self.finish_request(&id);
         self.write(&Json::object([
             ("jsonrpc", Json::from("2.0")),
             ("id", id),
@@ -1892,6 +1910,7 @@ impl Server {
     }
 
     fn respond_request_error(&self, id: Json, error: RequestError) {
+        self.finish_request(&id);
         let mut fields = vec![
             ("code".into(), Json::from(REQUEST_FAILED)),
             ("message".into(), Json::from(error.message)),
@@ -2037,7 +2056,7 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     }
 }
 
-fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>, cancelled: Arc<std::sync::Mutex<HashSet<String>>>, sources: Arc<crate::incremental::SharedSources>) {
+fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>, request_cancellations: Arc<std::sync::Mutex<HashMap<String, bool>>>, sources: Arc<crate::incremental::SharedSources>) {
     options.cancellation.enter();
     let mut workspace = server_workspace(&sources, &options);
     let mut loaded = None;
@@ -2067,8 +2086,8 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
             }
         }
         for query in latest.into_iter().rev() {
-            // A query the client cancelled before it began is not answered.
-            if cancelled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&query.id.to_string()) {
+            // A query cancelled before it began receives a cancellation response without checking.
+            if request_cancellations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&query.id.to_string()) == Some(&true) {
                 if events.send(Event::Cancelled(query.id.clone())).is_err() { return; }
                 continue;
             }
@@ -3031,6 +3050,127 @@ mod tests {
         assert!(!action_kind_requested("refactor.rewrite", &["quickfix".into()]));
     }
 
+    fn cancellation_server() -> (Server, mpsc::Receiver<Event>, Arc<std::sync::Mutex<Vec<Json>>>) {
+        let (events, received) = mpsc::channel();
+        let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages = Arc::clone(&output);
+        let mut server = Server::new(CheckInputs::default(), ProjectCheckOptions::default(), events,
+            Arc::new(move |message| messages.lock().unwrap().push(Json::parse(message).unwrap())),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        server.initialized = true;
+        (server, received, output)
+    }
+
+    fn cancel(server: &mut Server, id: Json) {
+        server.notification("$/cancelRequest", &Json::object([("id", id)]));
+    }
+
+    fn cancellation_document(server: &mut Server) -> Json {
+        let path = std::env::temp_dir().join("luanalysis cancellation.lua");
+        let uri = path_to_uri(&path);
+        server.documents.insert(path, Document {
+            uri: uri.clone(), version: 1, text: "local value = 1\nreturn value\n".into(),
+        });
+        Json::object([
+            ("textDocument", Json::object([("uri", Json::from(uri))])),
+            ("position", Json::object([("line", Json::from(0usize)), ("character", Json::from(7usize))])),
+        ])
+    }
+
+    #[test]
+    fn cancellation_of_unknown_and_answered_requests_retains_no_ids() {
+        let (mut server, _, output) = cancellation_server();
+        for id in 0..512usize {
+            // A cancellation may arrive after its response, or name a request the server never saw.
+            server.request("textDocument/hover", Json::from(id), &Json::Null);
+            cancel(&mut server, Json::from(id));
+            cancel(&mut server, Json::from(format!("unknown-{id}")));
+        }
+        assert_eq!(output.lock().unwrap().len(), 512);
+        assert!(server.request_cancellations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancelled_queries_release_ids_when_superseded_or_answered() {
+        let (mut server, received, output) = cancellation_server();
+        let params = cancellation_document(&mut server);
+        let (send, queries) = mpsc::channel();
+        server.queries = Some(send);
+        for id in 1..=2usize {
+            server.request("textDocument/definition", Json::from(id), &params);
+            cancel(&mut server, Json::from(id));
+        }
+        assert_eq!(server.request_cancellations.lock().unwrap().len(), 2);
+        drop(server.queries.take());
+        answer_queries(CheckInputs::default(), ProjectCheckOptions::default(), queries, server.events.clone(),
+            Arc::clone(&server.request_cancellations), Arc::new(crate::incremental::SharedSources::default()));
+        server.events.send(Event::Closed).unwrap();
+        server.serve_messages(received);
+        let output = output.lock().unwrap();
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0].get("id"), Some(&Json::from(1usize)));
+        assert_eq!(output[0].get("result"), Some(&Json::Null));
+        assert_eq!(output[1].get("id"), Some(&Json::from(2usize)));
+        assert_eq!(output[1].path(&["error", "code"]), Some(&Json::from(REQUEST_CANCELLED)));
+        assert!(server.request_cancellations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancellation_while_hover_waits_for_types_survives_dispatch_to_the_worker() {
+        let (mut server, received, output) = cancellation_server();
+        let params = cancellation_document(&mut server);
+        let path = server.documents.keys().next().unwrap().clone();
+        let mut snapshot = Snapshot::failed(String::new());
+        snapshot.files.insert(path.clone(), CheckedFile {
+            lines: Arc::new(LineIndex::new(server.documents[&path].text.clone())),
+            diagnostics: Vec::new(), bindings: Vec::new(), types: Vec::new(), requires: Vec::new(),
+        });
+        server.snapshot = Some(snapshot);
+        let (jobs, _received_jobs) = mpsc::channel();
+        server.jobs = Some(jobs);
+        let (send, queries) = mpsc::channel();
+        server.queries = Some(send);
+        server.request("textDocument/hover", Json::from(1usize), &params);
+        assert_eq!(server.deferred_hovers.len(), 1);
+        cancel(&mut server, Json::from(1usize));
+        server.snapshot_described = true;
+        server.answer_deferred_hovers();
+        assert!(server.deferred_hovers.is_empty());
+        drop(server.queries.take());
+        answer_queries(CheckInputs::default(), ProjectCheckOptions::default(), queries, server.events.clone(),
+            Arc::clone(&server.request_cancellations), Arc::new(crate::incremental::SharedSources::default()));
+        server.events.send(Event::Closed).unwrap();
+        server.serve_messages(received);
+        assert_eq!(output.lock().unwrap()[0].path(&["error", "code"]), Some(&Json::from(REQUEST_CANCELLED)));
+        assert!(server.request_cancellations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancellation_during_a_query_is_released_by_every_terminal_response() {
+        let (mut server, received, output) = cancellation_server();
+        let params = cancellation_document(&mut server);
+        let (send, queries) = mpsc::channel();
+        server.queries = Some(send);
+        for id in 1..=3usize {
+            server.request("textDocument/prepareRename", Json::from(id), &params);
+            // The worker has already taken this query when its cancellation arrives.
+            assert_eq!(queries.recv().unwrap().id, Json::from(id));
+            cancel(&mut server, Json::from(id));
+        }
+        server.events.send(Event::Answered(Json::from(1usize), Json::Null)).unwrap();
+        server.events.send(Event::RevisionAnswer(Json::from(2usize), Json::Null, server.revision + 1)).unwrap();
+        server.events.send(Event::Refused(Json::from(3usize), RequestError::plain("refused".into()))).unwrap();
+        server.events.send(Event::Closed).unwrap();
+        server.serve_messages(received);
+        assert_eq!(output.lock().unwrap().len(), 3);
+        assert!(server.request_cancellations.lock().unwrap().is_empty());
+        // Responses have ended their lifetimes, so late cancellations cannot poison a reused ID.
+        cancel(&mut server, Json::from(1usize));
+        server.request("textDocument/hover", Json::from(1usize), &Json::Null);
+        assert_eq!(output.lock().unwrap().last().unwrap().get("result"), Some(&Json::Null));
+        assert!(server.request_cancellations.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn queued_rename_is_not_superseded_by_navigation() {
         let path = std::env::temp_dir().join("luanalysis queued rename.lua");
@@ -3051,7 +3191,7 @@ mod tests {
         let (events, answers) = mpsc::channel();
         let inputs = CheckInputs::default();
         answer_queries(inputs, ProjectCheckOptions::default(), queries, events,
-            Arc::new(std::sync::Mutex::new(HashSet::new())), Arc::new(crate::incremental::SharedSources::default()));
+            Arc::new(std::sync::Mutex::new(HashMap::new())), Arc::new(crate::incremental::SharedSources::default()));
         let answers: Vec<_> = answers.try_iter().collect();
         let response = |request| answers.iter().find_map(|event| match event {
             Event::Answered(id, result) if id == &Json::from(request) => Some(result.to_string()),

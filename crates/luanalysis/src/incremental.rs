@@ -161,6 +161,10 @@ impl SharedState {
     /// Forgets the revisions no workspace holds.
     fn evict(&mut self) {
         self.revisions.retain(|_, snapshot| snapshot.strong_count() > 0);
+        if self.revisions.is_empty() {
+            *self = Self { next_revision: self.next_revision, ..Self::default() };
+            return;
+        }
         let revisions = &self.revisions;
         self.identities.retain(|revision, _| revisions.contains_key(revision));
         self.recipes.retain(|revision, _| revisions.contains_key(revision));
@@ -318,12 +322,17 @@ impl ProjectWorkspace {
         self.incremental = state;
     }
 
-    /// Releases retained source inputs. Existing prepared snapshots remain
-    /// valid through their own shared ownership.
+    /// Releases retained source inputs, recipes and incremental checking state. Existing
+    /// prepared snapshots and other workspaces' shared inputs remain valid through their own
+    /// ownership. Parse options and revision numbering are preserved for subsequent checks.
     pub fn clear(&mut self) {
-        self.sources.clear();
-        self.pending_preparation.clear();
-        self.last_preparation = PreparationStats::default();
+        *self = Self {
+            next_revision: self.next_revision,
+            shared: self.shared.take(),
+            parse_options: self.parse_options,
+            ..Self::default()
+        };
+        if let Some(shared) = &self.shared { shared.state().evict(); }
     }
 
     /// Supplies the source-host's static candidates from the same cached
@@ -820,5 +829,80 @@ mod tests {
         let (rebuilt, failed) = check(&mut workspace);
         assert!(!std::sync::Arc::ptr_eq(&first, &rebuilt), "a new global name rebuilds every recipe");
         assert!(!failed);
+    }
+
+    #[test]
+    fn clearing_releases_recipes_and_incremental_reports_before_the_next_check() {
+        let fixture = Fixture::new();
+        let path = fixture.file("main.lua", "local function value() return 1 end\n---@type string\nlocal wrong=value()\n");
+        let mut workspace = ProjectWorkspace::new();
+        let options = crate::project_check::ProjectCheckOptions {
+            jobs: 1, emmylua_syntax: true,
+            environment: crate::standard_environment::StandardEnvironmentProfile::None,
+            ..Default::default()
+        };
+        let report = workspace.check_project_incrementally(fixture.load(std::slice::from_ref(&path), &[]), options.clone());
+        assert!(report.has_errors());
+        assert_eq!(workspace.last_incremental_checked(), 1);
+        let snapshot = workspace.sources.values().next().unwrap();
+        let revision = snapshot.revision;
+        let bound = Arc::downgrade(snapshot.bound.as_ref().unwrap());
+        let flow = Arc::downgrade(workspace.recipes[&revision].flow());
+        drop(report);
+
+        workspace.clear();
+
+        assert!(bound.upgrade().is_none(), "the retained incremental report must release its binding graph");
+        assert!(flow.upgrade().is_none(), "clear must release source recipes without waiting for another check");
+        assert_eq!(workspace.retained_source_count(), 0);
+        assert_eq!(workspace.last_preparation_stats(), PreparationStats::default());
+        assert_eq!(workspace.last_incremental_checked(), 0);
+        assert!(!workspace.last_incremental_read_published());
+        assert!(workspace.recipe_names.is_empty());
+        assert!(workspace.identities.is_empty());
+        assert!(workspace.parse_options.emmylua);
+
+        let report = workspace.check_project_incrementally(fixture.load(&[path], &[]), options);
+        assert!(report.has_errors());
+        assert_eq!(workspace.last_incremental_checked(), 1);
+        assert!(workspace.sources.values().all(|snapshot| snapshot.revision > revision));
+    }
+
+    #[test]
+    fn clearing_preserves_owned_snapshots_and_shared_peers_then_releases_unused_shared_recipes() {
+        let fixture = Fixture::new();
+        let path = fixture.file("main.lua", "local function value() return 1 end\nreturn value\n");
+        let shared = Arc::new(SharedSources::default());
+        let mut checking = ProjectWorkspace::shared(Arc::clone(&shared));
+        let mut querying = ProjectWorkspace::shared(Arc::clone(&shared));
+        let options = crate::project_check::ProjectCheckOptions {
+            jobs: 1, environment: crate::standard_environment::StandardEnvironmentProfile::None,
+            ..Default::default()
+        };
+        checking.check_project(fixture.load(std::slice::from_ref(&path), &[]), options);
+        let prepared = querying.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        let revision = prepared.sources[0].snapshot.revision;
+        let flow = Arc::downgrade(shared.state().recipes[&revision].flow());
+        assert_eq!(prepared.stats.parse_reused, 1);
+
+        checking.clear();
+        assert!(flow.upgrade().is_some(), "another workspace still uses the recipes");
+        querying.clear();
+        assert!(flow.upgrade().is_some(), "a prepared snapshot still owns the revision");
+        assert_eq!(prepared.sources[0].snapshot.source(), "local function value() return 1 end\nreturn value\n");
+        drop(prepared);
+        querying.clear();
+        assert!(flow.upgrade().is_none());
+        {
+            let state = shared.state();
+            assert!(state.snapshots.is_empty());
+            assert!(state.revisions.is_empty());
+            assert!(state.identities.is_empty());
+            assert!(state.recipes.is_empty());
+            assert!(state.recipe_names.is_empty());
+        }
+        let next = querying.prepare_registered_sources(&fixture.load(&[path], &[]));
+        assert_eq!(next.stats.parsed, 1);
+        assert!(next.sources[0].snapshot.revision > revision);
     }
 }

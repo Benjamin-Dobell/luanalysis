@@ -263,7 +263,7 @@ impl NativeRegistry {
         match source.owner {
             NativeTypeContext::Function(function) => annotations(&self.function(function).annotations),
             NativeTypeContext::Signature(owner) => self.signatures.get(owner).signature.as_ref().is_some_and(signature),
-            NativeTypeContext::Annotation(key) => self.types.annotation(key).is_some_and(|annotation| matches!(&annotation.syntax,
+            NativeTypeContext::Annotation(key) => self.types.annotation(key).is_some_and(|annotation| matches!(annotation.syntax.as_ref(),
                 luanalysis_syntax::AnnotationDeclaration::Conditional(conditional) if conditional.extends_type.spreads(name))),
             NativeTypeContext::NamedType(_) => false,
         }

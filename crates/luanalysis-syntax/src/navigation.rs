@@ -26,14 +26,8 @@ pub struct TypeName {
 /// Every type name the documentation comments of `file` declare or refer to, in source order.
 pub fn type_names(file: &File, source: &str) -> Vec<TypeName> {
     let mut names = Vec::new();
-    let mut block: Option<Span> = None;
     for comment in &file.comments {
         if comment.kind != CommentKind::Documentation { continue; }
-        // Consecutive documentation lines form one block.
-        block = Some(match block {
-            Some(span) if source.get(span.end..comment.span.start).is_some_and(|gap| gap.trim().is_empty() && gap.matches('\n').count() <= 1) => span.join(comment.span),
-            _ => comment.span,
-        });
         let (parsed, _) = crate::types::annotations(comment, file.options);
         let mut found = Vec::new();
         visit_documentation(&parsed, &mut |name, span, kind| if let Visited::Type(kind) = kind { found.push((name.to_owned(), span, kind)) });
@@ -51,7 +45,12 @@ pub fn type_names(file: &File, source: &str) -> Vec<TypeName> {
     }
     blocks.extend(current);
     for name in &mut names {
-        if let Some(block) = blocks.iter().find(|block| block.start <= name.span.start && name.span.end <= block.end) {
+        // Comments, and therefore their disjoint blocks, are in source order. Looking up each
+        // name from the beginning would scan every preceding block again.
+        let next = blocks.partition_point(|block| block.start <= name.span.start);
+        if let Some(block) = next.checked_sub(1).and_then(|index| blocks.get(index))
+            .filter(|block| name.span.end <= block.end)
+        {
             name.block = *block;
         }
     }
@@ -152,12 +151,13 @@ pub fn nil_later_unions(comment: &Comment) -> Vec<NilLaterUnion> {
 /// each once.
 pub fn annotation_types(file: &File) -> Vec<AnnotationDeclaration> {
     let mut found: Vec<AnnotationDeclaration> = Vec::new();
+    let mut spans = std::collections::HashSet::new();
     let may_have = |text: &str| text.contains("extends") || text.contains(" in ");
     for comment in file.comments.iter().filter(|comment| comment.kind == CommentKind::Documentation && may_have(&comment.text)) {
         let (parsed, _) = crate::types::annotations(comment, file.options);
         visit_documentation(&parsed, &mut |_, _, visited| {
             let Visited::Annotation(ty) = visited else { return };
-            if found.iter().any(|known| known.span() == ty.span) { return }
+            if !spans.insert((ty.span.start, ty.span.end)) { return }
             match &ty.kind {
                 TypeExprKind::Conditional { check, extends, yes, no } => found.push(AnnotationDeclaration::Conditional(ConditionalDeclaration {
                     span: ty.span,
@@ -314,6 +314,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn annotation_declarations_keep_nested_types_and_distinct_source_occurrences() {
+        let source = "---@alias First<T> T extends (infer U)[] and { [K in keyof U]: U[K] } or boolean\n---@alias Second<T> T extends (infer U)[] and { [K in keyof U]: U[K] } or boolean\n";
+        let file = crate::parse(source);
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let declarations = annotation_types(&file);
+        let written: Vec<_> = declarations.iter().map(|declaration| {
+            let span = declaration.span();
+            &source[span.start..span.end]
+        }).collect();
+        assert_eq!(written, [
+            "T extends (infer U)[] and { [K in keyof U]: U[K] } or boolean",
+            "{ [K in keyof U]: U[K] }",
+            "T extends (infer U)[] and { [K in keyof U]: U[K] } or boolean",
+            "{ [K in keyof U]: U[K] }",
+        ]);
+        for pair in declarations.chunks_exact(2) {
+            let AnnotationDeclaration::Conditional(conditional) = &pair[0] else { panic!("conditional declaration") };
+            assert_eq!(conditional.infer.len(), 1);
+            assert_eq!(conditional.infer[0].name.text, "U");
+            let AnnotationDeclaration::Mapped(mapped) = &pair[1] else { panic!("nested mapped declaration") };
+            assert_eq!(mapped.parameter.text, "K");
+            assert_eq!(conditional.yes.span, mapped.span);
+        }
+        // Repeated associations with one source span still yield one declaration, while the
+        // same spelling at another source location remains a distinct declaration.
+        let mut repeated = file.clone();
+        repeated.comments.extend(file.comments);
+        assert_eq!(annotation_types(&repeated), declarations);
+    }
+
+    #[test]
     fn type_names_are_declared_referred_to_and_scoped_to_their_block() {
         let source = "---@class Point : Base\n---@field next Point | nil\nlocal Point = {}\n\n---@generic T\n---@param list T[]\n---@return table<string, Point>\nlocal function first(list) end\n";
         let file = crate::parse(source);
@@ -333,5 +364,25 @@ mod tests {
         // The generic and its use share a block; the class's block is another.
         assert_eq!(names[4].block, names[5].block);
         assert_ne!(names[0].block, names[4].block);
+    }
+
+    #[test]
+    fn type_name_blocks_keep_boundaries_across_gaps_and_regular_comments() {
+        let source = "-- é\n---@class First\n---@field value First\n\n---@class Second\n-- separate documentation\n---@class Third\n---@field value Third";
+        let file = crate::parse(source);
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let names = type_names(&file, source);
+        let blocks: Vec<_> = names.iter().map(|name| {
+            (name.name.as_str(), &source[name.block.start..name.block.end])
+        }).collect();
+        assert_eq!(blocks, [
+            ("First", "---@class First\n---@field value First"),
+            ("First", "---@class First\n---@field value First"),
+            ("Second", "---@class Second"),
+            ("Third", "---@class Third\n---@field value Third"),
+            ("Third", "---@class Third\n---@field value Third"),
+        ]);
+        assert_eq!(names.last().unwrap().span.end, source.len());
+        assert!(type_names(&crate::parse("local value = 1"), "local value = 1").is_empty());
     }
 }

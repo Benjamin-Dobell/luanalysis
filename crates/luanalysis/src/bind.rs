@@ -112,6 +112,9 @@ pub struct BoundFile {
     shadowed_bindings: Vec<Option<BindingId>>,
     /// Original-source occurrences sorted by byte offset.
     pub occurrences: Vec<NameOccurrence>,
+    /// Function scopes sorted by exact span, preserving scope order for equal spans. Empty
+    /// when the file declares no implicit receivers, so ordinary functions need no index.
+    receiver_scopes: Vec<ScopeId>,
     /// Whether each binding is assigned anywhere, by index.
     written: Vec<bool>,
     intrinsic_occurrences: Vec<IntrinsicOccurrence>,
@@ -138,11 +141,17 @@ pub struct BoundFile {
 
 impl BoundFile {
     pub fn implicit_receiver(&self, function_span: Span) -> Option<BindingId> {
-        let scope = self.scopes.iter().find(|scope| {
-            scope.kind == ScopeKind::Function && scope.span == function_span
-        })?;
-        scope.bindings.iter().copied().find(|binding| {
-            self.declaration(*binding).kind == DeclarationKind::ImplicitReceiver
+        let key = (function_span.start, function_span.end);
+        let index = self.receiver_scopes.partition_point(|&id| {
+            let span = self.scope(id).span;
+            (span.start, span.end) < key
+        });
+        let scope = self.scope(*self.receiver_scopes.get(index)?);
+        if scope.span != function_span { return None; }
+        // A colon receiver is declared before the written parameters, including a written
+        // `self` that shadows it. An equal span still selects the first function scope.
+        scope.bindings.first().copied().filter(|&binding| {
+            self.declaration(binding).kind == DeclarationKind::ImplicitReceiver
         })
     }
     pub fn declaration(&self, binding: BindingId) -> &Declaration {
@@ -302,6 +311,7 @@ pub fn bind(file: &File) -> BoundFile {
             declarations: Vec::new(),
             shadowed_bindings: Vec::new(),
             occurrences: Vec::new(),
+            receiver_scopes: Vec::new(),
             written: Vec::new(),
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
@@ -352,6 +362,16 @@ pub fn bind(file: &File) -> BoundFile {
         }
     }
     binder.file.written = written;
+    if binder.file.declarations.iter().any(|declaration| declaration.kind == DeclarationKind::ImplicitReceiver) {
+        let mut scopes: Vec<_> = binder.file.scopes.iter()
+            .filter(|scope| scope.kind == ScopeKind::Function)
+            .map(|scope| scope.id).collect();
+        scopes.sort_by_key(|&id| {
+            let span = binder.file.scope(id).span;
+            (span.start, span.end)
+        });
+        binder.file.receiver_scopes = scopes;
+    }
     binder.file.occurrences.shrink_to_fit();
     binder.file.declarations.shrink_to_fit();
     binder.file.scopes.shrink_to_fit();
@@ -883,4 +903,73 @@ pub(crate) fn modifies_package(keys: &[Option<&[u8]>]) -> bool {
         None | Some(None)
             | Some(Some(b"loaded" | b"preload" | b"searchers" | b"loaders"))
     )
+}
+
+#[cfg(test)]
+mod receiver_lookup_tests {
+    use super::*;
+
+    fn original_lookup(bound: &BoundFile, span: Span) -> Option<BindingId> {
+        bound.scopes.iter()
+            .find(|scope| scope.kind == ScopeKind::Function && scope.span == span)?
+            .bindings.iter().copied()
+            .find(|&binding| bound.declaration(binding).kind == DeclarationKind::ImplicitReceiver)
+    }
+
+    #[test]
+    fn receiver_lookup_requires_the_exact_span_and_keeps_shadowed_self() {
+        let file = luanalysis_syntax::parse(
+            "local object = {}\nfunction object:outer(self)\nlocal function plain() return self end\nfunction object:inner() return self end\nreturn plain\nend\nfunction object.dot(self) return self end",
+        );
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let bound = bind(&file);
+        let mut receivers = 0;
+        for scope in &bound.scopes {
+            let span = scope.span;
+            let expected = original_lookup(&bound, span);
+            receivers += usize::from(expected.is_some());
+            assert_eq!(bound.implicit_receiver(span), expected);
+            for altered in [Span::new(span.start, span.end + 1), Span::new(span.start + 1, span.end)] {
+                assert_eq!(bound.implicit_receiver(altered), original_lookup(&bound, altered));
+            }
+        }
+        assert_eq!(receivers, 2);
+    }
+
+    #[test]
+    fn receiver_lookup_keeps_the_first_function_for_duplicate_spans() {
+        for source in [
+            "function object.plain() end\nfunction object:method() end",
+            "function object:method() end\nfunction object.plain() end",
+            "function object:first() end\nfunction object:second() end",
+        ] {
+            let mut file = luanalysis_syntax::parse(source);
+            assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+            // Public syntax trees can carry repeated source spans. The first scope wins,
+            // including when it is an ordinary function and the later one is a method.
+            let span = Span::new(0, source.len());
+            for statement in &mut file.statements {
+                let StmtKind::FunctionDeclaration { function, .. } = &mut statement.kind else { panic!("function") };
+                function.span = span;
+            }
+            let bound = bind(&file);
+            assert_eq!(bound.implicit_receiver(span), original_lookup(&bound, span), "{source}");
+        }
+    }
+
+    #[test]
+    fn ordinary_functions_need_no_receiver_index() {
+        let mut source = String::new();
+        for index in 0..256 {
+            source.push_str(&format!("local function f{index}(self) return self end\n"));
+        }
+        let file = luanalysis_syntax::parse(&source);
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let bound = bind(&file);
+        assert!(bound.receiver_scopes.is_empty());
+        assert_eq!(bound.receiver_scopes.capacity(), 0);
+        for scope in bound.scopes.iter().filter(|scope| scope.kind == ScopeKind::Function) {
+            assert_eq!(bound.implicit_receiver(scope.span), None);
+        }
+    }
 }

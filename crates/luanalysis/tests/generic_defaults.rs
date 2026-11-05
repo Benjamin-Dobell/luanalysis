@@ -102,3 +102,37 @@ local function required(u) end
         "TS2706 U | Required type parameters may not follow optional type parameters.",
     ]);
 }
+
+#[test]
+fn default_checks_only_compare_parameters_of_the_same_original_owner() {
+    let checked = check(r#"---@alias Defaulted<T = number> T
+
+---@alias Required<T> T
+
+---@alias Later<T = U, U = string> T
+
+---@alias LocalOrder<T = number, U> U
+
+---@alias Earlier<T, U = T> U
+"#);
+    assert_eq!(checked.diagnostics, [
+        "TS2744 U | Type parameter defaults can only reference previously declared type parameters.",
+        "TS2706 U | Required type parameters may not follow optional type parameters.",
+    ]);
+}
+
+#[test]
+fn merged_class_defaults_are_checked_in_each_original_declaration_list() {
+    let checked = check(r#"---@class Merged<T, U = string>
+
+---@class Merged<T = string, U>
+
+---@class Forward<T, U>
+
+---@class Forward<T = U, U = string>
+"#);
+    assert_eq!(checked.diagnostics, [
+        "TS2706 U | Required type parameters may not follow optional type parameters.",
+        "TS2744 U | Type parameter defaults can only reference previously declared type parameters.",
+    ]);
+}

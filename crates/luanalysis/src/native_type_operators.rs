@@ -85,9 +85,8 @@ impl super::Checker<'_> {
         };
         let parameter = *parameter;
         let mut constraints = Vec::new();
-        for source in native.types.annotations() {
-            let luanalysis_syntax::AnnotationDeclaration::Conditional(conditional) = &source.syntax else { continue };
-            if !(conditional.yes.span.start <= ty.span.start && ty.span.end <= conditional.yes.span.end) { continue }
+        for source in native.types.enclosing_true_conditionals(ty.span) {
+            let luanalysis_syntax::AnnotationDeclaration::Conditional(conditional) = source.syntax.as_ref() else { continue };
             let mut check = &conditional.check_type;
             while let TypeExprKind::Parenthesized(inner) = &check.kind { check = inner }
             if !matches!(&check.kind, TypeExprKind::Named(checked) if checked == name) { continue }

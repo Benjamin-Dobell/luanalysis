@@ -40,11 +40,28 @@ mod fake_mimalloc {
         last: *mut Header,
         /// The thread that created the heap: the only one that allocates from it.
         owner: usize,
+        /// Once its owner retires, no thread-local pointer can still read this control block.
+        owner_lifetime: std::sync::Weak<()>,
+        #[cfg(test)]
+        drop_probe: Option<std::sync::Arc<()>>,
+    }
+
+    const RETIRED_CURRENT: *mut Heap = core::ptr::without_provenance_mut(1);
+
+    struct OwnerLifetime(std::sync::Arc<()>);
+
+    impl Drop for OwnerLifetime {
+        fn drop(&mut self) {
+            // Other TLS destructors may still allocate or free. Disable the raw pointer before
+            // the token expires, and do not let those later allocations reactivate it.
+            CURRENT.with(|current| current.set(RETIRED_CURRENT));
+        }
     }
 
     std::thread_local! {
         /// The heap this thread last allocated from. `mi_free` is told no heap.
         static CURRENT: core::cell::Cell<*mut Heap> = const { core::cell::Cell::new(core::ptr::null_mut()) };
+        static OWNER_LIFETIME: OwnerLifetime = OwnerLifetime(std::sync::Arc::new(()));
     }
 
     fn this_thread() -> usize {
@@ -108,7 +125,9 @@ mod fake_mimalloc {
         if heap == main_heap() {
             return global_alloc(size, align, zero);
         }
-        CURRENT.with(|current| current.set(heap));
+        CURRENT.with(|current| {
+            if current.get() != RETIRED_CURRENT { current.set(heap); }
+        });
         // SAFETY: a heap is used by the thread that created it.
         let heap = unsafe { &mut *heap };
         let total = size + align.max(16) + HEADER;
@@ -186,7 +205,7 @@ mod fake_mimalloc {
         // A block is freed once, by any thread. Its heap's own thread reads this below.
         base.store(tagged.map_addr(|addr| addr | FREED), core::sync::atomic::Ordering::Relaxed);
         let heap = CURRENT.with(core::cell::Cell::get);
-        if heap.is_null() {
+        if heap.is_null() || heap == RETIRED_CURRENT {
             return;
         }
         // SAFETY: `CURRENT` is this thread's, and its heap outlives it (`mi_heap_destroy`).
@@ -217,6 +236,10 @@ mod fake_mimalloc {
             used: 0,
             last: core::ptr::null_mut(),
             owner: this_thread(),
+            // A later TLS destructor can create a heap after the owner token has retired.
+            owner_lifetime: OWNER_LIFETIME.try_with(|owner| std::sync::Arc::downgrade(&owner.0)).unwrap_or_default(),
+            #[cfg(test)]
+            drop_probe: None,
         }))
         .cast()
     }
@@ -236,8 +259,10 @@ mod fake_mimalloc {
                     current.set(core::ptr::null_mut());
                 }
             });
-        } else {
+        } else if heap.owner_lifetime.strong_count() != 0 {
             // Its thread may still name it as `CURRENT`, and finds nothing to give back.
+            // Keep that control block alive. Joined workers have retired their token, so the
+            // ordinary parallel session teardown drops theirs instead of leaking one per worker.
             Box::leak(heap);
         }
     }
@@ -425,6 +450,98 @@ mod fake_mimalloc {
                 // SAFETY: it is not null, so the caller wants a number there.
                 unsafe { *p = 0 };
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::sync::{Arc, Weak, mpsc};
+
+        fn tracked_heap() -> (*mut c_void, Weak<()>) {
+            let heap = mi_heap_new();
+            let probe = Arc::new(());
+            let dropped = Arc::downgrade(&probe);
+            // SAFETY: this test owns the newly allocated heap before publishing it.
+            unsafe { (*heap.cast::<Heap>()).drop_probe = Some(probe); }
+            (heap, dropped)
+        }
+
+        #[test]
+        fn joined_worker_heap_control_is_released_with_its_arena() {
+            let (address, dropped) = std::thread::spawn(|| {
+                let (heap, dropped) = tracked_heap();
+                // SAFETY: this thread owns the live heap.
+                unsafe { mi_heap_zalloc(heap, 64); }
+                (heap as usize, dropped)
+            }).join().unwrap();
+            assert!(dropped.upgrade().is_some());
+            // SAFETY: the owner has joined and transferred its live heap for destruction.
+            unsafe { mi_heap_destroy(address as *mut c_void); }
+            assert!(dropped.upgrade().is_none(), "the heap's control allocation must be dropped too");
+        }
+
+        #[test]
+        fn live_foreign_destruction_keeps_the_current_pointer_valid() {
+            let (send, receive) = mpsc::channel();
+            let (resume, resumed) = mpsc::channel();
+            let owner = std::thread::spawn(move || {
+                let other = mi_heap_new();
+                // SAFETY: this thread owns both heaps, and the first block stays live.
+                let block = unsafe { mi_heap_malloc(other, 64) };
+                let (heap, dropped) = tracked_heap();
+                unsafe { mi_heap_malloc(heap, 64); }
+                send.send((heap as usize, dropped)).unwrap();
+                resumed.recv().unwrap();
+                assert_eq!(CURRENT.with(core::cell::Cell::get), heap.cast::<Heap>());
+                // SAFETY: `block` belongs to the other, still-live heap. Its release may inspect
+                // CURRENT's control block even though that heap's chunks were freed remotely.
+                unsafe { mi_free(block); mi_heap_destroy(other); }
+            });
+            let (address, dropped) = receive.recv().unwrap();
+            // SAFETY: the owner is waiting and has transferred the second heap for destruction.
+            unsafe { mi_heap_destroy(address as *mut c_void); }
+            assert!(dropped.upgrade().is_some(), "a live owner's CURRENT still needs its control block");
+            resume.send(()).unwrap();
+            owner.join().unwrap();
+            // SAFETY: this is the intentionally retained live-foreign tombstone, with no chunks;
+            // the owner has now joined, so the test may reclaim it without another heap destroy.
+            unsafe { drop(Box::from_raw(address as *mut Heap)); }
+            assert!(dropped.upgrade().is_none());
+        }
+
+        struct LateCleanup(std::cell::RefCell<Option<mpsc::Sender<(bool, bool, bool)>>>);
+
+        impl Drop for LateCleanup {
+            fn drop(&mut self) {
+                let before = CURRENT.with(core::cell::Cell::get) == RETIRED_CURRENT;
+                let (heap, dropped) = tracked_heap();
+                // SAFETY: this late TLS destructor owns the newly created heap and its block.
+                unsafe {
+                    let block = mi_heap_malloc(heap, 64);
+                    mi_free(block);
+                    mi_heap_destroy(heap);
+                }
+                let after = CURRENT.with(core::cell::Cell::get) == RETIRED_CURRENT;
+                self.0.get_mut().take().unwrap().send((before, after, dropped.upgrade().is_none())).unwrap();
+            }
+        }
+
+        std::thread_local! {
+            static LATE_CLEANUP: LateCleanup = const { LateCleanup(std::cell::RefCell::new(None)) };
+        }
+
+        #[test]
+        fn later_tls_destructors_do_not_reactivate_the_current_heap() {
+            let (send, receive) = mpsc::channel();
+            std::thread::spawn(move || {
+                // Initialized first, so its destructor runs after OWNER_LIFETIME's.
+                LATE_CLEANUP.with(|cleanup| *cleanup.0.borrow_mut() = Some(send));
+                let heap = mi_heap_new();
+                // SAFETY: this thread owns the newly created heap.
+                unsafe { mi_heap_destroy(heap); }
+            }).join().unwrap();
+            assert_eq!(receive.recv().unwrap(), (true, true, true));
         }
     }
 }

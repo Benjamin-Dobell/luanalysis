@@ -440,6 +440,22 @@ fn ambiguous_documentation_contexts_and_malformed_containers_remain_raw() {
 }
 
 #[test]
+fn documentation_contexts_keep_all_record_owners_in_group_order() {
+    let named = registry("---@class One<T>\n---@class Two<U>\n---@alias First T\n\n---@alias Alone number\n\n---@class Three<V>\n---@alias Last V\n");
+    let first = vec![named.candidates("One")[0], named.candidates("Two")[0]];
+    for name in ["One", "Two", "First"] {
+        let source = named.declaration(named.candidates(name)[0]).unwrap();
+        assert_eq!(source.documentation_contexts, first);
+        assert_eq!(source.generic_scope.documentation_parents, first.iter().copied().filter(|&key| key != source.key).collect::<Vec<_>>());
+    }
+    let alone = named.declaration(named.candidates("Alone")[0]).unwrap();
+    assert!(alone.documentation_contexts.is_empty());
+    assert!(alone.generic_scope.documentation_parents.is_empty());
+    let last = named.declaration(named.candidates("Last")[0]).unwrap();
+    assert_eq!(last.documentation_contexts, vec![named.candidates("Three")[0]]);
+}
+
+#[test]
 fn runtime_and_function_annotation_heads_keep_distinct_original_contexts() {
     let source = "---@type {value:number}\nlocal value={}\n---@param input table<string,number[]>\nlocal function use(input) end\n";
     let parsed = file(source);
